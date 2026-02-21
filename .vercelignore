@@ -3,7 +3,7 @@ pipeline/
 requirements.txt
 
 # Supabase schemas (applied via CLI)
-supabase/
+/supabase/
 
 # Documentation
 *.md
