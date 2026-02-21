@@ -12,11 +12,9 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    console.log("[auth-url] Fetching from pipeline:", `${PIPELINE_URL}/api/gdrive/auth-url?consultant_id=${consultantId}`);
     const response = await fetch(
       `${PIPELINE_URL}/api/gdrive/auth-url?consultant_id=${consultantId}`
     );
-    console.log("[auth-url] Pipeline response status:", response.status);
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: "Error" }));
@@ -28,7 +26,6 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(await response.json());
   } catch (error) {
-    console.error("[auth-url] Fetch error:", error instanceof Error ? error.message : error);
     const message =
       error instanceof Error && error.message.includes("fetch")
         ? "Pipeline API no disponible."
