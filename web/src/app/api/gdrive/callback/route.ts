@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { createClient as createAuthClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
+import { loadEnv } from "@/lib/env";
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Get current user from Supabase auth
-  const supabase = await createClient();
+  const supabase = await createAuthClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -44,29 +44,78 @@ export async function GET(request: NextRequest) {
       : request.nextUrl.origin;
     const redirectUri = `${origin}/api/gdrive/callback`;
 
-    // Exchange code for tokens via Python backend
-    const response = await fetch(`${PIPELINE_URL}/api/gdrive/exchange`, {
+    // Load Google credentials
+    const clientId = loadEnv("GOOGLE_CLIENT_ID");
+    const clientSecret = loadEnv("GOOGLE_CLIENT_SECRET");
+
+    if (!clientId || !clientSecret) {
+      settingsUrl.searchParams.set("gdrive", "error");
+      settingsUrl.searchParams.set("gdrive_error", "missing_google_credentials");
+      return NextResponse.redirect(settingsUrl);
+    }
+
+    // Exchange code for tokens directly with Google
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
         code,
-        consultant_id: consultantId,
+        client_id: clientId,
+        client_secret: clientSecret,
         redirect_uri: redirectUri,
+        grant_type: "authorization_code",
       }),
     });
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: "Exchange failed" }));
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok || !tokenData.access_token) {
+      const errorDetail = tokenData.error_description || tokenData.error || "token_exchange_failed";
       settingsUrl.searchParams.set("gdrive", "error");
-      settingsUrl.searchParams.set("gdrive_error", err.detail || "exchange_failed");
+      settingsUrl.searchParams.set("gdrive_error", errorDetail);
+      return NextResponse.redirect(settingsUrl);
+    }
+
+    // Calculate token expiry
+    const tokenExpiry = tokenData.expires_in
+      ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
+      : null;
+
+    // Store tokens in Supabase using service role
+    const supabaseUrl = loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
+    const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (!supabaseUrl || !serviceKey) {
+      settingsUrl.searchParams.set("gdrive", "error");
+      settingsUrl.searchParams.set("gdrive_error", "supabase_not_configured");
+      return NextResponse.redirect(settingsUrl);
+    }
+
+    const sb = createClient(supabaseUrl, serviceKey);
+
+    const { error: dbError } = await sb.from("consultant_gdrive").upsert(
+      {
+        consultant_id: consultantId,
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        token_expiry: tokenExpiry,
+        folder_mapping: {},
+      },
+      { onConflict: "consultant_id" }
+    );
+
+    if (dbError) {
+      settingsUrl.searchParams.set("gdrive", "error");
+      settingsUrl.searchParams.set("gdrive_error", "db_save_failed");
       return NextResponse.redirect(settingsUrl);
     }
 
     settingsUrl.searchParams.set("gdrive", "connected");
     return NextResponse.redirect(settingsUrl);
-  } catch {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "unknown_error";
     settingsUrl.searchParams.set("gdrive", "error");
-    settingsUrl.searchParams.set("gdrive_error", "pipeline_unavailable");
+    settingsUrl.searchParams.set("gdrive_error", detail);
     return NextResponse.redirect(settingsUrl);
   }
 }
