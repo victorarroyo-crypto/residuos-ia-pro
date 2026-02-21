@@ -86,7 +86,6 @@ export interface Client {
   municipio: string | null;
   consultant_id: string | null;
   tipo_relacion: "retainer" | "auditoria" | "diagnostico" | null;
-  activo: boolean;
   metadata: Record<string, unknown> | null;
 }
 

@@ -30,7 +30,6 @@ export default function NewClientPage() {
       comunidad: (form.get("comunidad") as string) || null,
       municipio: (form.get("municipio") as string) || null,
       tipo_relacion: (form.get("tipo_relacion") as string) || null,
-      activo: true,
       consultant_id: user?.id ?? null,
       metadata: null,
     });
