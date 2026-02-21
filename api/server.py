@@ -8,9 +8,14 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import asyncio
+import logging
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+logger = logging.getLogger("residusia")
 
 # Ensure the project root is in the Python path (works locally and in Docker)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -599,7 +604,9 @@ class GDriveSyncRequest(BaseModel):
 async def gdrive_sync(request: GDriveSyncRequest):
     """
     Scan Google Drive for new documents and ingest them automatically.
-    Recursively finds all files, skips already-indexed ones, ingests the rest.
+    Creates a sync log entry, launches the heavy work as a background task,
+    and returns immediately so the caller (Vercel) does not time out.
+    The frontend polls /api/gdrive/sync-status to track progress.
     """
     if service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -619,6 +626,22 @@ async def gdrive_sync(request: GDriveSyncRequest):
             raise HTTPException(status_code=404, detail="No root folder configured")
         folder_id = gdrive_row.data[0]["root_folder_id"]
 
+    # Check if a sync is already running for this consultant
+    running_check = await (
+        sb.table("gdrive_sync_log")
+        .select("id")
+        .eq("consultant_id", request.consultant_id)
+        .eq("status", "running")
+        .limit(1)
+        .execute()
+    )
+    if running_check.data:
+        return {
+            "sync_id": running_check.data[0]["id"],
+            "status": "already_running",
+            "message": "Ya hay una sincronizacion en curso. Consulta sync-status para ver el progreso.",
+        }
+
     # Create sync log entry
     sync_log = await (
         sb.table("gdrive_sync_log")
@@ -630,10 +653,34 @@ async def gdrive_sync(request: GDriveSyncRequest):
     )
     sync_id = sync_log.data[0]["id"]
 
+    # Fire-and-forget: launch heavy work in background
+    asyncio.create_task(
+        _run_sync_job(sync_id, request.consultant_id, folder_id, gd, sb)
+    )
+
+    # Return immediately
+    return {
+        "sync_id": sync_id,
+        "status": "running",
+        "message": "Sincronizacion iniciada. Consulta sync-status para ver el progreso.",
+    }
+
+
+async def _run_sync_job(
+    sync_id: str,
+    consultant_id: str,
+    folder_id: str,
+    gd: "GoogleDriveService",  # noqa: F821
+    sb: "AsyncClient",  # noqa: F821
+) -> None:
+    """Background task that does the actual sync work."""
+    from datetime import datetime, timezone
+
     try:
         # 1. Recursively list all files in Drive
         all_files = gd.list_all_files_recursive(folder_id)
         total_found = len(all_files)
+        logger.info("Sync %s: found %d files in Drive", sync_id, total_found)
 
         # 2. Check which are already indexed
         all_drive_ids = [f["id"] for f in all_files]
@@ -651,6 +698,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
                     indexed_ids.add(row["drive_file_id"])
 
         new_files = [f for f in all_files if f["id"] not in indexed_ids]
+        logger.info("Sync %s: %d new files to ingest", sync_id, len(new_files))
 
         # 3. Ingest new files
         ingested = 0
@@ -702,6 +750,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
                     "document_id": result.document_id,
                     "chunks": result.num_chunks,
                 })
+                logger.info("Sync %s: ingested %s (%d chunks)", sync_id, filename, result.num_chunks or 0)
 
             except Exception as e:
                 failed += 1
@@ -711,9 +760,9 @@ async def gdrive_sync(request: GDriveSyncRequest):
                     "status": "error",
                     "error": str(e)[:200],
                 })
+                logger.warning("Sync %s: failed %s: %s", sync_id, file_info["name"], e)
 
         # 4. Update sync log
-        from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).isoformat()
         await (
             sb.table("gdrive_sync_log")
@@ -734,34 +783,31 @@ async def gdrive_sync(request: GDriveSyncRequest):
         await (
             sb.table("consultant_gdrive")
             .update({"last_synced_at": now_iso})
-            .eq("consultant_id", request.consultant_id)
+            .eq("consultant_id", consultant_id)
             .execute()
         )
 
-        return {
-            "sync_id": sync_id,
-            "status": "completed",
-            "total_files_found": total_found,
-            "files_ingested": ingested,
-            "files_skipped": skipped,
-            "files_failed": failed,
-            "details": details,
-        }
+        logger.info(
+            "Sync %s completed: %d ingested, %d skipped, %d failed",
+            sync_id, ingested, skipped, failed,
+        )
 
     except Exception as e:
-        # Update sync log with error
+        logger.error("Sync %s crashed: %s", sync_id, e)
         from datetime import datetime, timezone
-        await (
-            sb.table("gdrive_sync_log")
-            .update({
-                "status": "error",
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "error_message": str(e)[:500],
-            })
-            .eq("id", sync_id)
-            .execute()
-        )
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            await (
+                sb.table("gdrive_sync_log")
+                .update({
+                    "status": "error",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "error_message": str(e)[:500],
+                })
+                .eq("id", sync_id)
+                .execute()
+            )
+        except Exception:
+            logger.error("Sync %s: could not update error status", sync_id)
 
 
 @app.get("/api/gdrive/sync-status")

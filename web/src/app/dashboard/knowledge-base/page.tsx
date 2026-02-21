@@ -557,26 +557,29 @@ export default function KnowledgeBasePage() {
 
       if (res.ok) {
         const data = await res.json();
-        const details: SyncDetail[] =
-          typeof data.details === "string"
-            ? JSON.parse(data.details)
-            : data.details || [];
 
-        setSyncResult({
-          success: true,
-          message: `Sync completado: ${data.files_ingested} nuevos, ${data.files_skipped} ya indexados${data.files_failed ? `, ${data.files_failed} errores` : ""}`,
-          details,
-        });
+        if (data.status === "running" || data.status === "already_running") {
+          // Sync is running in background on Pipeline server.
+          // Poll sync-status every 5s until it finishes.
+          setSyncResult({
+            success: true,
+            message: "Sincronizacion iniciada. Procesando documentos en segundo plano...",
+          });
+          pollUntilComplete();
+        } else {
+          // Sync completed synchronously (e.g. no new files)
+          const details: SyncDetail[] =
+            typeof data.details === "string"
+              ? JSON.parse(data.details)
+              : data.details || [];
 
-        // Refresh everything
-        setLoadingDocs(true);
-        loadDocuments();
-        loadStats();
-        loadSyncStatus();
-
-        // Refresh Drive view
-        if (breadcrumbs.length > 0) {
-          browseDriveFolder(breadcrumbs[breadcrumbs.length - 1].id);
+          setSyncResult({
+            success: true,
+            message: `Sync completado: ${data.files_ingested} nuevos, ${data.files_skipped} ya indexados${data.files_failed ? `, ${data.files_failed} errores` : ""}`,
+            details,
+          });
+          refreshAfterSync();
+          setSyncing(false);
         }
       } else {
         const err = await res.json().catch(() => ({ error: "Error" }));
@@ -584,15 +587,81 @@ export default function KnowledgeBasePage() {
           success: false,
           message: err.error || "Error durante la sincronizacion.",
         });
+        setSyncing(false);
       }
     } catch {
       setSyncResult({
         success: false,
-        message: "Pipeline API no disponible.",
+        message: "Pipeline API no disponible. Verifica que el servidor Python esta activo.",
       });
-    } finally {
       setSyncing(false);
     }
+  }
+
+  function refreshAfterSync() {
+    setLoadingDocs(true);
+    loadDocuments();
+    loadStats();
+    loadSyncStatus();
+    if (breadcrumbs.length > 0) {
+      browseDriveFolder(breadcrumbs[breadcrumbs.length - 1].id);
+    }
+  }
+
+  function pollUntilComplete() {
+    const POLL_INTERVAL = 5000; // 5 seconds
+    const MAX_POLLS = 120; // 10 minutes max
+    let polls = 0;
+
+    const interval = setInterval(async () => {
+      polls++;
+      try {
+        const res = await fetch(
+          `/api/gdrive/sync-status?consultant_id=${userId}`
+        );
+        if (!res.ok) return;
+
+        const status: SyncStatus = await res.json();
+        setSyncStatus(status);
+
+        const isStillRunning = status.recent_syncs.some(
+          (s) => s.status === "running"
+        );
+
+        if (!isStillRunning || polls >= MAX_POLLS) {
+          clearInterval(interval);
+          setSyncing(false);
+
+          // Find the most recent completed sync for result summary
+          const lastCompleted = status.recent_syncs.find(
+            (s) => s.status === "completed" || s.status === "error"
+          );
+          if (lastCompleted) {
+            if (lastCompleted.status === "completed") {
+              const details: SyncDetail[] =
+                typeof lastCompleted.details === "string"
+                  ? JSON.parse(lastCompleted.details)
+                  : Array.isArray(lastCompleted.details)
+                    ? lastCompleted.details
+                    : [];
+              setSyncResult({
+                success: true,
+                message: `Sync completado: ${lastCompleted.files_ingested} nuevos, ${lastCompleted.files_skipped} ya indexados${lastCompleted.files_failed ? `, ${lastCompleted.files_failed} errores` : ""}`,
+                details,
+              });
+            } else {
+              setSyncResult({
+                success: false,
+                message: lastCompleted.error_message || "Error durante la sincronizacion.",
+              });
+            }
+          }
+          refreshAfterSync();
+        }
+      } catch {
+        // Silently retry on next poll
+      }
+    }, POLL_INTERVAL);
   }
 
   async function handleToggleAutoSync() {

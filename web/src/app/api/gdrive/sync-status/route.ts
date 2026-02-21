@@ -1,38 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function GET(request: NextRequest) {
+  const consultantId = request.nextUrl.searchParams.get("consultant_id");
+  if (!consultantId) {
+    return NextResponse.json(
+      { error: "consultant_id is required" },
+      { status: 400 }
+    );
+  }
+
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({ error: admin.detail }, { status: admin.status });
+  }
+
   try {
-    const consultantId = request.nextUrl.searchParams.get("consultant_id");
+    // Get GDrive config
+    const { data: gdriveConfig } = await admin.client
+      .from("consultant_gdrive")
+      .select("last_synced_at, auto_sync_enabled")
+      .eq("consultant_id", consultantId)
+      .maybeSingle();
 
-    if (!consultantId) {
-      return NextResponse.json(
-        { error: "consultant_id is required" },
-        { status: 400 }
-      );
-    }
+    // Get last 5 sync logs
+    const { data: logs } = await admin.client
+      .from("gdrive_sync_log")
+      .select("*")
+      .eq("consultant_id", consultantId)
+      .order("started_at", { ascending: false })
+      .limit(5);
 
-    const params = new URLSearchParams({ consultant_id: consultantId });
-
-    const response = await fetch(
-      `${PIPELINE_URL}/api/gdrive/sync-status?${params.toString()}`
+    const recentSyncs = logs || [];
+    const isRunning = recentSyncs.some(
+      (log: Record<string, unknown>) => log.status === "running"
     );
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: "Error" }));
-      return NextResponse.json(
-        { error: error.detail },
-        { status: response.status }
-      );
-    }
-
-    return NextResponse.json(await response.json());
+    return NextResponse.json({
+      last_synced_at: gdriveConfig?.last_synced_at ?? null,
+      auto_sync_enabled: gdriveConfig?.auto_sync_enabled ?? true,
+      is_syncing: isRunning,
+      recent_syncs: recentSyncs,
+    });
   } catch (error) {
-    const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible."
-        : "Error interno del servidor";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const detail = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: `Error consultando sync status: ${detail}` },
+      { status: 500 }
+    );
   }
 }
