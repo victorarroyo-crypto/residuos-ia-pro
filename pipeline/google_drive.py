@@ -518,6 +518,53 @@ class GoogleDriveService:
             resp["nextPageToken"] = result["nextPageToken"]
         return resp
 
+    def list_all_files_recursive(
+        self,
+        folder_id: str,
+        supported_extensions: set[str] | None = None,
+        _path: str = "",
+    ) -> list[dict]:
+        """
+        Recursively list ALL files under a folder.
+        Returns flat list of {id, name, mimeType, size, modifiedTime, path}.
+        Skips Google Docs/Sheets/Slides (native format, not downloadable as-is).
+        """
+        if supported_extensions is None:
+            supported_extensions = {
+                ".pdf", ".docx", ".doc", ".xlsx", ".xls",
+                ".csv", ".txt", ".html", ".htm", ".md",
+            }
+
+        all_files: list[dict] = []
+        page_token: str | None = None
+
+        while True:
+            listing = self.list_folder(folder_id, page_token)
+
+            for item in listing["items"]:
+                item_path = f"{_path}/{item['name']}" if _path else item["name"]
+
+                if item["isFolder"]:
+                    # Recurse into subfolder
+                    all_files.extend(
+                        self.list_all_files_recursive(
+                            item["id"], supported_extensions, item_path
+                        )
+                    )
+                else:
+                    # Check extension
+                    name_lower = item["name"].lower()
+                    ext = "." + name_lower.rsplit(".", 1)[-1] if "." in name_lower else ""
+                    if ext in supported_extensions:
+                        item["path"] = item_path
+                        all_files.append(item)
+
+            page_token = listing.get("nextPageToken")
+            if not page_token:
+                break
+
+        return all_files
+
     def download_file(self, file_id: str) -> tuple[bytes, str, str]:
         """
         Download a file from Drive.
