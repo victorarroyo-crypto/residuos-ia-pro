@@ -320,6 +320,277 @@ async def delete_knowledge_base_document(doc_id: str):
     return {"success": True, "deleted_id": doc_id}
 
 
+# ═══════════════════════════════════════════════════════════════
+# GOOGLE DRIVE - Conexión OAuth2 y gestión de carpetas
+# ═══════════════════════════════════════════════════════════════
+
+_gdrive_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+_gdrive_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+
+def _gdrive_configured() -> bool:
+    return bool(_gdrive_client_id and _gdrive_client_secret)
+
+
+def _gdrive_redirect_uri() -> str:
+    frontend = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    return f"{frontend}/api/gdrive/callback"
+
+
+@app.get("/api/gdrive/auth-url")
+async def gdrive_auth_url(consultant_id: str = Query(...)):
+    """Generate Google OAuth2 authorization URL."""
+    if not _gdrive_configured():
+        raise HTTPException(
+            status_code=501,
+            detail="Google Drive no configurado. Falta GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET.",
+        )
+
+    from pipeline.google_drive import get_auth_url
+
+    url = get_auth_url(
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+        redirect_uri=_gdrive_redirect_uri(),
+        state=consultant_id,
+    )
+    return {"auth_url": url}
+
+
+class GDriveExchangeRequest(BaseModel):
+    code: str
+    consultant_id: str
+
+
+@app.post("/api/gdrive/exchange")
+async def gdrive_exchange(request: GDriveExchangeRequest):
+    """
+    Exchange OAuth code for tokens, save to DB, and create Drive folder structure.
+    """
+    if not _gdrive_configured():
+        raise HTTPException(status_code=501, detail="Google Drive no configurado.")
+
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.google_drive import exchange_code, GoogleDriveService
+
+    # Exchange code for tokens
+    tokens = exchange_code(
+        code=request.code,
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+        redirect_uri=_gdrive_redirect_uri(),
+    )
+
+    # Create folder structure in Drive
+    gd = GoogleDriveService(
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+    )
+    folders = gd.setup_full_structure()
+
+    # Save tokens and folder IDs to database
+    sb = await rag_service._get_supabase()
+    await sb.table("consultant_gdrive").upsert({
+        "consultant_id": request.consultant_id,
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "token_expiry": tokens.get("token_expiry"),
+        "root_folder_id": folders["root_folder_id"],
+        "folder_mapping": folders,
+    }).execute()
+
+    return {
+        "success": True,
+        "root_folder_id": folders["root_folder_id"],
+        "folders_created": len(folders),
+    }
+
+
+@app.get("/api/gdrive/status")
+async def gdrive_status(consultant_id: str = Query(...)):
+    """Check if the consultant has connected Google Drive."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    result = await (
+        sb.table("consultant_gdrive")
+        .select("root_folder_id, folder_mapping, created_at, updated_at")
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+
+    if not result.data:
+        return {"connected": False}
+
+    data = result.data[0]
+    return {
+        "connected": True,
+        "root_folder_id": data["root_folder_id"],
+        "connected_at": data["created_at"],
+        "configured": _gdrive_configured(),
+    }
+
+
+async def _get_gdrive_service(consultant_id: str):
+    """Helper: load tokens from DB and return a GoogleDriveService instance."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    if not _gdrive_configured():
+        raise HTTPException(status_code=501, detail="Google Drive no configurado.")
+
+    sb = await rag_service._get_supabase()
+    result = await (
+        sb.table("consultant_gdrive")
+        .select("access_token, refresh_token")
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Google Drive no conectado.")
+
+    from pipeline.google_drive import GoogleDriveService
+    data = result.data[0]
+    gd = GoogleDriveService(
+        access_token=data["access_token"],
+        refresh_token=data["refresh_token"],
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+    )
+    return gd, sb
+
+
+@app.get("/api/gdrive/browse")
+async def gdrive_browse(
+    consultant_id: str = Query(...),
+    folder_id: str = Query(...),
+    page_token: Optional[str] = Query(None),
+):
+    """
+    Browse a folder in the consultant's Google Drive.
+    Returns items with sync status (whether each file is already indexed in the DB).
+    """
+    gd, sb = await _get_gdrive_service(consultant_id)
+
+    listing = gd.list_folder(folder_id, page_token)
+
+    # Get drive_file_ids already indexed in the DB
+    file_ids = [item["id"] for item in listing["items"] if not item["isFolder"]]
+    indexed_ids: set[str] = set()
+    if file_ids:
+        # Query in batches of 50 to avoid too-long queries
+        for i in range(0, len(file_ids), 50):
+            batch = file_ids[i : i + 50]
+            indexed_result = await (
+                sb.table("client_documents")
+                .select("drive_file_id")
+                .in_("drive_file_id", batch)
+                .execute()
+            )
+            for row in indexed_result.data or []:
+                if row.get("drive_file_id"):
+                    indexed_ids.add(row["drive_file_id"])
+
+    # Enrich items with indexed status
+    for item in listing["items"]:
+        if item["isFolder"]:
+            item["indexed"] = None
+        else:
+            item["indexed"] = item["id"] in indexed_ids
+
+    return listing
+
+
+class GDriveIngestRequest(BaseModel):
+    consultant_id: str
+    file_id: str
+    file_name: str
+    folder_path: str = ""  # breadcrumb path for context
+
+
+@app.post("/api/gdrive/ingest-file")
+async def gdrive_ingest_file(request: GDriveIngestRequest):
+    """
+    Download a file from Google Drive and ingest it through the pipeline.
+    Stores drive_file_id on the resulting document for sync tracking.
+    """
+    if service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    gd, sb = await _get_gdrive_service(request.consultant_id)
+
+    # Check if already indexed
+    existing = await (
+        sb.table("client_documents")
+        .select("id")
+        .eq("drive_file_id", request.file_id)
+        .execute()
+    )
+    if existing.data:
+        raise HTTPException(
+            status_code=409,
+            detail="Este archivo ya esta indexado en la base de datos."
+        )
+
+    # Download from Drive
+    try:
+        file_bytes, filename, mime_type = gd.download_file(request.file_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error descargando de Drive: {e}")
+
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="El archivo esta vacio.")
+
+    if len(file_bytes) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Archivo demasiado grande (max 100 MB)")
+
+    # Ingest through the pipeline
+    try:
+        result = await service.ingest(
+            file_bytes=file_bytes,
+            filename=filename,
+            rag_scope="general",
+        )
+
+        # Update the document record with drive_file_id
+        if result.document_id:
+            await (
+                sb.table("client_documents")
+                .update({"drive_file_id": request.file_id})
+                .eq("id", result.document_id)
+                .execute()
+            )
+
+        return {
+            **result.to_dict(),
+            "drive_file_id": request.file_id,
+            "source_filename": filename,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/gdrive/disconnect")
+async def gdrive_disconnect(consultant_id: str = Query(...)):
+    """Disconnect Google Drive (delete stored tokens)."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    await (
+        sb.table("consultant_gdrive")
+        .delete()
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+
+    return {"success": True}
+
+
 if __name__ == "__main__":
     import uvicorn
 

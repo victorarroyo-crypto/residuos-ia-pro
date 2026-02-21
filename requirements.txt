@@ -27,6 +27,11 @@ python-docx==1.1.2          # lectura de archivos Word (.docx)
 python-dotenv==1.0.1
 aiofiles==24.1.0
 
+# Google Drive
+google-api-python-client==2.108.0  # Google Drive API v3
+google-auth-httplib2==0.2.0        # auth transport
+google-auth-oauthlib==1.2.0        # OAuth2 flow
+
 # API Server
 fastapi==0.115.0
 uvicorn[standard]==0.30.0

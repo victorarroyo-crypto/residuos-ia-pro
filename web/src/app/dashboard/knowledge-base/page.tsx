@@ -12,8 +12,13 @@ import {
   MessageSquare,
   Database,
   X,
-  File,
   AlertCircle,
+  FolderOpen,
+  ChevronRight,
+  HardDrive,
+  Download,
+  CheckCircle2,
+  Home,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { createClient } from "@/lib/supabase/client";
 
 // ─── Types ──────────────────────────────────────────────────
 interface KBDocument {
@@ -58,6 +64,21 @@ interface ChatMessage {
   sources?: RAGSource[];
 }
 
+interface DriveItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number | null;
+  modifiedTime: string | null;
+  isFolder: boolean;
+  indexed: boolean | null;
+}
+
+interface BreadcrumbItem {
+  id: string;
+  name: string;
+}
+
 const docTypeLabels: Record<string, string> = {
   normativa: "Normativa",
   manual_interno: "Manual",
@@ -69,12 +90,23 @@ const docTypeLabels: Record<string, string> = {
 const ACCEPTED_EXTENSIONS =
   ".pdf,.docx,.doc,.txt,.html,.htm,.md,.xlsx,.xls,.csv";
 
+function formatBytes(bytes: number | null): string {
+  if (!bytes) return "---";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 // ─── Component ──────────────────────────────────────────────
 export default function KnowledgeBasePage() {
-  // Tab state
-  const [activeTab, setActiveTab] = useState<"documents" | "chat">(
-    "documents"
+  const [activeTab, setActiveTab] = useState<"drive" | "documents" | "chat">(
+    "drive"
   );
+
+  // User state
+  const [userId, setUserId] = useState("");
+  const [gdriveConnected, setGdriveConnected] = useState(false);
+  const [rootFolderId, setRootFolderId] = useState("");
 
   // Documents state
   const [documents, setDocuments] = useState<KBDocument[]>([]);
@@ -103,6 +135,38 @@ export default function KnowledgeBasePage() {
 
   // Delete state
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  // Drive browser state
+  const [driveItems, setDriveItems] = useState<DriveItem[]>([]);
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([]);
+  const [ingesting, setIngesting] = useState<string | null>(null);
+  const [ingestResult, setIngestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
+
+  // ─── Init: load user + GDrive status ─────────────────────
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      const uid = data.user?.id || "";
+      setUserId(uid);
+
+      if (uid) {
+        // Check GDrive connection
+        fetch(`/api/gdrive/status?consultant_id=${uid}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((status) => {
+            if (status?.connected) {
+              setGdriveConnected(true);
+              setRootFolderId(status.root_folder_id);
+            }
+          })
+          .catch(() => {});
+      }
+    });
+  }, []);
 
   // ─── Load documents ───────────────────────────────────────
   const loadDocuments = useCallback(async () => {
@@ -139,6 +203,98 @@ export default function KnowledgeBasePage() {
     loadStats();
   }, [loadDocuments, loadStats]);
 
+  // ─── Drive browser ────────────────────────────────────────
+  const browseDriveFolder = useCallback(
+    async (folderId: string) => {
+      if (!userId) return;
+      setDriveLoading(true);
+      try {
+        const params = new URLSearchParams({
+          consultant_id: userId,
+          folder_id: folderId,
+        });
+        const res = await fetch(`/api/gdrive/browse?${params.toString()}`);
+        if (res.ok) {
+          const data = await res.json();
+          setDriveItems(data.items || []);
+        }
+      } catch {
+        // Drive not available
+      } finally {
+        setDriveLoading(false);
+      }
+    },
+    [userId]
+  );
+
+  // Load root folder when GDrive is connected
+  useEffect(() => {
+    if (gdriveConnected && rootFolderId) {
+      setBreadcrumbs([{ id: rootFolderId, name: "RAG_Residuos_Industriales" }]);
+      browseDriveFolder(rootFolderId);
+    }
+  }, [gdriveConnected, rootFolderId, browseDriveFolder]);
+
+  function navigateToFolder(folderId: string, folderName: string) {
+    setBreadcrumbs((prev) => [...prev, { id: folderId, name: folderName }]);
+    browseDriveFolder(folderId);
+  }
+
+  function navigateToBreadcrumb(index: number) {
+    const crumb = breadcrumbs[index];
+    setBreadcrumbs((prev) => prev.slice(0, index + 1));
+    browseDriveFolder(crumb.id);
+  }
+
+  async function handleIngestFromDrive(item: DriveItem) {
+    if (!userId || ingesting) return;
+    setIngesting(item.id);
+    setIngestResult(null);
+
+    try {
+      const folderPath = breadcrumbs.map((b) => b.name).join(" / ");
+      const res = await fetch("/api/gdrive/ingest-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultant_id: userId,
+          file_id: item.id,
+          file_name: item.name,
+          folder_path: folderPath,
+        }),
+      });
+
+      if (res.ok) {
+        setIngestResult({
+          success: true,
+          message: `"${item.name}" indexado correctamente.`,
+        });
+        // Mark as indexed locally
+        setDriveItems((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, indexed: true } : i))
+        );
+        // Refresh docs and stats
+        setLoadingDocs(true);
+        loadDocuments();
+        loadStats();
+      } else {
+        const err = await res.json().catch(() => ({ error: "Error" }));
+        setIngestResult({
+          success: false,
+          message: err.error || "Error al indexar el archivo.",
+        });
+      }
+    } catch {
+      setIngestResult({
+        success: false,
+        message: "Pipeline API no disponible.",
+      });
+    } finally {
+      setIngesting(null);
+      setTimeout(() => setIngestResult(null), 5000);
+    }
+  }
+
   // ─── Upload handler ───────────────────────────────────────
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -154,7 +310,6 @@ export default function KnowledgeBasePage() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("rag_scope", "general");
-      // No client_id → goes to general knowledge base
 
       try {
         const res = await fetch("/api/ingest", {
@@ -180,10 +335,7 @@ export default function KnowledgeBasePage() {
           : `${successCount} subidos, ${errorCount} con error`,
     });
 
-    // Reset file input
     if (fileInputRef.current) fileInputRef.current.value = "";
-
-    // Reload docs and stats
     setLoadingDocs(true);
     await Promise.all([loadDocuments(), loadStats()]);
   }
@@ -277,8 +429,7 @@ export default function KnowledgeBasePage() {
             Base de Conocimiento
           </h1>
           <p className="text-muted-foreground">
-            Documentos normativos y tecnicos generales disponibles para todos
-            los proyectos.
+            Navega tu Google Drive, indexa documentos y consulta con IA.
           </p>
         </div>
         <div>
@@ -294,19 +445,19 @@ export default function KnowledgeBasePage() {
           <Button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            className="bg-vandarum-teal hover:bg-vandarum-teal/90"
+            variant="outline"
           >
             {uploading ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
               <Upload className="mr-2 h-4 w-4" />
             )}
-            {uploading ? "Subiendo..." : "Subir documento"}
+            {uploading ? "Subiendo..." : "Subir local"}
           </Button>
         </div>
       </div>
 
-      {/* Upload result toast */}
+      {/* Toasts */}
       {uploadResult && (
         <div
           className={`flex items-center gap-2 rounded-md p-3 text-sm ${
@@ -321,10 +472,27 @@ export default function KnowledgeBasePage() {
             <AlertCircle className="h-4 w-4" />
           )}
           {uploadResult.message}
-          <button
-            onClick={() => setUploadResult(null)}
-            className="ml-auto"
-          >
+          <button onClick={() => setUploadResult(null)} className="ml-auto">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {ingestResult && (
+        <div
+          className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+            ingestResult.success
+              ? "bg-green-50 text-green-800 border border-green-200"
+              : "bg-red-50 text-red-800 border border-red-200"
+          }`}
+        >
+          {ingestResult.success ? (
+            <CheckCircle2 className="h-4 w-4" />
+          ) : (
+            <AlertCircle className="h-4 w-4" />
+          )}
+          {ingestResult.message}
+          <button onClick={() => setIngestResult(null)} className="ml-auto">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -335,15 +503,12 @@ export default function KnowledgeBasePage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
-              Documentos generales
+              Documentos indexados
             </CardTitle>
             <BookOpen className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.total_documents}</div>
-            <p className="text-xs text-muted-foreground">
-              En la base de conocimiento
-            </p>
           </CardContent>
         </Card>
 
@@ -356,9 +521,6 @@ export default function KnowledgeBasePage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.total_chunks}</div>
-            <p className="text-xs text-muted-foreground">
-              Fragmentos para busqueda semantica
-            </p>
           </CardContent>
         </Card>
 
@@ -371,32 +533,41 @@ export default function KnowledgeBasePage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.total_pages}</div>
-            <p className="text-xs text-muted-foreground">
-              Total de paginas analizadas
-            </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
-              Tipos de documento
+              Google Drive
             </CardTitle>
-            <File className="h-4 w-4 text-vandarum-orange" />
+            <HardDrive className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {Object.keys(stats.by_type).length}
+              {gdriveConnected ? (
+                <Badge variant="success">Conectado</Badge>
+              ) : (
+                <Badge variant="secondary">Sin conectar</Badge>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              Categorias diferentes
-            </p>
           </CardContent>
         </Card>
       </div>
 
       {/* Tab navigation */}
       <div className="flex gap-1 rounded-lg bg-muted p-1">
+        <button
+          onClick={() => setActiveTab("drive")}
+          className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === "drive"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <HardDrive className="h-4 w-4" />
+          Google Drive
+        </button>
         <button
           onClick={() => setActiveTab("documents")}
           className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
@@ -406,7 +577,7 @@ export default function KnowledgeBasePage() {
           }`}
         >
           <FileText className="h-4 w-4" />
-          Documentos
+          Documentos indexados
         </button>
         <button
           onClick={() => setActiveTab("chat")}
@@ -422,7 +593,18 @@ export default function KnowledgeBasePage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === "documents" ? (
+      {activeTab === "drive" ? (
+        <DriveTab
+          connected={gdriveConnected}
+          items={driveItems}
+          loading={driveLoading}
+          breadcrumbs={breadcrumbs}
+          ingesting={ingesting}
+          onNavigateFolder={navigateToFolder}
+          onNavigateBreadcrumb={navigateToBreadcrumb}
+          onIngest={handleIngestFromDrive}
+        />
+      ) : activeTab === "documents" ? (
         <DocumentsTab
           documents={documents}
           search={search}
@@ -446,6 +628,156 @@ export default function KnowledgeBasePage() {
         />
       )}
     </div>
+  );
+}
+
+// ─── Drive Tab ──────────────────────────────────────────────
+function DriveTab({
+  connected,
+  items,
+  loading,
+  breadcrumbs,
+  ingesting,
+  onNavigateFolder,
+  onNavigateBreadcrumb,
+  onIngest,
+}: {
+  connected: boolean;
+  items: DriveItem[];
+  loading: boolean;
+  breadcrumbs: BreadcrumbItem[];
+  ingesting: string | null;
+  onNavigateFolder: (id: string, name: string) => void;
+  onNavigateBreadcrumb: (index: number) => void;
+  onIngest: (item: DriveItem) => void;
+}) {
+  if (!connected) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+          <HardDrive className="h-12 w-12 text-muted-foreground/50 mb-4" />
+          <p className="text-lg font-medium">Google Drive no conectado</p>
+          <p className="text-sm text-muted-foreground mt-1 mb-4">
+            Conecta Google Drive desde Ajustes para navegar y sincronizar
+            documentos.
+          </p>
+          <a href="/dashboard/settings">
+            <Button variant="outline">Ir a Ajustes</Button>
+          </a>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const folders = items.filter((i) => i.isFolder);
+  const files = items.filter((i) => !i.isFolder);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        {/* Breadcrumbs */}
+        <div className="flex items-center gap-1 text-sm flex-wrap">
+          {breadcrumbs.map((crumb, idx) => (
+            <span key={crumb.id} className="flex items-center gap-1">
+              {idx > 0 && (
+                <ChevronRight className="h-3 w-3 text-muted-foreground" />
+              )}
+              {idx === breadcrumbs.length - 1 ? (
+                <span className="font-medium">{crumb.name}</span>
+              ) : (
+                <button
+                  onClick={() => onNavigateBreadcrumb(idx)}
+                  className="text-vandarum-teal hover:underline"
+                >
+                  {idx === 0 ? (
+                    <span className="flex items-center gap-1">
+                      <Home className="h-3 w-3" />
+                      {crumb.name}
+                    </span>
+                  ) : (
+                    crumb.name
+                  )}
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+          </div>
+        ) : items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <FolderOpen className="h-12 w-12 text-muted-foreground/50 mb-4" />
+            <p className="text-muted-foreground">Esta carpeta esta vacia.</p>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {/* Folders first */}
+            {folders.map((folder) => (
+              <button
+                key={folder.id}
+                onClick={() => onNavigateFolder(folder.id, folder.name)}
+                className="flex items-center gap-3 w-full rounded-md px-3 py-2.5 text-left hover:bg-muted transition-colors group"
+              >
+                <FolderOpen className="h-5 w-5 text-vandarum-teal shrink-0" />
+                <span className="flex-1 text-sm font-medium truncate group-hover:text-vandarum-teal">
+                  {folder.name.replace(/_/g, " ")}
+                </span>
+                <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+              </button>
+            ))}
+
+            {/* Files */}
+            {files.length > 0 && folders.length > 0 && (
+              <div className="border-t my-2" />
+            )}
+            {files.map((file) => (
+              <div
+                key={file.id}
+                className="flex items-center gap-3 rounded-md px-3 py-2.5 hover:bg-muted/50 transition-colors"
+              >
+                <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{file.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatBytes(file.size)}
+                    {file.modifiedTime &&
+                      ` · ${new Date(file.modifiedTime).toLocaleDateString("es-ES")}`}
+                  </p>
+                </div>
+                {file.indexed ? (
+                  <Badge
+                    variant="success"
+                    className="shrink-0 text-xs"
+                  >
+                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                    Indexado
+                  </Badge>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onIngest(file)}
+                    disabled={ingesting === file.id}
+                    className="shrink-0"
+                  >
+                    {ingesting === file.id ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <Download className="h-3 w-3 mr-1" />
+                    )}
+                    Indexar
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -496,11 +828,10 @@ function DocumentsTab({
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <BookOpen className="h-12 w-12 text-muted-foreground/50 mb-4" />
             <p className="text-muted-foreground">
-              No hay documentos en la base de conocimiento.
+              No hay documentos indexados.
             </p>
             <p className="text-sm text-muted-foreground mt-1">
-              Sube normativas, BREFs, guias tecnicas y otros documentos
-              generales.
+              Sube documentos o indexa archivos desde Google Drive.
             </p>
           </div>
         ) : (
