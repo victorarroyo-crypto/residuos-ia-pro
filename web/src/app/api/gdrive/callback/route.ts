@@ -37,6 +37,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Build the redirect_uri that was used in the auth request (must match)
+    const forwardedHost = request.headers.get("x-forwarded-host");
+    const origin = forwardedHost
+      ? `${request.headers.get("x-forwarded-proto") || "https"}://${forwardedHost}`
+      : request.nextUrl.origin;
+    const redirectUri = `${origin}/api/gdrive/callback`;
+
     // Exchange code for tokens via Python backend
     const response = await fetch(`${PIPELINE_URL}/api/gdrive/exchange`, {
       method: "POST",
@@ -44,6 +51,7 @@ export async function GET(request: NextRequest) {
       body: JSON.stringify({
         code,
         consultant_id: consultantId,
+        redirect_uri: redirectUri,
       }),
     });
 
