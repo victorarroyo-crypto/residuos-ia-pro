@@ -41,12 +41,10 @@ function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
 }
 
 type FilterRelacion = "todos" | "retainer" | "auditoria" | "diagnostico";
-type FilterEstado = "todos" | "activo" | "inactivo";
 
 export default function ClientsPage() {
   const [search, setSearch] = useState("");
   const [filterRelacion, setFilterRelacion] = useState<FilterRelacion>("todos");
-  const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [clients, setClients] = useState<Client[]>([]);
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
   const [documents, setDocuments] = useState<ClientDocument[]>([]);
@@ -81,14 +79,8 @@ export default function ClientsPage() {
       c.comunidad?.toLowerCase().includes(search.toLowerCase());
     const matchRelacion =
       filterRelacion === "todos" || c.tipo_relacion === filterRelacion;
-    const matchEstado =
-      filterEstado === "todos" ||
-      (filterEstado === "activo" && c.activo) ||
-      (filterEstado === "inactivo" && !c.activo);
-    return matchSearch && matchRelacion && matchEstado;
+    return matchSearch && matchRelacion;
   });
-
-  const activeCount = clients.filter((c) => c.activo).length;
 
   if (loading) {
     return (
@@ -104,8 +96,7 @@ export default function ClientsPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Clientes</h1>
           <p className="text-muted-foreground">
-            Gestiona tu cartera de clientes. {activeCount} activos de{" "}
-            {clients.length} totales.
+            Gestiona tu cartera de clientes. {clients.length} en total.
           </p>
         </div>
         <Link href="/dashboard/clients/new">
@@ -141,15 +132,6 @@ export default function ClientsPage() {
                 <option value="retainer">Retainer</option>
                 <option value="auditoria">Auditoria</option>
                 <option value="diagnostico">Diagnostico</option>
-              </select>
-              <select
-                value={filterEstado}
-                onChange={(e) => setFilterEstado(e.target.value as FilterEstado)}
-                className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
-              >
-                <option value="todos">Todos</option>
-                <option value="activo">Activos</option>
-                <option value="inactivo">Inactivos</option>
               </select>
             </div>
           </div>
@@ -203,11 +185,6 @@ export default function ClientsPage() {
                         >
                           {client.nombre}
                         </Link>
-                        {!client.activo && (
-                          <Badge variant="secondary" className="ml-2">
-                            Inactivo
-                          </Badge>
-                        )}
                       </TableCell>
                       <TableCell className="font-mono text-sm">
                         {client.cnae}

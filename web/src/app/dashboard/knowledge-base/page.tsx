@@ -11,7 +11,6 @@ import {
   Loader2,
   MessageSquare,
   Database,
-  ChevronDown,
   X,
   File,
   AlertCircle,
@@ -597,7 +596,7 @@ function ChatTab({
   setChatInput: (s: string) => void;
   chatLoading: boolean;
   onSend: () => void;
-  chatEndRef: React.RefObject<HTMLDivElement | null>;
+  chatEndRef: React.RefObject<HTMLDivElement>;
 }) {
   return (
     <Card className="flex flex-col" style={{ height: "calc(100vh - 420px)" }}>

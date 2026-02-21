@@ -62,7 +62,6 @@ export default async function DashboardPage() {
   const allAlerts = alerts ?? [];
   const allSavings = savings ?? [];
 
-  const activeClients = allClients.filter((c) => c.activo);
   const pendingAlerts = allAlerts.filter((a) => a.estado === "pendiente");
   const totalSavings = allSavings.reduce(
     (sum, s) => sum + (s.ahorro_estimado_eur_año ?? 0),
@@ -98,13 +97,13 @@ export default async function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card className="border-t-2 border-t-vandarum-teal">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Clientes activos</CardTitle>
+            <CardTitle className="text-sm font-medium">Clientes</CardTitle>
             <Users className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{activeClients.length}</div>
+            <div className="text-2xl font-bold">{allClients.length}</div>
             <p className="text-xs text-muted-foreground">
-              {allClients.length} total en cartera
+              Total en cartera
             </p>
           </CardContent>
         </Card>
@@ -192,11 +191,6 @@ export default async function DashboardPage() {
                         >
                           {client.nombre}
                         </Link>
-                        {!client.activo && (
-                          <Badge variant="secondary" className="ml-2">
-                            Inactivo
-                          </Badge>
-                        )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {client.sector}
