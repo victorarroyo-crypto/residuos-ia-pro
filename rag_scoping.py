@@ -1,0 +1,295 @@
+"""
+SISTEMA DE SCOPING DEL RAG - ResidusIA Pro
+===========================================
+Gestiona dos capas de conocimiento completamente separadas:
+
+  GENERAL (rag_scope = "general")
+  ────────────────────────────────
+  • Normativa europea, nacional y autonómica
+  • BREFs y guías técnicas
+  • Precios de mercado de gestores
+  • Benchmarks de costes por sector/LER
+  Disponible para TODOS los proyectos, nunca contiene datos de clientes.
+
+  PROYECTO (rag_scope = "project")
+  ──────────────────────────────────
+  • AAI, contratos, facturas, registros de UN cliente
+  • Excels de costes y presupuestos del proyecto
+  • Informes de auditorías anteriores
+  Solo accesible desde ese proyecto concreto.
+
+La función de búsqueda combina ambas capas cuando es útil,
+pero siempre respetando el aislamiento de datos por cliente.
+"""
+
+import logging
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+
+from openai import AsyncOpenAI
+from supabase import AsyncClient, acreate_client
+
+logger = logging.getLogger(__name__)
+
+
+class RAGScope(str, Enum):
+    GENERAL  = "general"   # normativa, precios, benchmarks
+    PROJECT  = "project"   # documentos del cliente/proyecto
+
+
+@dataclass
+class RAGSearchResult:
+    chunk_id: str
+    document_id: str
+    content: str
+    chunk_type: str
+    similarity: float
+    doc_title: str
+    doc_type: str
+    rag_scope: RAGScope
+    drive_file_id: Optional[str]
+    metadata: dict
+
+
+@dataclass
+class RAGResponse:
+    query: str
+    results: list[RAGSearchResult]
+    general_results: list[RAGSearchResult]   # de normativa/benchmarks
+    project_results: list[RAGSearchResult]   # de docs del cliente
+    context_text: str                        # texto listo para pasar al LLM
+
+
+class RAGScopingService:
+    """
+    Servicio central de búsqueda RAG con scoping por proyecto.
+    
+    Las búsquedas siempre se hacen en dos pasos:
+    1. Buscar en el RAG del proyecto (documentos del cliente)
+    2. Buscar en el RAG general (normativa, benchmarks)
+    
+    El contexto que se pasa al LLM combina ambos, etiquetados claramente
+    para que el LLM distinga qué es normativa vs qué son datos del cliente.
+    """
+
+    def __init__(self, config):
+        self.config = config
+        self.openai = AsyncOpenAI(api_key=config.openai_api_key)
+        self._supabase: Optional[AsyncClient] = None
+
+    async def _get_supabase(self) -> AsyncClient:
+        if not self._supabase:
+            self._supabase = await acreate_client(
+                self.config.supabase_url,
+                self.config.supabase_service_key,
+            )
+        return self._supabase
+
+    async def search(
+        self,
+        query: str,
+        project_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        scopes: list[RAGScope] = None,
+        doc_type_filter: Optional[str] = None,
+        top_k_per_scope: int = 5,
+        similarity_threshold: float = 0.70,
+    ) -> RAGResponse:
+        """
+        Búsqueda semántica con scoping.
+        
+        Si se especifica project_id/client_id → busca en RAG de proyecto.
+        Siempre busca también en RAG general (normativa siempre ayuda).
+        """
+        if scopes is None:
+            scopes = [RAGScope.GENERAL, RAGScope.PROJECT]
+
+        # Generar embedding de la consulta
+        query_embedding = await self._embed(query)
+
+        general_results = []
+        project_results = []
+
+        # Buscar en RAG general (normativa, benchmarks)
+        if RAGScope.GENERAL in scopes:
+            general_results = await self._search_scope(
+                query_embedding=query_embedding,
+                rag_scope=RAGScope.GENERAL,
+                client_id=None,           # el RAG general no tiene client_id
+                project_id=None,
+                doc_type_filter=doc_type_filter,
+                top_k=top_k_per_scope,
+                threshold=similarity_threshold,
+            )
+
+        # Buscar en RAG de proyecto (documentos del cliente)
+        if RAGScope.PROJECT in scopes and (client_id or project_id):
+            project_results = await self._search_scope(
+                query_embedding=query_embedding,
+                rag_scope=RAGScope.PROJECT,
+                client_id=client_id,
+                project_id=project_id,
+                doc_type_filter=doc_type_filter,
+                top_k=top_k_per_scope,
+                threshold=similarity_threshold,
+            )
+
+        all_results = general_results + project_results
+        context_text = self._build_context(query, general_results, project_results)
+
+        return RAGResponse(
+            query=query,
+            results=all_results,
+            general_results=general_results,
+            project_results=project_results,
+            context_text=context_text,
+        )
+
+    async def _search_scope(
+        self,
+        query_embedding: list[float],
+        rag_scope: RAGScope,
+        client_id: Optional[str],
+        project_id: Optional[str],
+        doc_type_filter: Optional[str],
+        top_k: int,
+        threshold: float,
+    ) -> list[RAGSearchResult]:
+        """Búsqueda en una capa específica del RAG."""
+        sb = await self._get_supabase()
+
+        try:
+            # Llamada a la función SQL de búsqueda vectorial con filtro de scope
+            result = await sb.rpc(
+                "search_chunks_scoped",
+                {
+                    "query_embedding": query_embedding,
+                    "rag_scope_filter": rag_scope.value,
+                    "client_id_filter": client_id,
+                    "project_id_filter": project_id,
+                    "doc_type_filter": doc_type_filter,
+                    "match_threshold": threshold,
+                    "match_count": top_k,
+                }
+            ).execute()
+
+            return [
+                RAGSearchResult(
+                    chunk_id=row["chunk_id"],
+                    document_id=row["document_id"],
+                    content=row["contenido"],
+                    chunk_type=row["chunk_type"],
+                    similarity=row["similarity"],
+                    doc_title=row["doc_titulo"],
+                    doc_type=row["doc_tipo"],
+                    rag_scope=rag_scope,
+                    drive_file_id=row.get("drive_file_id"),
+                    metadata=row.get("doc_metadata", {}),
+                )
+                for row in (result.data or [])
+            ]
+        except Exception as e:
+            logger.error(f"Error búsqueda RAG [{rag_scope}]: {e}")
+            return []
+
+    def _build_context(
+        self,
+        query: str,
+        general_results: list[RAGSearchResult],
+        project_results: list[RAGSearchResult],
+    ) -> str:
+        """
+        Construye el contexto para el LLM combinando ambas capas.
+        Etiqueta claramente qué viene de normativa y qué de datos del cliente.
+        Esto es crítico para que el LLM no confunda benchmarks con datos reales.
+        """
+        sections = []
+        sections.append(f"CONSULTA: {query}\n")
+
+        if project_results:
+            sections.append("=" * 60)
+            sections.append("DOCUMENTOS DEL CLIENTE (datos reales del proyecto):")
+            sections.append("=" * 60)
+            for r in project_results:
+                sections.append(
+                    f"\n[{r.doc_type.upper()} | {r.doc_title} | Relevancia: {r.similarity:.2f}]\n"
+                    f"{r.content}\n"
+                )
+
+        if general_results:
+            sections.append("=" * 60)
+            sections.append("BASE DE CONOCIMIENTO GENERAL (normativa y benchmarks):")
+            sections.append("=" * 60)
+            for r in general_results:
+                sections.append(
+                    f"\n[{r.doc_type.upper()} | {r.doc_title} | Relevancia: {r.similarity:.2f}]\n"
+                    f"{r.content}\n"
+                )
+
+        if not general_results and not project_results:
+            sections.append("No se encontraron documentos relevantes para esta consulta.")
+
+        return "\n".join(sections)
+
+    async def _embed(self, text: str) -> list[float]:
+        """Genera embedding de una consulta."""
+        response = await self.openai.embeddings.create(
+            model="text-embedding-3-large",
+            input=text,
+            dimensions=1536,
+        )
+        return response.data[0].embedding
+
+
+class DocumentIngestionRouter:
+    """
+    Decide el rag_scope de cada documento subido.
+    
+    Reglas:
+    - Documentos de normativa (BOE, EUR-Lex, BREFs) → general
+    - Documentos subidos en contexto de un cliente/proyecto → project
+    - Benchmarks de precios de mercado → general
+    - Todo lo demás (AAI, contratos, facturas, excels) → project
+    """
+
+    GENERAL_DOC_TYPES = {
+        "normativa", "bref", "guia_tecnica", "benchmark_precios",
+        "estadistica_sectorial", "plan_nacional", "plan_autonomico",
+    }
+
+    PROJECT_DOC_TYPES = {
+        "autorizacion_ambiental_integrada", "declaracion_anual_residuos",
+        "contrato_gestor", "factura", "registro_produccion",
+        "permiso_ambiental", "manual_interno",
+        "costes_anuales", "inventario_ler", "comparativa_gestores",
+        "presupuesto", "auditoria",
+    }
+
+    def route(
+        self,
+        doc_type: str,
+        client_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        explicit_scope: Optional[RAGScope] = None,
+    ) -> RAGScope:
+        """
+        Determina el scope del documento.
+        El scope explícito siempre prevalece (el usuario puede forzarlo).
+        """
+        if explicit_scope:
+            return explicit_scope
+
+        # Si no hay cliente/proyecto → solo puede ir a general
+        if not client_id and not project_id:
+            return RAGScope.GENERAL
+
+        # Por tipo de documento
+        if doc_type in self.GENERAL_DOC_TYPES:
+            return RAGScope.GENERAL
+
+        if doc_type in self.PROJECT_DOC_TYPES:
+            return RAGScope.PROJECT
+
+        # Por defecto con cliente → proyecto
+        return RAGScope.PROJECT
