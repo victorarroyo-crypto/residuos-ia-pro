@@ -10,8 +10,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# Add parent directory to path so we can import the pipeline package
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure the project root is in the Python path (works locally and in Docker)
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from pipeline import UnifiedIngestionService, PipelineConfigImpl
 
@@ -100,8 +102,8 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "server:app",
+        "api.server:app",
         host="0.0.0.0",
-        port=int(os.environ.get("API_PORT", "8000")),
+        port=int(os.environ.get("PORT", os.environ.get("API_PORT", "8000"))),
         reload=True,
     )
