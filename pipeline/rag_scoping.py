@@ -28,7 +28,7 @@ from enum import Enum
 from typing import Optional
 
 from openai import AsyncOpenAI
-from supabase import AsyncClient, acreate_client
+from supabase._async.client import AsyncClient, create_client as acreate_client
 
 logger = logging.getLogger(__name__)
 
