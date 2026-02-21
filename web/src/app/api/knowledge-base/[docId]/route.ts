@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { loadEnv } from "@/lib/env";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function DELETE(
   _request: NextRequest,
@@ -8,25 +7,17 @@ export async function DELETE(
 ) {
   const { docId } = await params;
 
-  const supabaseUrl =
-    loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-  const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json(
-      { error: "Supabase no configurado." },
-      { status: 503 }
-    );
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({ error: admin.detail }, { status: admin.status });
   }
 
   try {
-    const sb = createClient(supabaseUrl, serviceKey);
-
     // Delete chunks first
-    await sb.from("document_chunks").delete().eq("document_id", docId);
+    await admin.client.from("document_chunks").delete().eq("document_id", docId);
 
     // Delete document
-    const { error } = await sb
+    const { error } = await admin.client
       .from("client_documents")
       .delete()
       .eq("id", docId);

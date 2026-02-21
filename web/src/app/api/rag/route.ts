@@ -1,17 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { loadEnv } from "@/lib/env";
 
 export async function POST(request: NextRequest) {
-  const supabaseUrl =
-    loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-  const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json(
-      { error: "Supabase no configurado en el servidor." },
-      { status: 503 }
-    );
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({ error: admin.detail }, { status: admin.status });
   }
 
   try {
@@ -26,7 +20,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sb = createClient(supabaseUrl, serviceKey);
+    const sb = admin.client;
 
     // Text-based search across document_chunks
     const searchTerms = query

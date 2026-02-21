@@ -1,26 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { loadEnv } from "@/lib/env";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function GET(request: NextRequest) {
-  const supabaseUrl =
-    loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-  const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json(
-      { error: "Supabase no configurado en el servidor." },
-      { status: 503 }
-    );
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({ error: admin.detail }, { status: admin.status });
   }
 
   try {
-    const sb = createClient(supabaseUrl, serviceKey);
     const { searchParams } = new URL(request.url);
     const docType = searchParams.get("doc_type");
     const search = searchParams.get("search");
 
-    let query = sb
+    let query = admin.client
       .from("client_documents")
       .select(
         "id, titulo, tipo, naturaleza_pdf, total_paginas, total_chunks, tablas_encontradas, metadata, estado, fecha_documento, fecha_ingesta"
@@ -37,10 +29,7 @@ export async function GET(request: NextRequest) {
     const { data: documents, error } = await query;
 
     if (error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     return NextResponse.json({ documents: documents || [] });
