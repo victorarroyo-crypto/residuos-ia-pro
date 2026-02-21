@@ -5,19 +5,13 @@ import {
   AlertTriangle,
   TrendingDown,
   ArrowRight,
-  Building2,
   Leaf,
+  Clock,
+  CheckCircle2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
 
 const severityColors: Record<string, "danger" | "warning" | "secondary" | "destructive"> = {
@@ -26,21 +20,6 @@ const severityColors: Record<string, "danger" | "warning" | "secondary" | "destr
   media: "warning",
   baja: "secondary",
 };
-
-function ComplianceDot({ alertCount, hasCritical }: { alertCount: number; hasCritical: boolean }) {
-  const status = hasCritical ? "danger" : alertCount > 0 ? "warning" : "ok";
-  const colors = {
-    ok: "bg-vandarum-green",
-    warning: "bg-vandarum-orange",
-    danger: "bg-red-500",
-  };
-  return (
-    <span
-      className={`inline-block h-3 w-3 rounded-full ${colors[status]}`}
-      title={status === "ok" ? "Cumplimiento OK" : status === "warning" ? "Revisar" : "Alerta"}
-    />
-  );
-}
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -52,7 +31,7 @@ export default async function DashboardPage() {
     { data: savings },
   ] = await Promise.all([
     supabase.from("clients").select("*").order("nombre"),
-    supabase.from("client_documents").select("*"),
+    supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
     supabase.from("compliance_alerts").select("*").order("severidad"),
     supabase.from("savings_opportunities").select("*"),
   ]);
@@ -63,20 +42,13 @@ export default async function DashboardPage() {
   const allSavings = savings ?? [];
 
   const pendingAlerts = allAlerts.filter((a) => a.estado === "pendiente");
+  const criticalAlerts = pendingAlerts.filter((a) => a.severidad === "critica");
   const totalSavings = allSavings.reduce(
     (sum, s) => sum + (s.ahorro_estimado_eur_año ?? 0),
     0
   );
-
-  function getAlertInfo(clientId: string) {
-    const clientAlerts = allAlerts.filter(
-      (a) => a.client_id === clientId && a.estado === "pendiente"
-    );
-    return {
-      count: clientAlerts.length,
-      hasCritical: clientAlerts.some((a) => a.severidad === "critica"),
-    };
-  }
+  const recentDocs = allDocuments.slice(0, 5);
+  const processingDocs = allDocuments.filter((d) => d.estado === "procesando");
 
   return (
     <div className="space-y-8">
@@ -84,7 +56,7 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground">
-            Resumen de tu cartera de clientes y estado de cumplimiento.
+            Resumen ejecutivo de tu cartera de clientes.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-lg bg-gradient-brand px-4 py-2 text-white">
@@ -110,13 +82,14 @@ export default async function DashboardPage() {
 
         <Card className="border-t-2 border-t-vandarum-blue">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Documentos indexados</CardTitle>
+            <CardTitle className="text-sm font-medium">Documentos</CardTitle>
             <FileText className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{allDocuments.length}</div>
             <p className="text-xs text-muted-foreground">
               {allDocuments.filter((d) => d.estado === "indexado").length} procesados
+              {processingDocs.length > 0 && `, ${processingDocs.length} en curso`}
             </p>
           </CardContent>
         </Card>
@@ -129,7 +102,9 @@ export default async function DashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{pendingAlerts.length}</div>
             <p className="text-xs text-muted-foreground">
-              {pendingAlerts.filter((a) => a.severidad === "critica").length} criticas
+              {criticalAlerts.length > 0
+                ? `${criticalAlerts.length} criticas`
+                : "ninguna critica"}
             </p>
           </CardContent>
         </Card>
@@ -150,118 +125,139 @@ export default async function DashboardPage() {
         </Card>
       </div>
 
-      {/* Clients table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <Building2 className="h-5 w-5 text-vandarum-teal" />
-            Clientes
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {allClients.length === 0 ? (
-            <p className="py-8 text-center text-muted-foreground">
-              No hay clientes registrados. Crea tu primer cliente para empezar.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8">Estado</TableHead>
-                  <TableHead>Cliente</TableHead>
-                  <TableHead>Sector</TableHead>
-                  <TableHead>CCAA</TableHead>
-                  <TableHead>Relacion</TableHead>
-                  <TableHead className="text-center">Alertas</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {allClients.map((client) => {
-                  const { count: alertCount, hasCritical } = getAlertInfo(client.id);
+      {/* Two-column layout: Alerts + Recent docs */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Urgent alerts */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
+              Alertas urgentes
+            </CardTitle>
+            {pendingAlerts.length > 5 && (
+              <span className="text-xs text-muted-foreground">
+                Mostrando 5 de {pendingAlerts.length}
+              </span>
+            )}
+          </CardHeader>
+          <CardContent>
+            {pendingAlerts.length === 0 ? (
+              <div className="flex flex-col items-center py-6 text-center">
+                <CheckCircle2 className="h-8 w-8 text-vandarum-green mb-2" />
+                <p className="text-sm text-muted-foreground">
+                  No hay alertas pendientes. Todo en orden.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {pendingAlerts.slice(0, 5).map((alert) => {
+                  const client = allClients.find((c) => c.id === alert.client_id);
                   return (
-                    <TableRow key={client.id}>
-                      <TableCell>
-                        <ComplianceDot alertCount={alertCount} hasCritical={hasCritical} />
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        <Link
-                          href={`/dashboard/client/${client.id}`}
-                          className="text-vandarum-teal hover:underline"
-                        >
-                          {client.nombre}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {client.sector}
-                      </TableCell>
-                      <TableCell>{client.comunidad_autonoma}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="capitalize">
-                          {client.tipo_relacion}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {alertCount > 0 ? (
-                          <Badge variant="danger">{alertCount}</Badge>
-                        ) : (
-                          <span className="text-muted-foreground">&mdash;</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/dashboard/client/${client.id}`}
-                          className="inline-flex items-center gap-1 text-sm text-vandarum-teal hover:underline"
-                        >
-                          Ver <ArrowRight className="h-3 w-3" />
-                        </Link>
-                      </TableCell>
-                    </TableRow>
+                    <Link
+                      key={alert.id}
+                      href={`/dashboard/client/${alert.client_id}`}
+                      className="flex items-start gap-3 rounded-md border p-3 transition-colors hover:bg-secondary"
+                    >
+                      <Badge variant={severityColors[alert.severidad]}>
+                        {alert.severidad}
+                      </Badge>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{alert.descripcion}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>{client?.nombre}</span>
+                          {alert.fecha_limite && (
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              {alert.fecha_limite}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                    </Link>
                   );
                 })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-      {/* Recent alerts */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
-            Alertas recientes
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {pendingAlerts.length === 0 ? (
-            <p className="py-4 text-center text-muted-foreground">
-              No hay alertas pendientes.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {pendingAlerts.slice(0, 5).map((alert) => {
-                const client = allClients.find((c) => c.id === alert.client_id);
-                return (
-                  <div
-                    key={alert.id}
-                    className="flex items-start gap-3 rounded-md border p-3"
-                  >
-                    <Badge variant={severityColors[alert.severidad]}>
-                      {alert.severidad}
-                    </Badge>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">{alert.descripcion}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {client?.nombre}
-                        {alert.fecha_limite && ` \u2014 Limite: ${alert.fecha_limite}`}
-                      </p>
+        {/* Recent documents */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <FileText className="h-5 w-5 text-vandarum-blue" />
+              Documentos recientes
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {recentDocs.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                Sin documentos procesados todavia.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {recentDocs.map((doc) => {
+                  const client = allClients.find((c) => c.id === doc.client_id);
+                  return (
+                    <div
+                      key={doc.id}
+                      className="flex items-center gap-3 rounded-md border p-3"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{doc.titulo}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          {client && <span>{client.nombre}</span>}
+                          {doc.tipo && (
+                            <Badge variant="outline" className="text-xs">
+                              {doc.tipo}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <Badge
+                        variant={
+                          doc.estado === "indexado"
+                            ? "success"
+                            : doc.estado === "error"
+                            ? "destructive"
+                            : "secondary"
+                        }
+                      >
+                        {doc.estado}
+                      </Badge>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Quick actions */}
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex flex-wrap gap-3">
+            <Link href="/dashboard/clients/new">
+              <Button>
+                <Users className="mr-2 h-4 w-4" />
+                Nuevo cliente
+              </Button>
+            </Link>
+            <Link href="/dashboard/clients">
+              <Button variant="outline">
+                <ArrowRight className="mr-2 h-4 w-4" />
+                Ver clientes
+              </Button>
+            </Link>
+            <Link href="/dashboard/knowledge-base">
+              <Button variant="outline">
+                <FileText className="mr-2 h-4 w-4" />
+                Base de conocimiento
+              </Button>
+            </Link>
+          </div>
         </CardContent>
       </Card>
     </div>
