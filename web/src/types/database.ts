@@ -5,52 +5,74 @@ export type Database = {
         Row: Client;
         Insert: Omit<Client, "id">;
         Update: Partial<Client>;
+        Relationships: [];
       };
       projects: {
         Row: Project;
         Insert: Omit<Project, "id">;
         Update: Partial<Project>;
+        Relationships: [];
       };
       waste_inventory: {
         Row: WasteInventoryItem;
         Insert: Omit<WasteInventoryItem, "id">;
         Update: Partial<WasteInventoryItem>;
+        Relationships: [];
       };
       client_documents: {
         Row: ClientDocument;
         Insert: ClientDocument;
         Update: Partial<ClientDocument>;
+        Relationships: [];
       };
       document_chunks: {
         Row: DocumentChunk;
         Insert: DocumentChunk;
         Update: Partial<DocumentChunk>;
+        Relationships: [];
       };
       compliance_alerts: {
         Row: ComplianceAlert;
         Insert: Omit<ComplianceAlert, "id">;
         Update: Partial<ComplianceAlert>;
+        Relationships: [];
       };
       pipeline_progress: {
         Row: PipelineProgress;
         Insert: PipelineProgress;
         Update: Partial<PipelineProgress>;
+        Relationships: [];
       };
       savings_opportunities: {
         Row: SavingsOpportunity;
         Insert: Omit<SavingsOpportunity, "id">;
         Update: Partial<SavingsOpportunity>;
+        Relationships: [];
       };
       waste_managers: {
         Row: WasteManager;
         Insert: Omit<WasteManager, "id">;
         Update: Partial<WasteManager>;
+        Relationships: [];
       };
       contracts: {
         Row: Contract;
         Insert: Omit<Contract, "id">;
         Update: Partial<Contract>;
+        Relationships: [];
       };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      [_ in never]: never;
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
     };
   };
 };

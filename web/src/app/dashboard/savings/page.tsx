@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   TrendingDown,
@@ -10,11 +10,13 @@ import {
   Lightbulb,
   ArrowRight,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { mockSavings, mockClients } from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/client";
+import type { SavingsOpportunity, Client } from "@/types/database";
 
 const estadoColors: Record<string, "secondary" | "default" | "success" | "outline"> = {
   detectada: "secondary",
@@ -31,11 +33,26 @@ export default function SavingsPage() {
   const [search, setSearch] = useState("");
   const [filterTipo, setFilterTipo] = useState<FilterTipo>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
+  const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const tipos = Array.from(new Set(mockSavings.map((s) => s.tipo)));
+  useEffect(() => {
+    const supabase = createClient();
+    Promise.all([
+      supabase.from("savings_opportunities").select("*"),
+      supabase.from("clients").select("id, nombre"),
+    ]).then(([savingsRes, clientsRes]) => {
+      setSavings(savingsRes.data ?? []);
+      setClients(clientsRes.data as Client[] ?? []);
+      setLoading(false);
+    });
+  }, []);
 
-  const filtered = mockSavings.filter((s) => {
-    const client = mockClients.find((c) => c.id === s.client_id);
+  const tipos = Array.from(new Set(savings.map((s) => s.tipo)));
+
+  const filtered = savings.filter((s) => {
+    const client = clients.find((c) => c.id === s.client_id);
     const matchSearch =
       search === "" ||
       s.descripcion.toLowerCase().includes(search.toLowerCase()) ||
@@ -45,22 +62,30 @@ export default function SavingsPage() {
     return matchSearch && matchTipo && matchEstado;
   });
 
-  const totalSavings = mockSavings.reduce(
+  const totalSavings = savings.reduce(
     (sum, s) => sum + (s.ahorro_estimado_eur_año ?? 0),
     0
   );
-  const iaCount = mockSavings.filter((s) => s.ia_generada).length;
-  const totalInversion = mockSavings.reduce(
+  const iaCount = savings.filter((s) => s.ia_generada).length;
+  const totalInversion = savings.reduce(
     (sum, s) => sum + (s.inversion_necesaria ?? 0),
     0
   );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Ahorros</h1>
         <p className="text-muted-foreground">
-          Oportunidades de ahorro y optimización detectadas en tu cartera.
+          Oportunidades de ahorro y optimizacion detectadas en tu cartera.
         </p>
       </div>
 
@@ -87,7 +112,7 @@ export default function SavingsPage() {
             <Lightbulb className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{mockSavings.length}</div>
+            <div className="text-2xl font-bold">{savings.length}</div>
             <p className="text-xs text-muted-foreground">
               {filtered.length} con filtros actuales
             </p>
@@ -102,14 +127,14 @@ export default function SavingsPage() {
           <CardContent>
             <div className="text-2xl font-bold">{iaCount}</div>
             <p className="text-xs text-muted-foreground">
-              de {mockSavings.length} totales
+              de {savings.length} totales
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Inversión necesaria</CardTitle>
+            <CardTitle className="text-sm font-medium">Inversion necesaria</CardTitle>
             <TrendingDown className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
@@ -131,7 +156,7 @@ export default function SavingsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar por descripción o cliente..."
+                placeholder="Buscar por descripcion o cliente..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
@@ -179,12 +204,14 @@ export default function SavingsPage() {
         <CardContent>
           {filtered.length === 0 ? (
             <p className="py-8 text-center text-muted-foreground">
-              No se encontraron oportunidades con esos filtros.
+              {savings.length === 0
+                ? "No hay oportunidades de ahorro detectadas aun."
+                : "No se encontraron oportunidades con esos filtros."}
             </p>
           ) : (
             <div className="space-y-4">
               {filtered.map((opp) => {
-                const client = mockClients.find((c) => c.id === opp.client_id);
+                const client = clients.find((c) => c.id === opp.client_id);
                 return (
                   <div
                     key={opp.id}
@@ -223,7 +250,7 @@ export default function SavingsPage() {
                       </p>
                       {opp.inversion_necesaria !== null && opp.inversion_necesaria > 0 && (
                         <p className="text-xs text-muted-foreground">
-                          Inversión: {opp.inversion_necesaria.toLocaleString("es-ES")} EUR
+                          Inversion: {opp.inversion_necesaria.toLocaleString("es-ES")} EUR
                         </p>
                       )}
                       {opp.payback_meses !== null && opp.payback_meses > 0 && (

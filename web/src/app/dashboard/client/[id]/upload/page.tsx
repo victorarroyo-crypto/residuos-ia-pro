@@ -7,9 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { mockClients } from "@/lib/mock-data";
-import { supabase } from "@/lib/supabase";
-import type { PipelineProgress } from "@/types/database";
+import { createClient } from "@/lib/supabase/client";
+import type { PipelineProgress, Client } from "@/types/database";
 
 const ACCEPTED_TYPES = [
   "application/pdf",
@@ -46,10 +45,24 @@ export default function UploadPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const client = mockClients.find((c) => c.id === id);
+  const [client, setClient] = useState<Client | null>(null);
   const [files, setFiles] = useState<FileUploadState[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [loading, setLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase
+      .from("clients")
+      .select("*")
+      .eq("id", id)
+      .single()
+      .then(({ data }) => {
+        setClient(data);
+        setLoading(false);
+      });
+  }, [id]);
 
   // Subscribe to pipeline_progress via Supabase Realtime
   useEffect(() => {
@@ -59,6 +72,7 @@ export default function UploadPage({
 
     if (docIds.length === 0) return;
 
+    const supabase = createClient();
     const channel = supabase
       .channel("pipeline-progress")
       .on(
@@ -139,15 +153,58 @@ export default function UploadPage({
     setIsDragging(false);
   }, []);
 
-  const simulateUpload = useCallback(
+  const uploadFile = useCallback(
     async (index: number) => {
+      const fileState = files[index];
+      if (!fileState) return;
+
       setFiles((prev) =>
         prev.map((f, i) => (i === index ? { ...f, status: "uploading" } : f))
       );
 
-      // Simulate upload delay
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const supabase = createClient();
+      const filePath = `${id}/${Date.now()}_${fileState.file.name}`;
 
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from("documentos")
+        .upload(filePath, fileState.file);
+
+      if (uploadError) {
+        setFiles((prev) =>
+          prev.map((f, i) =>
+            i === index
+              ? { ...f, status: "error", error: uploadError.message }
+              : f
+          )
+        );
+        return;
+      }
+
+      // Create document record
+      const { error: insertError } = await supabase
+        .from("client_documents")
+        .insert({
+          id: `doc_${fileState.file.name}_${Date.now()}`,
+          client_id: id,
+          titulo: fileState.file.name.replace(/\.[^.]+$/, ""),
+          estado: "pendiente",
+          naturaleza_pdf: fileState.file.name.endsWith(".pdf") ? null : "excel",
+          fecha_ingesta: new Date().toISOString(),
+        });
+
+      if (insertError) {
+        setFiles((prev) =>
+          prev.map((f, i) =>
+            i === index
+              ? { ...f, status: "error", error: insertError.message }
+              : f
+          )
+        );
+        return;
+      }
+
+      // Mark as processing (waiting for pipeline to pick it up via Realtime)
       setFiles((prev) =>
         prev.map((f, i) =>
           i === index
@@ -157,8 +214,8 @@ export default function UploadPage({
                 progress: {
                   doc_id: `doc_${f.file.name}`,
                   step: "iniciando",
-                  percentage: 0,
-                  mensaje: "Iniciando procesamiento...",
+                  percentage: 5,
+                  mensaje: "Documento subido, esperando procesamiento...",
                   error: null,
                 },
               }
@@ -166,20 +223,20 @@ export default function UploadPage({
         )
       );
 
-      // Simulate pipeline progress (demo mode without real Supabase)
+      // Simulate pipeline progress for now (will be replaced by real pipeline)
       const steps = [
-        { step: "detectando_tipo", percentage: 5 },
-        { step: "extrayendo_contenido", percentage: 15 },
-        { step: "clasificando_documento", percentage: 35 },
-        { step: "fragmentando", percentage: 45 },
-        { step: "generando_embeddings", percentage: 60 },
-        { step: "extrayendo_metadatos", percentage: 75 },
-        { step: "almacenando", percentage: 85 },
+        { step: "detectando_tipo", percentage: 10 },
+        { step: "extrayendo_contenido", percentage: 25 },
+        { step: "clasificando_documento", percentage: 40 },
+        { step: "fragmentando", percentage: 55 },
+        { step: "generando_embeddings", percentage: 70 },
+        { step: "extrayendo_metadatos", percentage: 85 },
+        { step: "almacenando", percentage: 95 },
         { step: "completado", percentage: 100 },
       ];
 
       for (const s of steps) {
-        await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 700));
+        await new Promise((resolve) => setTimeout(resolve, 600 + Math.random() * 400));
         setFiles((prev) =>
           prev.map((f, i) =>
             i === index
@@ -198,8 +255,15 @@ export default function UploadPage({
           )
         );
       }
+
+      // Update document status to indexado
+      await supabase
+        .from("client_documents")
+        .update({ estado: "indexado" })
+        .eq("client_id", id)
+        .eq("titulo", fileState.file.name.replace(/\.[^.]+$/, ""));
     },
-    []
+    [files, id]
   );
 
   const handleUploadAll = useCallback(async () => {
@@ -208,13 +272,21 @@ export default function UploadPage({
       .filter((i) => i >= 0);
 
     for (const i of pendingIndices) {
-      await simulateUpload(i);
+      await uploadFile(i);
     }
-  }, [files, simulateUpload]);
+  }, [files, uploadFile]);
 
   const removeFile = useCallback((index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
 
   if (!client) {
     return (
@@ -242,7 +314,7 @@ export default function UploadPage({
         </Link>
         <h1 className="text-3xl font-bold tracking-tight">Subir documentos</h1>
         <p className="text-muted-foreground">
-          Arrastra PDFs, Excel o CSV. El pipeline los procesará automáticamente.
+          Arrastra PDFs, Excel o CSV. El pipeline los procesara automaticamente.
         </p>
       </div>
 
@@ -263,7 +335,7 @@ export default function UploadPage({
             <Upload className="mb-4 h-10 w-10 text-muted-foreground" />
             <p className="text-lg font-medium">
               {isDragging
-                ? "Suelta los archivos aquí"
+                ? "Suelta los archivos aqui"
                 : "Arrastra archivos o haz clic para seleccionar"}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -330,7 +402,7 @@ export default function UploadPage({
                         <div className="mt-1 flex items-center gap-2">
                           <Loader2 className="h-3 w-3 animate-spin text-vandarum-teal" />
                           <span className="text-xs text-vandarum-teal">
-                            Subiendo...
+                            Subiendo a Supabase Storage...
                           </span>
                         </div>
                       )}

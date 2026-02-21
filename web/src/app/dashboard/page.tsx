@@ -1,5 +1,3 @@
-"use client";
-
 import Link from "next/link";
 import {
   Users,
@@ -20,14 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  mockClients,
-  mockAlerts,
-  mockSavings,
-  mockDocuments,
-  getClientComplianceStatus,
-  getClientAlertCount,
-} from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/server";
 
 const severityColors: Record<string, "danger" | "warning" | "secondary" | "destructive"> = {
   critica: "destructive",
@@ -36,7 +27,8 @@ const severityColors: Record<string, "danger" | "warning" | "secondary" | "destr
   baja: "secondary",
 };
 
-function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
+function ComplianceDot({ alertCount, hasCritical }: { alertCount: number; hasCritical: boolean }) {
+  const status = hasCritical ? "danger" : alertCount > 0 ? "warning" : "ok";
   const colors = {
     ok: "bg-vandarum-green",
     warning: "bg-vandarum-orange",
@@ -50,17 +42,45 @@ function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   );
 }
 
-export default function DashboardPage() {
-  const activeClients = mockClients.filter((c) => c.activo);
-  const pendingAlerts = mockAlerts.filter((a) => a.estado === "pendiente");
-  const totalSavings = mockSavings.reduce(
+export default async function DashboardPage() {
+  const supabase = await createClient();
+
+  const [
+    { data: clients },
+    { data: documents },
+    { data: alerts },
+    { data: savings },
+  ] = await Promise.all([
+    supabase.from("clients").select("*").order("nombre"),
+    supabase.from("client_documents").select("*"),
+    supabase.from("compliance_alerts").select("*").order("severidad"),
+    supabase.from("savings_opportunities").select("*"),
+  ]);
+
+  const allClients = clients ?? [];
+  const allDocuments = documents ?? [];
+  const allAlerts = alerts ?? [];
+  const allSavings = savings ?? [];
+
+  const activeClients = allClients.filter((c) => c.activo);
+  const pendingAlerts = allAlerts.filter((a) => a.estado === "pendiente");
+  const totalSavings = allSavings.reduce(
     (sum, s) => sum + (s.ahorro_estimado_eur_año ?? 0),
     0
   );
 
+  function getAlertInfo(clientId: string) {
+    const clientAlerts = allAlerts.filter(
+      (a) => a.client_id === clientId && a.estado === "pendiente"
+    );
+    return {
+      count: clientAlerts.length,
+      hasCritical: clientAlerts.some((a) => a.severidad === "critica"),
+    };
+  }
+
   return (
     <div className="space-y-8">
-      {/* Welcome header with brand accent */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
@@ -84,7 +104,7 @@ export default function DashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{activeClients.length}</div>
             <p className="text-xs text-muted-foreground">
-              {mockClients.length} total en cartera
+              {allClients.length} total en cartera
             </p>
           </CardContent>
         </Card>
@@ -95,9 +115,9 @@ export default function DashboardPage() {
             <FileText className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{mockDocuments.length}</div>
+            <div className="text-2xl font-bold">{allDocuments.length}</div>
             <p className="text-xs text-muted-foreground">
-              {mockDocuments.filter((d) => d.estado === "indexado").length} procesados
+              {allDocuments.filter((d) => d.estado === "indexado").length} procesados
             </p>
           </CardContent>
         </Card>
@@ -125,7 +145,7 @@ export default function DashboardPage() {
               {totalSavings.toLocaleString("es-ES")} EUR/a
             </div>
             <p className="text-xs text-muted-foreground">
-              {mockSavings.length} oportunidades detectadas
+              {allSavings.length} oportunidades detectadas
             </p>
           </CardContent>
         </Card>
@@ -140,69 +160,74 @@ export default function DashboardPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-8">Estado</TableHead>
-                <TableHead>Cliente</TableHead>
-                <TableHead>Sector</TableHead>
-                <TableHead>CCAA</TableHead>
-                <TableHead>Relacion</TableHead>
-                <TableHead className="text-center">Alertas</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {mockClients.map((client) => {
-                const status = getClientComplianceStatus(client.id);
-                const alertCount = getClientAlertCount(client.id);
-                return (
-                  <TableRow key={client.id}>
-                    <TableCell>
-                      <ComplianceDot status={status} />
-                    </TableCell>
-                    <TableCell className="font-medium">
-                      <Link
-                        href={`/dashboard/client/${client.id}`}
-                        className="text-vandarum-teal hover:underline"
-                      >
-                        {client.nombre}
-                      </Link>
-                      {!client.activo && (
-                        <Badge variant="secondary" className="ml-2">
-                          Inactivo
+          {allClients.length === 0 ? (
+            <p className="py-8 text-center text-muted-foreground">
+              No hay clientes registrados. Crea tu primer cliente para empezar.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8">Estado</TableHead>
+                  <TableHead>Cliente</TableHead>
+                  <TableHead>Sector</TableHead>
+                  <TableHead>CCAA</TableHead>
+                  <TableHead>Relacion</TableHead>
+                  <TableHead className="text-center">Alertas</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {allClients.map((client) => {
+                  const { count: alertCount, hasCritical } = getAlertInfo(client.id);
+                  return (
+                    <TableRow key={client.id}>
+                      <TableCell>
+                        <ComplianceDot alertCount={alertCount} hasCritical={hasCritical} />
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        <Link
+                          href={`/dashboard/client/${client.id}`}
+                          className="text-vandarum-teal hover:underline"
+                        >
+                          {client.nombre}
+                        </Link>
+                        {!client.activo && (
+                          <Badge variant="secondary" className="ml-2">
+                            Inactivo
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {client.sector}
+                      </TableCell>
+                      <TableCell>{client.comunidad}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="capitalize">
+                          {client.tipo_relacion}
                         </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {client.sector}
-                    </TableCell>
-                    <TableCell>{client.comunidad}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="capitalize">
-                        {client.tipo_relacion}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {alertCount > 0 ? (
-                        <Badge variant="danger">{alertCount}</Badge>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Link
-                        href={`/dashboard/client/${client.id}`}
-                        className="inline-flex items-center gap-1 text-sm text-vandarum-teal hover:underline"
-                      >
-                        Ver <ArrowRight className="h-3 w-3" />
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {alertCount > 0 ? (
+                          <Badge variant="danger">{alertCount}</Badge>
+                        ) : (
+                          <span className="text-muted-foreground">&mdash;</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Link
+                          href={`/dashboard/client/${client.id}`}
+                          className="inline-flex items-center gap-1 text-sm text-vandarum-teal hover:underline"
+                        >
+                          Ver <ArrowRight className="h-3 w-3" />
+                        </Link>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -215,28 +240,34 @@ export default function DashboardPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            {pendingAlerts.slice(0, 5).map((alert) => {
-              const client = mockClients.find((c) => c.id === alert.client_id);
-              return (
-                <div
-                  key={alert.id}
-                  className="flex items-start gap-3 rounded-md border p-3"
-                >
-                  <Badge variant={severityColors[alert.severidad]}>
-                    {alert.severidad}
-                  </Badge>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">{alert.descripcion}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {client?.nombre}
-                      {alert.fecha_limite && ` \u2014 Limite: ${alert.fecha_limite}`}
-                    </p>
+          {pendingAlerts.length === 0 ? (
+            <p className="py-4 text-center text-muted-foreground">
+              No hay alertas pendientes.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {pendingAlerts.slice(0, 5).map((alert) => {
+                const client = allClients.find((c) => c.id === alert.client_id);
+                return (
+                  <div
+                    key={alert.id}
+                    className="flex items-start gap-3 rounded-md border p-3"
+                  >
+                    <Badge variant={severityColors[alert.severidad]}>
+                      {alert.severidad}
+                    </Badge>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">{alert.descripcion}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {client?.nombre}
+                        {alert.fecha_limite && ` \u2014 Limite: ${alert.fecha_limite}`}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
