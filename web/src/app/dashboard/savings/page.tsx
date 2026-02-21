@@ -69,10 +69,10 @@ export default function SavingsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ahorro total potencial</CardTitle>
-            <Euro className="h-4 w-4 text-muted-foreground" />
+            <Euro className="h-4 w-4 text-vandarum-green" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-primary">
+            <div className="text-2xl font-bold text-vandarum-green">
               {totalSavings.toLocaleString("es-ES")} EUR/a
             </div>
             <p className="text-xs text-muted-foreground">
@@ -84,7 +84,7 @@ export default function SavingsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Oportunidades</CardTitle>
-            <Lightbulb className="h-4 w-4 text-muted-foreground" />
+            <Lightbulb className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{mockSavings.length}</div>
@@ -97,7 +97,7 @@ export default function SavingsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Generadas por IA</CardTitle>
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            <Sparkles className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{iaCount}</div>
@@ -110,7 +110,7 @@ export default function SavingsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Inversión necesaria</CardTitle>
-            <TrendingDown className="h-4 w-4 text-muted-foreground" />
+            <TrendingDown className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -134,7 +134,7 @@ export default function SavingsPage() {
                 placeholder="Buscar por descripción o cliente..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -172,7 +172,7 @@ export default function SavingsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <TrendingDown className="h-5 w-5" />
+            <TrendingDown className="h-5 w-5 text-vandarum-green" />
             {filtered.length} oportunidad{filtered.length !== 1 ? "es" : ""}
           </CardTitle>
         </CardHeader>
@@ -188,7 +188,7 @@ export default function SavingsPage() {
                 return (
                   <div
                     key={opp.id}
-                    className="flex items-start gap-4 rounded-lg border p-4 transition-colors hover:bg-accent/50"
+                    className="flex items-start gap-4 rounded-lg border p-4 transition-colors hover:bg-secondary"
                   >
                     <div className="flex-1 space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
@@ -218,7 +218,7 @@ export default function SavingsPage() {
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-2">
-                      <p className="text-lg font-bold text-primary">
+                      <p className="text-lg font-bold text-vandarum-green">
                         {opp.ahorro_estimado_eur_año?.toLocaleString("es-ES")} EUR/a
                       </p>
                       {opp.inversion_necesaria !== null && opp.inversion_necesaria > 0 && (

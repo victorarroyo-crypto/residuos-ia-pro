@@ -80,7 +80,7 @@ export default function DocumentsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total documentos</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground" />
+            <FileText className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{mockDocuments.length}</div>
@@ -93,7 +93,7 @@ export default function DocumentsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Páginas procesadas</CardTitle>
-            <Eye className="h-4 w-4 text-muted-foreground" />
+            <Eye className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{totalPages}</div>
@@ -106,7 +106,7 @@ export default function DocumentsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Chunks generados</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground" />
+            <FileText className="h-4 w-4 text-vandarum-green" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{totalChunks}</div>
@@ -119,7 +119,7 @@ export default function DocumentsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Tablas extraídas</CardTitle>
-            <Calendar className="h-4 w-4 text-muted-foreground" />
+            <Calendar className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -143,7 +143,7 @@ export default function DocumentsPage() {
                 placeholder="Buscar por título o cliente..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -179,7 +179,7 @@ export default function DocumentsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <FileText className="h-5 w-5" />
+            <FileText className="h-5 w-5 text-vandarum-blue" />
             {filtered.length} documento{filtered.length !== 1 ? "s" : ""}
           </CardTitle>
         </CardHeader>
@@ -215,7 +215,7 @@ export default function DocumentsPage() {
                         {client ? (
                           <Link
                             href={`/dashboard/client/${client.id}`}
-                            className="text-sm hover:underline"
+                            className="text-sm text-vandarum-teal hover:underline"
                           >
                             {client.nombre}
                           </Link>

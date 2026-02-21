@@ -8,6 +8,7 @@ import {
   TrendingDown,
   ArrowRight,
   Building2,
+  Leaf,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -37,8 +38,8 @@ const severityColors: Record<string, "danger" | "warning" | "secondary" | "destr
 
 function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   const colors = {
-    ok: "bg-green-500",
-    warning: "bg-yellow-500",
+    ok: "bg-vandarum-green",
+    warning: "bg-vandarum-orange",
     danger: "bg-red-500",
   };
   return (
@@ -59,19 +60,26 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">
-          Resumen de tu cartera de clientes y estado de cumplimiento.
-        </p>
+      {/* Welcome header with brand accent */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground">
+            Resumen de tu cartera de clientes y estado de cumplimiento.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg bg-gradient-brand px-4 py-2 text-white">
+          <Leaf className="h-4 w-4" />
+          <span className="text-sm font-medium">vandarum</span>
+        </div>
       </div>
 
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-teal">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Clientes activos</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
+            <Users className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{activeClients.length}</div>
@@ -81,10 +89,10 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-blue">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Documentos indexados</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground" />
+            <FileText className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{mockDocuments.length}</div>
@@ -94,23 +102,23 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-orange">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Alertas pendientes</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+            <AlertTriangle className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{pendingAlerts.length}</div>
             <p className="text-xs text-muted-foreground">
-              {pendingAlerts.filter((a) => a.severidad === "critica").length} críticas
+              {pendingAlerts.filter((a) => a.severidad === "critica").length} criticas
             </p>
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-green">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ahorro potencial</CardTitle>
-            <TrendingDown className="h-4 w-4 text-muted-foreground" />
+            <TrendingDown className="h-4 w-4 text-vandarum-green" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -127,7 +135,7 @@ export default function DashboardPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <Building2 className="h-5 w-5" />
+            <Building2 className="h-5 w-5 text-vandarum-teal" />
             Clientes
           </CardTitle>
         </CardHeader>
@@ -139,7 +147,7 @@ export default function DashboardPage() {
                 <TableHead>Cliente</TableHead>
                 <TableHead>Sector</TableHead>
                 <TableHead>CCAA</TableHead>
-                <TableHead>Relación</TableHead>
+                <TableHead>Relacion</TableHead>
                 <TableHead className="text-center">Alertas</TableHead>
                 <TableHead />
               </TableRow>
@@ -156,7 +164,7 @@ export default function DashboardPage() {
                     <TableCell className="font-medium">
                       <Link
                         href={`/dashboard/client/${client.id}`}
-                        className="hover:underline"
+                        className="text-vandarum-teal hover:underline"
                       >
                         {client.nombre}
                       </Link>
@@ -179,13 +187,13 @@ export default function DashboardPage() {
                       {alertCount > 0 ? (
                         <Badge variant="danger">{alertCount}</Badge>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">&mdash;</span>
                       )}
                     </TableCell>
                     <TableCell>
                       <Link
                         href={`/dashboard/client/${client.id}`}
-                        className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                        className="inline-flex items-center gap-1 text-sm text-vandarum-teal hover:underline"
                       >
                         Ver <ArrowRight className="h-3 w-3" />
                       </Link>
@@ -202,7 +210,7 @@ export default function DashboardPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <AlertTriangle className="h-5 w-5" />
+            <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
             Alertas recientes
           </CardTitle>
         </CardHeader>
@@ -222,7 +230,7 @@ export default function DashboardPage() {
                     <p className="text-sm font-medium">{alert.descripcion}</p>
                     <p className="text-xs text-muted-foreground">
                       {client?.nombre}
-                      {alert.fecha_limite && ` — Límite: ${alert.fecha_limite}`}
+                      {alert.fecha_limite && ` \u2014 Limite: ${alert.fecha_limite}`}
                     </p>
                   </div>
                 </div>

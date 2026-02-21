@@ -59,8 +59,8 @@ const severityColors: Record<string, "danger" | "warning" | "secondary" | "destr
 
 function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   const colors = {
-    ok: "bg-green-500",
-    warning: "bg-yellow-500",
+    ok: "bg-vandarum-green",
+    warning: "bg-vandarum-orange",
     danger: "bg-red-500",
   };
   const labels = { ok: "Cumplimiento OK", warning: "Revisar", danger: "Alerta" };
@@ -84,7 +84,7 @@ export default function ClientDetailPage({
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <p className="text-lg text-muted-foreground">Cliente no encontrado</p>
-        <Link href="/dashboard" className="mt-4 text-primary hover:underline">
+        <Link href="/dashboard" className="mt-4 text-vandarum-teal hover:underline">
           Volver al dashboard
         </Link>
       </div>
@@ -143,10 +143,10 @@ export default function ClientDetailPage({
 
       {/* KPI cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-teal">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Residuos registrados</CardTitle>
-            <Package className="h-4 w-4 text-muted-foreground" />
+            <Package className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{inventory.length}</div>
@@ -156,10 +156,10 @@ export default function ClientDetailPage({
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-blue">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Coste anual gestión</CardTitle>
-            <Calendar className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Coste anual gestion</CardTitle>
+            <Calendar className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -174,10 +174,10 @@ export default function ClientDetailPage({
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-orange">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Alertas</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+            <AlertTriangle className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -187,10 +187,10 @@ export default function ClientDetailPage({
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-t-2 border-t-vandarum-green">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ahorro potencial</CardTitle>
-            <TrendingDown className="h-4 w-4 text-muted-foreground" />
+            <TrendingDown className="h-4 w-4 text-vandarum-green" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
@@ -207,7 +207,7 @@ export default function ClientDetailPage({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <Package className="h-5 w-5" />
+            <Package className="h-5 w-5 text-vandarum-teal" />
             Inventario de residuos
           </CardTitle>
         </CardHeader>
@@ -220,12 +220,12 @@ export default function ClientDetailPage({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Código LER</TableHead>
-                  <TableHead>Descripción</TableHead>
+                  <TableHead>Codigo LER</TableHead>
+                  <TableHead>Descripcion</TableHead>
                   <TableHead>Peligroso</TableHead>
-                  <TableHead className="text-right">t/año</TableHead>
+                  <TableHead className="text-right">t/a&ntilde;o</TableHead>
                   <TableHead className="text-right">EUR/t</TableHead>
-                  <TableHead>Operación</TableHead>
+                  <TableHead>Operacion</TableHead>
                   <TableHead>Gestor</TableHead>
                 </TableRow>
               </TableHeader>
@@ -240,7 +240,7 @@ export default function ClientDetailPage({
                     </TableCell>
                     <TableCell>
                       {item.peligroso ? (
-                        <Badge variant="danger">Sí</Badge>
+                        <Badge variant="danger">Si</Badge>
                       ) : (
                         <span className="text-muted-foreground">No</span>
                       )}
@@ -269,7 +269,7 @@ export default function ClientDetailPage({
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-lg">
-            <FileText className="h-5 w-5" />
+            <FileText className="h-5 w-5 text-vandarum-blue" />
             Documentos ({documents.length})
           </CardTitle>
           <Link href={`/dashboard/client/${id}/upload`}>
@@ -288,11 +288,11 @@ export default function ClientDetailPage({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Título</TableHead>
+                  <TableHead>Titulo</TableHead>
                   <TableHead>Tipo</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead>Formato</TableHead>
-                  <TableHead className="text-right">Páginas</TableHead>
+                  <TableHead className="text-right">Paginas</TableHead>
                   <TableHead className="text-right">Chunks</TableHead>
                   <TableHead>Fecha doc</TableHead>
                 </TableRow>
@@ -305,7 +305,7 @@ export default function ClientDetailPage({
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">
-                        {doc.tipo ? docTypeLabels[doc.tipo] ?? doc.tipo : "—"}
+                        {doc.tipo ? docTypeLabels[doc.tipo] ?? doc.tipo : "\u2014"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -325,13 +325,13 @@ export default function ClientDetailPage({
                       {doc.naturaleza_pdf}
                     </TableCell>
                     <TableCell className="text-right">
-                      {doc.total_paginas ?? "—"}
+                      {doc.total_paginas ?? "\u2014"}
                     </TableCell>
                     <TableCell className="text-right">
-                      {doc.total_chunks ?? "—"}
+                      {doc.total_chunks ?? "\u2014"}
                     </TableCell>
                     <TableCell className="text-sm">
-                      {doc.fecha_documento ?? "—"}
+                      {doc.fecha_documento ?? "\u2014"}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -346,7 +346,7 @@ export default function ClientDetailPage({
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
-              <AlertTriangle className="h-5 w-5" />
+              <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
               Alertas de cumplimiento
             </CardTitle>
           </CardHeader>
@@ -364,7 +364,7 @@ export default function ClientDetailPage({
                     <p className="text-sm font-medium">{alert.descripcion}</p>
                     {alert.fecha_limite && (
                       <p className="text-xs text-muted-foreground">
-                        Fecha límite: {alert.fecha_limite}
+                        Fecha limite: {alert.fecha_limite}
                       </p>
                     )}
                   </div>
@@ -381,7 +381,7 @@ export default function ClientDetailPage({
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
-              <ShieldCheck className="h-5 w-5" />
+              <ShieldCheck className="h-5 w-5 text-vandarum-green" />
               Oportunidades de ahorro
             </CardTitle>
           </CardHeader>
@@ -409,7 +409,7 @@ export default function ClientDetailPage({
                     )}
                   </div>
                   <div className="text-right">
-                    <p className="text-lg font-bold text-primary">
+                    <p className="text-lg font-bold text-vandarum-green">
                       {opp.ahorro_estimado_eur_año?.toLocaleString("es-ES")} EUR/a
                     </p>
                     {opp.payback_meses !== null && opp.payback_meses > 0 && (
