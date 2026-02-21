@@ -112,24 +112,29 @@ function SettingsContent() {
     setGdriveError(null);
     try {
       const url = `/api/gdrive/auth-url?consultant_id=${userId}`;
-      console.log("[GDrive] Calling:", url, "userId:", userId);
       const res = await fetch(url);
-      console.log("[GDrive] Response status:", res.status, "ok:", res.ok, "redirected:", res.redirected, "url:", res.url);
+      const contentType = res.headers.get("content-type") || "";
+
       if (!res.ok) {
-        let errMsg = `Error ${res.status}`;
-        try {
+        if (contentType.includes("json")) {
           const err = await res.json();
-          errMsg = err.error || errMsg;
-        } catch {
+          setGdriveError(`[${res.status}] ${err.error || err.detail || JSON.stringify(err)}`);
+        } else {
           const text = await res.text();
-          errMsg = `Status ${res.status}: ${text.substring(0, 100)}`;
+          setGdriveError(`[${res.status} ${res.redirected ? "REDIRECT→" + res.url : ""}] ${text.substring(0, 150)}`);
         }
-        setGdriveError(errMsg);
         setGdriveLoading(false);
         return;
       }
+
+      // Response is ok but might be HTML (redirect to login page)
+      if (!contentType.includes("json")) {
+        setGdriveError(`Respuesta inesperada (${contentType}). Posible redireccion a login.`);
+        setGdriveLoading(false);
+        return;
+      }
+
       const data = await res.json();
-      console.log("[GDrive] Got auth_url:", data.auth_url?.substring(0, 50));
       if (data.auth_url) {
         window.location.href = data.auth_url;
       } else {
@@ -137,8 +142,7 @@ function SettingsContent() {
         setGdriveLoading(false);
       }
     } catch (e) {
-      console.error("[GDrive] Error:", e);
-      setGdriveError("Pipeline API no disponible. Asegurate de que el servidor Python esta corriendo.");
+      setGdriveError(`Error de red: ${e instanceof Error ? e.message : String(e)}`);
       setGdriveLoading(false);
     }
   }
