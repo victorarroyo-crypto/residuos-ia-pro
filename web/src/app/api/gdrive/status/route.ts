@@ -1,35 +1,53 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 export async function GET(request: NextRequest) {
-  try {
-    const consultantId = request.nextUrl.searchParams.get("consultant_id");
-    if (!consultantId) {
-      return NextResponse.json(
-        { error: "consultant_id is required" },
-        { status: 400 }
-      );
-    }
-
-    const response = await fetch(
-      `${PIPELINE_URL}/api/gdrive/status?consultant_id=${consultantId}`
+  const consultantId = request.nextUrl.searchParams.get("consultant_id");
+  if (!consultantId) {
+    return NextResponse.json(
+      { error: "consultant_id is required" },
+      { status: 400 }
     );
+  }
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: "Error" }));
-      return NextResponse.json(
-        { error: error.detail },
-        { status: response.status }
-      );
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return NextResponse.json(
+      { error: "Supabase no configurado en el servidor." },
+      { status: 503 }
+    );
+  }
+
+  try {
+    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const { data, error } = await sb
+      .from("consultant_gdrive")
+      .select("root_folder_id, folder_mapping, created_at, updated_at")
+      .eq("consultant_id", consultantId)
+      .maybeSingle();
+
+    if (error) {
+      // Table might not exist yet - treat as not connected
+      return NextResponse.json({ connected: false });
     }
 
-    return NextResponse.json(await response.json());
+    if (!data) {
+      return NextResponse.json({ connected: false });
+    }
+
+    return NextResponse.json({
+      connected: true,
+      root_folder_id: data.root_folder_id,
+      connected_at: data.created_at,
+      configured: !!process.env.GOOGLE_CLIENT_ID,
+    });
   } catch (error) {
-    const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible."
-        : "Error interno del servidor";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const detail = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: `Error consultando estado: ${detail}` },
+      { status: 500 }
+    );
   }
 }

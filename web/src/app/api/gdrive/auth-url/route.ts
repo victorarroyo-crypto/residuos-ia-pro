@@ -1,35 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const SCOPES = "https://www.googleapis.com/auth/drive";
+
+function getOrigin(request: NextRequest): string {
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  if (forwardedHost) {
+    const proto = request.headers.get("x-forwarded-proto") || "https";
+    return `${proto}://${forwardedHost}`;
+  }
+  return request.nextUrl.origin;
+}
 
 export async function GET(request: NextRequest) {
-  try {
-    const consultantId = request.nextUrl.searchParams.get("consultant_id");
-    if (!consultantId) {
-      return NextResponse.json(
-        { error: "consultant_id is required" },
-        { status: 400 }
-      );
-    }
-
-    const response = await fetch(
-      `${PIPELINE_URL}/api/gdrive/auth-url?consultant_id=${consultantId}`
+  const consultantId = request.nextUrl.searchParams.get("consultant_id");
+  if (!consultantId) {
+    return NextResponse.json(
+      { error: "consultant_id is required" },
+      { status: 400 }
     );
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: "Error" }));
-      return NextResponse.json(
-        { error: error.detail },
-        { status: response.status }
-      );
-    }
-
-    return NextResponse.json(await response.json());
-  } catch (error) {
-    const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible."
-        : "Error interno del servidor";
-    return NextResponse.json({ error: message }, { status: 502 });
   }
+
+  if (!GOOGLE_CLIENT_ID) {
+    return NextResponse.json(
+      { error: "Google Drive no configurado. Falta GOOGLE_CLIENT_ID." },
+      { status: 501 }
+    );
+  }
+
+  const origin = getOrigin(request);
+  const redirectUri = `${origin}/api/gdrive/callback`;
+
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: redirectUri,
+    scope: SCOPES,
+    state: consultantId,
+    access_type: "offline",
+    include_granted_scopes: "true",
+    prompt: "consent",
+  });
+
+  const authUrl = `https://accounts.google.com/o/oauth2/auth?${params.toString()}`;
+
+  return NextResponse.json({ auth_url: authUrl });
 }

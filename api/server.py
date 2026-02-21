@@ -338,7 +338,10 @@ def _gdrive_redirect_uri() -> str:
 
 
 @app.get("/api/gdrive/auth-url")
-async def gdrive_auth_url(consultant_id: str = Query(...)):
+async def gdrive_auth_url(
+    consultant_id: str = Query(...),
+    redirect_uri: Optional[str] = Query(None),
+):
     """Generate Google OAuth2 authorization URL."""
     if not _gdrive_configured():
         raise HTTPException(
@@ -348,10 +351,11 @@ async def gdrive_auth_url(consultant_id: str = Query(...)):
 
     from pipeline.google_drive import get_auth_url
 
+    uri = redirect_uri or _gdrive_redirect_uri()
     url = get_auth_url(
         client_id=_gdrive_client_id,
         client_secret=_gdrive_client_secret,
-        redirect_uri=_gdrive_redirect_uri(),
+        redirect_uri=uri,
         state=consultant_id,
     )
     return {"auth_url": url}
@@ -360,6 +364,7 @@ async def gdrive_auth_url(consultant_id: str = Query(...)):
 class GDriveExchangeRequest(BaseModel):
     code: str
     consultant_id: str
+    redirect_uri: Optional[str] = None
 
 
 @app.post("/api/gdrive/exchange")
@@ -375,12 +380,13 @@ async def gdrive_exchange(request: GDriveExchangeRequest):
 
     from pipeline.google_drive import exchange_code, GoogleDriveService
 
-    # Exchange code for tokens
+    # Exchange code for tokens (redirect_uri must match the one used in auth request)
+    uri = request.redirect_uri or _gdrive_redirect_uri()
     tokens = exchange_code(
         code=request.code,
         client_id=_gdrive_client_id,
         client_secret=_gdrive_client_secret,
-        redirect_uri=_gdrive_redirect_uri(),
+        redirect_uri=uri,
     )
 
     # Create folder structure in Drive
@@ -416,7 +422,13 @@ async def gdrive_status(consultant_id: str = Query(...)):
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    sb = await rag_service._get_supabase()
+    try:
+        sb = await rag_service._get_supabase()
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Error conectando a Supabase: {e}. Verifica SUPABASE_SERVICE_ROLE_KEY.",
+        )
     result = await (
         sb.table("consultant_gdrive")
         .select("root_folder_id, folder_mapping, created_at, updated_at")
