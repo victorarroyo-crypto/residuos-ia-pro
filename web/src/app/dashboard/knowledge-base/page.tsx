@@ -187,14 +187,12 @@ export default function KnowledgeBasePage() {
 
   const loadStats = useCallback(async () => {
     try {
-      const PIPELINE_URL =
-        process.env.NEXT_PUBLIC_PIPELINE_API_URL || "http://localhost:8000";
-      const res = await fetch(`${PIPELINE_URL}/api/knowledge-base/stats`);
+      const res = await fetch("/api/knowledge-base/stats");
       if (res.ok) {
         setStats(await res.json());
       }
     } catch {
-      // Pipeline might not be running
+      // API not available
     }
   }, []);
 
@@ -344,9 +342,7 @@ export default function KnowledgeBasePage() {
   async function handleDelete(docId: string) {
     setDeleting(docId);
     try {
-      const PIPELINE_URL =
-        process.env.NEXT_PUBLIC_PIPELINE_API_URL || "http://localhost:8000";
-      const res = await fetch(`${PIPELINE_URL}/api/knowledge-base/${docId}`, {
+      const res = await fetch(`/api/knowledge-base/${docId}`, {
         method: "DELETE",
       });
       if (res.ok) {
