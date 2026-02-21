@@ -462,6 +462,72 @@ export default function KnowledgeBasePage() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // ─── Auto-sync polling ──────────────────────────────────────
+  // When auto-sync is enabled and page is open, poll every 5 min
+  const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  const syncingRef = useRef(false);
+
+  useEffect(() => {
+    if (!gdriveConnected || !userId || !syncStatus?.auto_sync_enabled) return;
+
+    async function pollSync() {
+      // Skip if already syncing, page hidden, or sync happened recently
+      if (syncingRef.current || document.hidden) return;
+
+      const lastSync = syncStatus?.last_synced_at;
+      if (lastSync) {
+        const elapsed = Date.now() - new Date(lastSync).getTime();
+        if (elapsed < SYNC_INTERVAL_MS) return;
+      }
+
+      syncingRef.current = true;
+      try {
+        const res = await fetch("/api/gdrive/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ consultant_id: userId }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          // Only show notification if new files were ingested
+          if (data.files_ingested > 0) {
+            const details: SyncDetail[] =
+              typeof data.details === "string"
+                ? JSON.parse(data.details)
+                : data.details || [];
+            setSyncResult({
+              success: true,
+              message: `Auto-sync: ${data.files_ingested} documento${data.files_ingested !== 1 ? "s" : ""} nuevo${data.files_ingested !== 1 ? "s" : ""} indexado${data.files_ingested !== 1 ? "s" : ""}.`,
+              details,
+            });
+            setLoadingDocs(true);
+            loadDocuments();
+            loadStats();
+            if (breadcrumbs.length > 0) {
+              browseDriveFolder(breadcrumbs[breadcrumbs.length - 1].id);
+            }
+          }
+          loadSyncStatus();
+        }
+      } catch {
+        // Silently fail on auto-sync
+      } finally {
+        syncingRef.current = false;
+      }
+    }
+
+    // Initial check after 10 seconds
+    const initialTimeout = setTimeout(pollSync, 10_000);
+    // Then every 5 minutes
+    const interval = setInterval(pollSync, SYNC_INTERVAL_MS);
+
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(interval);
+    };
+  }, [gdriveConnected, userId, syncStatus?.auto_sync_enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── Sync functions ────────────────────────────────────────
 
   async function loadSyncStatus(uid?: string) {
@@ -700,11 +766,11 @@ export default function KnowledgeBasePage() {
               </div>
               <p className="text-xs text-muted-foreground">
                 {syncStatus?.auto_sync_enabled
-                  ? "Nuevos documentos se indexan automaticamente cada 30 min."
+                  ? "Nuevos documentos se detectan e indexan automaticamente mientras esta pagina este abierta."
                   : "Sincronizacion automatica desactivada."}
                 {syncStatus?.last_synced_at && (
                   <>
-                    {" "}Ultimo:{" "}
+                    {" "}Ultimo sync:{" "}
                     {new Date(syncStatus.last_synced_at).toLocaleString("es-ES")}
                   </>
                 )}
