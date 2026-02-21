@@ -1,7 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const SCOPES = "https://www.googleapis.com/auth/drive";
+
+function loadGoogleClientId(): string {
+  // Try process.env first (from .env.local)
+  if (process.env.GOOGLE_CLIENT_ID) {
+    return process.env.GOOGLE_CLIENT_ID;
+  }
+  // Fallback: read from root .env file directly
+  try {
+    const envPath = resolve(process.cwd(), "..", ".env");
+    const content = readFileSync(envPath, "utf-8");
+    const match = content.match(/^GOOGLE_CLIENT_ID=(.+)$/m);
+    if (match) return match[1].trim();
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+let _cachedClientId: string | null = null;
+function getGoogleClientId(): string {
+  if (_cachedClientId === null) {
+    _cachedClientId = loadGoogleClientId();
+  }
+  return _cachedClientId;
+}
 
 function getOrigin(request: NextRequest): string {
   const forwardedHost = request.headers.get("x-forwarded-host");
@@ -21,9 +47,10 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!GOOGLE_CLIENT_ID) {
+  const clientId = getGoogleClientId();
+  if (!clientId) {
     return NextResponse.json(
-      { error: "Google Drive no configurado. Falta GOOGLE_CLIENT_ID." },
+      { error: "Google Drive no configurado. Falta GOOGLE_CLIENT_ID en .env.local o ../.env" },
       { status: 501 }
     );
   }
@@ -33,7 +60,7 @@ export async function GET(request: NextRequest) {
 
   const params = new URLSearchParams({
     response_type: "code",
-    client_id: GOOGLE_CLIENT_ID,
+    client_id: clientId,
     redirect_uri: redirectUri,
     scope: SCOPES,
     state: consultantId,

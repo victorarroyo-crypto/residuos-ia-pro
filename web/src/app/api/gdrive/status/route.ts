@@ -1,8 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+function loadEnvVar(name: string): string {
+  if (process.env[name]) return process.env[name]!;
+  try {
+    const envPath = resolve(process.cwd(), "..", ".env");
+    const content = readFileSync(envPath, "utf-8");
+    const match = content.match(new RegExp(`^${name}=(.+)$`, "m"));
+    if (match) return match[1].trim();
+  } catch {
+    // ignore
+  }
+  return "";
+}
 
 export async function GET(request: NextRequest) {
   const consultantId = request.nextUrl.searchParams.get("consultant_id");
@@ -13,7 +25,10 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+  const supabaseUrl = loadEnvVar("NEXT_PUBLIC_SUPABASE_URL") || loadEnvVar("SUPABASE_URL");
+  const serviceKey = loadEnvVar("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!supabaseUrl || !serviceKey) {
     return NextResponse.json(
       { error: "Supabase no configurado en el servidor." },
       { status: 503 }
@@ -21,7 +36,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const sb = createClient(supabaseUrl, serviceKey);
     const { data, error } = await sb
       .from("consultant_gdrive")
       .select("root_folder_id, folder_mapping, created_at, updated_at")
@@ -29,7 +44,6 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
 
     if (error) {
-      // Table might not exist yet - treat as not connected
       return NextResponse.json({ connected: false });
     }
 
@@ -41,7 +55,6 @@ export async function GET(request: NextRequest) {
       connected: true,
       root_folder_id: data.root_folder_id,
       connected_at: data.created_at,
-      configured: !!process.env.GOOGLE_CLIENT_ID,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
