@@ -21,6 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
+# CLASES BASE (importadas por todos los módulos)
+# ─────────────────────────────────────────────
+@dataclass
+class PipelineConfig:
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+
+
+class ContentExtractor:
+    """Base class for content extraction."""
+    pass
+
+
+# ─────────────────────────────────────────────
 # TIPOS DE DOCUMENTO (clasificación automática)
 # ─────────────────────────────────────────────
 class DocType(str, Enum):
@@ -105,9 +121,15 @@ class PDFPipeline:
     """
 
     def __init__(self, config: "PipelineConfig"):
+        from .extractor import PDFNatureDetector, ContentExtractorImpl
+        from .classifier_chunker import DocumentClassifier, SemanticChunker
+        from .config import EmbeddingService
+        from .storage import StorageService
+        from .metadata_extractor import MetadataExtractor
+
         self.config = config
         self.detector    = PDFNatureDetector()
-        self.extractor   = ContentExtractor(config)
+        self.extractor   = ContentExtractorImpl(config)
         self.classifier  = DocumentClassifier(config)
         self.chunker     = SemanticChunker(config)
         self.embedder    = EmbeddingService(config)
