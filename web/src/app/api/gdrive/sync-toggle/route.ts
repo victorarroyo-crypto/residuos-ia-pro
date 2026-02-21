@@ -1,31 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    const { consultant_id, enabled } = body;
 
-    const response = await fetch(`${PIPELINE_URL}/api/gdrive/sync-toggle`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: "Error" }));
+    if (!consultant_id) {
       return NextResponse.json(
-        { error: error.detail },
-        { status: response.status }
+        { error: "consultant_id is required" },
+        { status: 400 }
       );
     }
 
-    return NextResponse.json(await response.json());
+    if (typeof enabled !== "boolean") {
+      return NextResponse.json(
+        { error: "enabled (boolean) is required" },
+        { status: 400 }
+      );
+    }
+
+    const admin = getAdminClient();
+    if (!admin.ok) {
+      return NextResponse.json(
+        { error: admin.detail },
+        { status: admin.status }
+      );
+    }
+
+    const { error } = await admin.client
+      .from("consultant_gdrive")
+      .update({ auto_sync_enabled: enabled })
+      .eq("consultant_id", consultant_id);
+
+    if (error) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      auto_sync_enabled: enabled,
+    });
   } catch (error) {
-    const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible."
-        : "Error interno del servidor";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const detail = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: `Error toggling auto-sync: ${detail}` },
+      { status: 500 }
+    );
   }
 }
