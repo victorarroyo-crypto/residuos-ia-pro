@@ -20,6 +20,9 @@ supabase==2.7.0             # cliente Supabase async
 openpyxl==3.1.5             # lectura de archivos Excel (.xlsx)
 pandas==2.2.2               # procesamiento tabular de datos Excel/CSV
 
+# Word (DOCX)
+python-docx==1.1.2          # lectura de archivos Word (.docx)
+
 # Utilidades
 python-dotenv==1.0.1
 aiofiles==24.1.0

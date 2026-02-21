@@ -24,6 +24,7 @@ from typing import Optional
 
 from .pdf_pipeline import PDFPipeline
 from .excel_processor import ExcelProcessor
+from .text_processor import TextProcessor
 from .rag_scoping import DocumentIngestionRouter, RAGScope
 from .storage import StorageService
 
@@ -35,6 +36,12 @@ SUPPORTED_EXTENSIONS = {
     "xls":  "excel",
     "xlsm": "excel",
     "csv":  "excel",   # CSV pasa por el mismo procesador que Excel
+    "docx": "text",
+    "doc":  "text",
+    "txt":  "text",
+    "html": "text",
+    "htm":  "text",
+    "md":   "text",
 }
 
 
@@ -76,10 +83,11 @@ class UnifiedIngestionService:
 
     def __init__(self, config):
         self.config = config
-        self.pdf_pipeline  = PDFPipeline(config)
+        self.pdf_pipeline    = PDFPipeline(config)
         self.excel_processor = ExcelProcessor(config)
-        self.storage       = StorageService(config)
-        self.router        = DocumentIngestionRouter()
+        self.text_processor  = TextProcessor(config)
+        self.storage         = StorageService(config)
+        self.router          = DocumentIngestionRouter()
 
     async def ingest(
         self,
@@ -111,6 +119,10 @@ class UnifiedIngestionService:
             if file_type == "pdf":
                 return await self._ingest_pdf(
                     file_bytes, filename, client_id, project_id, rag_scope, password
+                )
+            elif file_type == "text":
+                return await self._ingest_text(
+                    file_bytes, filename, client_id, project_id, rag_scope
                 )
             else:
                 return await self._ingest_excel(
@@ -246,6 +258,44 @@ class UnifiedIngestionService:
             supabase_doc_id=result.doc_id,
             ler_codes_found=result.metadata.get("ler_codes_found", []),
             warnings=result.warnings,
+        )
+
+    async def _ingest_text(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        client_id: Optional[str],
+        project_id: Optional[str],
+        rag_scope_str: Optional[str],
+    ) -> IngestionResult:
+        # Determinar scope
+        explicit_scope = RAGScope(rag_scope_str) if rag_scope_str else None
+        scope = self.router.route(
+            doc_type="normativa",
+            client_id=client_id,
+            project_id=project_id,
+            explicit_scope=explicit_scope,
+        )
+
+        result = await self.text_processor.process(
+            file_bytes=file_bytes,
+            filename=filename,
+            client_id=client_id or "general",
+            project_id=project_id,
+            rag_scope=scope.value,
+        )
+
+        return IngestionResult(
+            success=True,
+            doc_id=result.doc_id,
+            filename=filename,
+            doc_type=result.doc_type.value,
+            rag_scope=scope.value,
+            num_chunks=len(result.chunks),
+            storage_path=result.storage_path,
+            supabase_doc_id=result.supabase_doc_id,
+            ler_codes_found=result.metadata.get("ler_codes_found", []),
+            warnings=result.extraction_warnings,
         )
 
     async def _update_chunk_scope(self, chunks, scope: RAGScope, project_id: Optional[str]):
