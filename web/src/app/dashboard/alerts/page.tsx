@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -10,11 +10,13 @@ import {
   CheckCircle2,
   ShieldAlert,
   ArrowRight,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { mockAlerts, mockClients } from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/client";
+import type { ComplianceAlert, Client } from "@/types/database";
 
 const severityColors: Record<string, "danger" | "warning" | "secondary" | "destructive"> = {
   critica: "destructive",
@@ -43,10 +45,36 @@ export default function AlertsPage() {
   const [search, setSearch] = useState("");
   const [filterSeveridad, setFilterSeveridad] = useState<FilterSeveridad>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
+  const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = mockAlerts
+  const fetchData = useCallback(async () => {
+    const supabase = createClient();
+    const [alertsRes, clientsRes] = await Promise.all([
+      supabase.from("compliance_alerts").select("*"),
+      supabase.from("clients").select("id, nombre"),
+    ]);
+    setAlerts(alertsRes.data ?? []);
+    setClients(clientsRes.data as Client[] ?? []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  async function markAsResolved(alertId: string) {
+    const supabase = createClient();
+    await supabase.from("compliance_alerts").update({ estado: "resuelta" }).eq("id", alertId);
+    setAlerts((prev) =>
+      prev.map((a) => (a.id === alertId ? { ...a, estado: "resuelta" as const } : a))
+    );
+  }
+
+  const filtered = alerts
     .filter((a) => {
-      const client = mockClients.find((c) => c.id === a.client_id);
+      const client = clients.find((c) => c.id === a.client_id);
       const matchSearch =
         search === "" ||
         a.descripcion.toLowerCase().includes(search.toLowerCase()) ||
@@ -60,11 +88,19 @@ export default function AlertsPage() {
     })
     .sort((a, b) => severityOrder[a.severidad] - severityOrder[b.severidad]);
 
-  const pendingCount = mockAlerts.filter((a) => a.estado === "pendiente").length;
-  const criticalCount = mockAlerts.filter(
+  const pendingCount = alerts.filter((a) => a.estado === "pendiente").length;
+  const criticalCount = alerts.filter(
     (a) => a.severidad === "critica" && a.estado === "pendiente"
   ).length;
-  const resolvedCount = mockAlerts.filter((a) => a.estado === "resuelta").length;
+  const resolvedCount = alerts.filter((a) => a.estado === "resuelta").length;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -84,22 +120,18 @@ export default function AlertsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{pendingCount}</div>
-            <p className="text-xs text-muted-foreground">
-              requieren atención
-            </p>
+            <p className="text-xs text-muted-foreground">requieren atencion</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Críticas</CardTitle>
+            <CardTitle className="text-sm font-medium">Criticas</CardTitle>
             <AlertTriangle className="h-4 w-4 text-destructive" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-destructive">{criticalCount}</div>
-            <p className="text-xs text-muted-foreground">
-              acción inmediata
-            </p>
+            <p className="text-xs text-muted-foreground">accion inmediata</p>
           </CardContent>
         </Card>
 
@@ -110,9 +142,7 @@ export default function AlertsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-vandarum-green">{resolvedCount}</div>
-            <p className="text-xs text-muted-foreground">
-              de {mockAlerts.length} totales
-            </p>
+            <p className="text-xs text-muted-foreground">de {alerts.length} totales</p>
           </CardContent>
         </Card>
       </div>
@@ -125,7 +155,7 @@ export default function AlertsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar por descripción, cliente o tipo..."
+                placeholder="Buscar por descripcion, cliente o tipo..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
@@ -139,7 +169,7 @@ export default function AlertsPage() {
                 className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
               >
                 <option value="todos">Toda severidad</option>
-                <option value="critica">Crítica</option>
+                <option value="critica">Critica</option>
                 <option value="alta">Alta</option>
                 <option value="media">Media</option>
                 <option value="baja">Baja</option>
@@ -171,12 +201,14 @@ export default function AlertsPage() {
         <CardContent>
           {filtered.length === 0 ? (
             <p className="py-8 text-center text-muted-foreground">
-              No se encontraron alertas con esos filtros.
+              {alerts.length === 0
+                ? "No hay alertas. Se generan automaticamente al procesar documentos."
+                : "No se encontraron alertas con esos filtros."}
             </p>
           ) : (
             <div className="space-y-3">
               {filtered.map((alert) => {
-                const client = mockClients.find((c) => c.id === alert.client_id);
+                const client = clients.find((c) => c.id === alert.client_id);
                 return (
                   <div
                     key={alert.id}
@@ -204,7 +236,7 @@ export default function AlertsPage() {
                         {alert.fecha_limite && (
                           <span className="flex items-center gap-1">
                             <Clock className="h-3 w-3" />
-                            Límite: {alert.fecha_limite}
+                            Limite: {alert.fecha_limite}
                           </span>
                         )}
                       </div>
@@ -214,6 +246,15 @@ export default function AlertsPage() {
                         {estadoIcons[alert.estado]}
                         <span className="capitalize">{alert.estado}</span>
                       </span>
+                      {alert.estado === "pendiente" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => markAsResolved(alert.id)}
+                        >
+                          Resolver
+                        </Button>
+                      )}
                       {client && (
                         <Link href={`/dashboard/client/${client.id}`}>
                           <Button variant="ghost" size="sm">

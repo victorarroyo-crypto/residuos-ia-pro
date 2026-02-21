@@ -1,8 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
+import type { User } from "@supabase/supabase-js";
 import {
   LayoutDashboard,
   Users,
@@ -11,6 +14,7 @@ import {
   TrendingDown,
   Settings,
   Leaf,
+  LogOut,
 } from "lucide-react";
 
 const navItems = [
@@ -24,6 +28,27 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user);
+    });
+  }, []);
+
+  async function handleLogout() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
+
+  const displayName =
+    user?.user_metadata?.nombre || user?.email?.split("@")[0] || "Consultor";
+  const displayEmail = user?.email || "";
+  const initials = displayName.charAt(0).toUpperCase();
 
   return (
     <aside className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r bg-card">
@@ -66,12 +91,21 @@ export function Sidebar() {
       <div className="border-t p-4">
         <div className="flex items-center gap-3 rounded-md px-3 py-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-brand text-xs font-bold text-white">
-            C
+            {initials}
           </div>
           <div className="flex-1 truncate">
-            <p className="text-sm font-medium">Consultor</p>
-            <p className="text-xs text-muted-foreground">consultor@empresa.com</p>
+            <p className="text-sm font-medium truncate">{displayName}</p>
+            <p className="text-xs text-muted-foreground truncate">
+              {displayEmail}
+            </p>
           </div>
+          <button
+            onClick={handleLogout}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            title="Cerrar sesion"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </aside>

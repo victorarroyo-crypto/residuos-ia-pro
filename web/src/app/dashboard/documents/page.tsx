@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   FileText,
@@ -9,6 +9,7 @@ import {
   Eye,
   Calendar,
   ArrowRight,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,7 +22,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { mockDocuments, mockClients } from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/client";
+import type { ClientDocument, Client } from "@/types/database";
 
 const docTypeLabels: Record<string, string> = {
   autorizacion_ambiental_integrada: "AAI",
@@ -46,15 +48,28 @@ export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [filterNaturaleza, setFilterNaturaleza] = useState<FilterNaturaleza>("todos");
+  const [documents, setDocuments] = useState<ClientDocument[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = mockDocuments.filter((d) => {
+  useEffect(() => {
+    const supabase = createClient();
+    Promise.all([
+      supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
+      supabase.from("clients").select("id, nombre"),
+    ]).then(([docsRes, clientsRes]) => {
+      setDocuments(docsRes.data ?? []);
+      setClients(clientsRes.data as Client[] ?? []);
+      setLoading(false);
+    });
+  }, []);
+
+  const filtered = documents.filter((d) => {
+    const client = clients.find((c) => c.id === d.client_id);
     const matchSearch =
       search === "" ||
       d.titulo?.toLowerCase().includes(search.toLowerCase()) ||
-      mockClients
-        .find((c) => c.id === d.client_id)
-        ?.nombre.toLowerCase()
-        .includes(search.toLowerCase());
+      client?.nombre.toLowerCase().includes(search.toLowerCase());
     const matchEstado =
       filterEstado === "todos" || d.estado === filterEstado;
     const matchNaturaleza =
@@ -62,9 +77,17 @@ export default function DocumentsPage() {
     return matchSearch && matchEstado && matchNaturaleza;
   });
 
-  const indexedCount = mockDocuments.filter((d) => d.estado === "indexado").length;
-  const totalChunks = mockDocuments.reduce((sum, d) => sum + (d.total_chunks ?? 0), 0);
-  const totalPages = mockDocuments.reduce((sum, d) => sum + (d.total_paginas ?? 0), 0);
+  const indexedCount = documents.filter((d) => d.estado === "indexado").length;
+  const totalChunks = documents.reduce((sum, d) => sum + (d.total_chunks ?? 0), 0);
+  const totalPages = documents.reduce((sum, d) => sum + (d.total_paginas ?? 0), 0);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -83,7 +106,7 @@ export default function DocumentsPage() {
             <FileText className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{mockDocuments.length}</div>
+            <div className="text-2xl font-bold">{documents.length}</div>
             <p className="text-xs text-muted-foreground">
               {indexedCount} indexados
             </p>
@@ -92,13 +115,13 @@ export default function DocumentsPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Páginas procesadas</CardTitle>
+            <CardTitle className="text-sm font-medium">Paginas procesadas</CardTitle>
             <Eye className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{totalPages}</div>
             <p className="text-xs text-muted-foreground">
-              {mockDocuments.filter((d) => d.ocr_aplicado).length} con OCR
+              {documents.filter((d) => d.ocr_aplicado).length} con OCR
             </p>
           </CardContent>
         </Card>
@@ -118,12 +141,12 @@ export default function DocumentsPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Tablas extraídas</CardTitle>
+            <CardTitle className="text-sm font-medium">Tablas extraidas</CardTitle>
             <Calendar className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {mockDocuments.reduce((sum, d) => sum + (d.tablas_encontradas ?? 0), 0)}
+              {documents.reduce((sum, d) => sum + (d.tablas_encontradas ?? 0), 0)}
             </div>
             <p className="text-xs text-muted-foreground">
               En todos los documentos
@@ -140,7 +163,7 @@ export default function DocumentsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar por título o cliente..."
+                placeholder="Buscar por titulo o cliente..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
@@ -167,7 +190,7 @@ export default function DocumentsPage() {
                 <option value="todos">Todo formato</option>
                 <option value="digital">Digital</option>
                 <option value="scanned">Escaneado</option>
-                <option value="hybrid">Híbrido</option>
+                <option value="hybrid">Hibrido</option>
                 <option value="excel">Excel</option>
               </select>
             </div>
@@ -186,18 +209,20 @@ export default function DocumentsPage() {
         <CardContent>
           {filtered.length === 0 ? (
             <p className="py-8 text-center text-muted-foreground">
-              No se encontraron documentos con esos filtros.
+              {documents.length === 0
+                ? "No hay documentos. Sube tu primer documento desde la ficha de un cliente."
+                : "No se encontraron documentos con esos filtros."}
             </p>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Título</TableHead>
+                  <TableHead>Titulo</TableHead>
                   <TableHead>Cliente</TableHead>
                   <TableHead>Tipo</TableHead>
                   <TableHead>Formato</TableHead>
                   <TableHead>Estado</TableHead>
-                  <TableHead className="text-right">Págs</TableHead>
+                  <TableHead className="text-right">Pags</TableHead>
                   <TableHead className="text-right">Chunks</TableHead>
                   <TableHead>Fecha doc</TableHead>
                   <TableHead />
@@ -205,7 +230,7 @@ export default function DocumentsPage() {
               </TableHeader>
               <TableBody>
                 {filtered.map((doc) => {
-                  const client = mockClients.find((c) => c.id === doc.client_id);
+                  const client = clients.find((c) => c.id === doc.client_id);
                   return (
                     <TableRow key={doc.id}>
                       <TableCell className="max-w-[250px] truncate font-medium">

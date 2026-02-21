@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   Users,
@@ -8,6 +8,8 @@ import {
   MapPin,
   Search,
   Filter,
+  Plus,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,12 +22,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  mockClients,
-  getClientComplianceStatus,
-  getClientAlertCount,
-  getClientDocCount,
-} from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/client";
+import type { Client, ComplianceAlert, ClientDocument } from "@/types/database";
 
 function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   const colors = {
@@ -49,8 +47,33 @@ export default function ClientsPage() {
   const [search, setSearch] = useState("");
   const [filterRelacion, setFilterRelacion] = useState<FilterRelacion>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
+  const [clients, setClients] = useState<Client[]>([]);
+  const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
+  const [documents, setDocuments] = useState<ClientDocument[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = mockClients.filter((c) => {
+  useEffect(() => {
+    const supabase = createClient();
+    Promise.all([
+      supabase.from("clients").select("*").order("nombre"),
+      supabase.from("compliance_alerts").select("*").eq("estado", "pendiente"),
+      supabase.from("client_documents").select("id, client_id"),
+    ]).then(([clientsRes, alertsRes, docsRes]) => {
+      setClients(clientsRes.data ?? []);
+      setAlerts(alertsRes.data ?? []);
+      setDocuments(docsRes.data as ClientDocument[] ?? []);
+      setLoading(false);
+    });
+  }, []);
+
+  function getComplianceStatus(clientId: string): "ok" | "warning" | "danger" {
+    const clientAlerts = alerts.filter((a) => a.client_id === clientId);
+    if (clientAlerts.some((a) => a.severidad === "critica")) return "danger";
+    if (clientAlerts.length > 0) return "warning";
+    return "ok";
+  }
+
+  const filtered = clients.filter((c) => {
     const matchSearch =
       search === "" ||
       c.nombre.toLowerCase().includes(search.toLowerCase()) ||
@@ -65,16 +88,32 @@ export default function ClientsPage() {
     return matchSearch && matchRelacion && matchEstado;
   });
 
-  const activeCount = mockClients.filter((c) => c.activo).length;
+  const activeCount = clients.filter((c) => c.activo).length;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Clientes</h1>
-        <p className="text-muted-foreground">
-          Gestiona tu cartera de clientes. {activeCount} activos de{" "}
-          {mockClients.length} totales.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Clientes</h1>
+          <p className="text-muted-foreground">
+            Gestiona tu cartera de clientes. {activeCount} activos de{" "}
+            {clients.length} totales.
+          </p>
+        </div>
+        <Link href="/dashboard/clients/new">
+          <Button>
+            <Plus className="mr-2 h-4 w-4" />
+            Nuevo cliente
+          </Button>
+        </Link>
       </div>
 
       {/* Filters */}
@@ -98,10 +137,10 @@ export default function ClientsPage() {
                 onChange={(e) => setFilterRelacion(e.target.value as FilterRelacion)}
                 className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
               >
-                <option value="todos">Toda relación</option>
+                <option value="todos">Toda relacion</option>
                 <option value="retainer">Retainer</option>
-                <option value="auditoria">Auditoría</option>
-                <option value="diagnostico">Diagnóstico</option>
+                <option value="auditoria">Auditoria</option>
+                <option value="diagnostico">Diagnostico</option>
               </select>
               <select
                 value={filterEstado}
@@ -128,7 +167,9 @@ export default function ClientsPage() {
         <CardContent>
           {filtered.length === 0 ? (
             <p className="py-8 text-center text-muted-foreground">
-              No se encontraron clientes con esos filtros.
+              {clients.length === 0
+                ? "No hay clientes registrados. Crea tu primer cliente."
+                : "No se encontraron clientes con esos filtros."}
             </p>
           ) : (
             <Table>
@@ -138,8 +179,8 @@ export default function ClientsPage() {
                   <TableHead>Cliente</TableHead>
                   <TableHead>CNAE</TableHead>
                   <TableHead>Sector</TableHead>
-                  <TableHead>Ubicación</TableHead>
-                  <TableHead>Relación</TableHead>
+                  <TableHead>Ubicacion</TableHead>
+                  <TableHead>Relacion</TableHead>
                   <TableHead className="text-center">Alertas</TableHead>
                   <TableHead className="text-center">Docs</TableHead>
                   <TableHead />
@@ -147,9 +188,9 @@ export default function ClientsPage() {
               </TableHeader>
               <TableBody>
                 {filtered.map((client) => {
-                  const status = getClientComplianceStatus(client.id);
-                  const alertCount = getClientAlertCount(client.id);
-                  const docCount = getClientDocCount(client.id);
+                  const status = getComplianceStatus(client.id);
+                  const alertCount = alerts.filter((a) => a.client_id === client.id).length;
+                  const docCount = documents.filter((d) => d.client_id === client.id).length;
                   return (
                     <TableRow key={client.id}>
                       <TableCell>

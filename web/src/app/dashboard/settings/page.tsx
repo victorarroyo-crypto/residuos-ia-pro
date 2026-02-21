@@ -1,15 +1,19 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import {
   User,
   Bell,
   Database,
   Palette,
   Shield,
+  Loader2,
+  Check,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { createClient } from "@/lib/supabase/client";
 
 function SettingsSection({
   icon: Icon,
@@ -72,6 +76,48 @@ function Toggle({ defaultChecked = false }: { defaultChecked?: boolean }) {
 }
 
 export default function SettingsPage() {
+  const [nombre, setNombre] = useState("");
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      setNombre(data.user?.user_metadata?.nombre || "");
+      setEmail(data.user?.email || "");
+      setLoading(false);
+    });
+  }, []);
+
+  async function handleSaveProfile() {
+    setSaving(true);
+    setSaved(false);
+    const supabase = createClient();
+    await supabase.auth.updateUser({
+      data: { nombre },
+    });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function handleChangePassword() {
+    const supabase = createClient();
+    if (!email) return;
+    await supabase.auth.resetPasswordForEmail(email);
+    alert("Se ha enviado un email para cambiar la contrasena.");
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <div>
@@ -86,7 +132,7 @@ export default function SettingsPage() {
         <SettingsSection
           icon={User}
           title="Perfil"
-          description="Información de tu cuenta de consultor."
+          description="Informacion de tu cuenta de consultor."
         >
           <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
@@ -94,7 +140,8 @@ export default function SettingsPage() {
                 <label className="text-sm font-medium">Nombre</label>
                 <input
                   type="text"
-                  defaultValue="Consultor Demo"
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
                 />
               </div>
@@ -102,29 +149,21 @@ export default function SettingsPage() {
                 <label className="text-sm font-medium">Email</label>
                 <input
                   type="email"
-                  defaultValue="consultor@empresa.com"
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Empresa</label>
-                <input
-                  type="text"
-                  defaultValue="Consultoría Ambiental S.L."
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Teléfono</label>
-                <input
-                  type="tel"
-                  defaultValue="+34 600 000 000"
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
+                  value={email}
+                  disabled
+                  className="mt-1 w-full rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground"
                 />
               </div>
             </div>
-            <div className="flex justify-end">
-              <Button>Guardar perfil</Button>
+            <div className="flex items-center gap-3">
+              <Button onClick={handleSaveProfile} disabled={saving}>
+                {saving ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : saved ? (
+                  <Check className="mr-2 h-4 w-4" />
+                ) : null}
+                {saved ? "Guardado" : "Guardar perfil"}
+              </Button>
             </div>
           </div>
         </SettingsSection>
@@ -133,12 +172,12 @@ export default function SettingsPage() {
         <SettingsSection
           icon={Bell}
           title="Notificaciones"
-          description="Controla qué alertas recibes y cómo."
+          description="Controla que alertas recibes y como."
         >
           <div>
             <SettingsRow
-              label="Alertas críticas por email"
-              description="Recibir un email cuando se detecte una alerta crítica."
+              label="Alertas criticas por email"
+              description="Recibir un email cuando se detecte una alerta critica."
             >
               <Toggle defaultChecked />
             </SettingsRow>
@@ -150,7 +189,7 @@ export default function SettingsPage() {
             </SettingsRow>
             <SettingsRow
               label="Vencimiento de contratos"
-              description="Aviso 30 días antes de que venza un contrato."
+              description="Aviso 30 dias antes de que venza un contrato."
             >
               <Toggle defaultChecked />
             </SettingsRow>
@@ -184,14 +223,6 @@ export default function SettingsPage() {
                 Conectar
               </Button>
             </SettingsRow>
-            <SettingsRow
-              label="Email SMTP"
-              description="Envío de notificaciones por email."
-            >
-              <Button variant="outline" size="sm">
-                Configurar
-              </Button>
-            </SettingsRow>
           </div>
         </SettingsSection>
 
@@ -203,14 +234,8 @@ export default function SettingsPage() {
         >
           <div>
             <SettingsRow
-              label="Tema oscuro"
-              description="Cambiar entre tema claro y oscuro."
-            >
-              <Toggle />
-            </SettingsRow>
-            <SettingsRow
               label="Formato de fechas"
-              description="Cómo se muestran las fechas en la plataforma."
+              description="Como se muestran las fechas en la plataforma."
             >
               <select className="rounded-md border bg-background px-3 py-1.5 text-sm outline-none">
                 <option>DD/MM/AAAA</option>
@@ -228,25 +253,11 @@ export default function SettingsPage() {
         >
           <div>
             <SettingsRow
-              label="Cambiar contraseña"
-              description="Última actualización hace 3 meses."
+              label="Cambiar contrasena"
+              description="Se enviara un email con el enlace de cambio."
             >
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" onClick={handleChangePassword}>
                 Cambiar
-              </Button>
-            </SettingsRow>
-            <SettingsRow
-              label="Autenticación en dos pasos"
-              description="Añade una capa extra de seguridad."
-            >
-              <Toggle />
-            </SettingsRow>
-            <SettingsRow
-              label="Sesiones activas"
-              description="1 sesión activa en este dispositivo."
-            >
-              <Button variant="outline" size="sm">
-                Ver sesiones
               </Button>
             </SettingsRow>
           </div>

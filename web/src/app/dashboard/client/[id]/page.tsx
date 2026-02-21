@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -13,6 +13,7 @@ import {
   MapPin,
   Building2,
   ShieldCheck,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,14 +26,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  mockClients,
-  mockWasteInventory,
-  mockDocuments,
-  mockAlerts,
-  mockSavings,
-  getClientComplianceStatus,
-} from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/client";
+import type {
+  Client,
+  WasteInventoryItem,
+  ClientDocument,
+  ComplianceAlert,
+  SavingsOpportunity,
+} from "@/types/database";
 
 const docTypeLabels: Record<string, string> = {
   autorizacion_ambiental_integrada: "AAI",
@@ -78,7 +79,38 @@ export default function ClientDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const client = mockClients.find((c) => c.id === id);
+  const [client, setClient] = useState<Client | null>(null);
+  const [inventory, setInventory] = useState<WasteInventoryItem[]>([]);
+  const [documents, setDocuments] = useState<ClientDocument[]>([]);
+  const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
+  const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const supabase = createClient();
+    Promise.all([
+      supabase.from("clients").select("*").eq("id", id).single(),
+      supabase.from("waste_inventory").select("*").eq("client_id", id),
+      supabase.from("client_documents").select("*").eq("client_id", id).order("fecha_ingesta", { ascending: false }),
+      supabase.from("compliance_alerts").select("*").eq("client_id", id),
+      supabase.from("savings_opportunities").select("*").eq("client_id", id),
+    ]).then(([clientRes, inventoryRes, docsRes, alertsRes, savingsRes]) => {
+      setClient(clientRes.data);
+      setInventory(inventoryRes.data ?? []);
+      setDocuments(docsRes.data ?? []);
+      setAlerts(alertsRes.data ?? []);
+      setSavings(savingsRes.data ?? []);
+      setLoading(false);
+    });
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
+      </div>
+    );
+  }
 
   if (!client) {
     return (
@@ -91,11 +123,14 @@ export default function ClientDetailPage({
     );
   }
 
-  const inventory = mockWasteInventory.filter((w) => w.client_id === id);
-  const documents = mockDocuments.filter((d) => d.client_id === id);
-  const alerts = mockAlerts.filter((a) => a.client_id === id);
-  const savings = mockSavings.filter((s) => s.client_id === id);
-  const complianceStatus = getClientComplianceStatus(id);
+  const pendingAlerts = alerts.filter((a) => a.estado === "pendiente");
+  const complianceStatus: "ok" | "warning" | "danger" = pendingAlerts.some(
+    (a) => a.severidad === "critica"
+  )
+    ? "danger"
+    : pendingAlerts.length > 0
+    ? "warning"
+    : "ok";
 
   const totalWasteCost = inventory.reduce(
     (sum, w) =>
@@ -180,9 +215,7 @@ export default function ClientDetailPage({
             <AlertTriangle className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {alerts.filter((a) => a.estado === "pendiente").length}
-            </div>
+            <div className="text-2xl font-bold">{pendingAlerts.length}</div>
             <p className="text-xs text-muted-foreground">pendientes</p>
           </CardContent>
         </Card>
@@ -223,7 +256,7 @@ export default function ClientDetailPage({
                   <TableHead>Codigo LER</TableHead>
                   <TableHead>Descripcion</TableHead>
                   <TableHead>Peligroso</TableHead>
-                  <TableHead className="text-right">t/a&ntilde;o</TableHead>
+                  <TableHead className="text-right">t/ano</TableHead>
                   <TableHead className="text-right">EUR/t</TableHead>
                   <TableHead>Operacion</TableHead>
                   <TableHead>Gestor</TableHead>
