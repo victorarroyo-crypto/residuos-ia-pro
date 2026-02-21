@@ -582,17 +582,20 @@ export default function KnowledgeBasePage() {
           setSyncing(false);
         }
       } else {
-        const err = await res.json().catch(() => ({ error: "Error" }));
+        const err = await res.json().catch(() => ({}));
+        const detail = err.error || err.detail || err.message;
         setSyncResult({
           success: false,
-          message: err.error || "Error durante la sincronizacion.",
+          message: detail
+            ? `Error de sincronizacion: ${detail}`
+            : `Error de sincronizacion (status ${res.status}). Revisa los logs del Pipeline.`,
         });
         setSyncing(false);
       }
     } catch {
       setSyncResult({
         success: false,
-        message: "Pipeline API no disponible. Verifica que el servidor Python esta activo.",
+        message: "Pipeline API no disponible. Verifica que el servidor Python esta activo y que PIPELINE_API_URL esta configurado correctamente.",
       });
       setSyncing(false);
     }
