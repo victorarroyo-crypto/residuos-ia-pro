@@ -1,0 +1,13 @@
+web/
+supabase/
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.md
+*.pdf
+.env
+.env.*
+node_modules/
+.next/
