@@ -17,11 +17,13 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
+import io
+from googleapiclient.http import MediaIoBaseDownload
 
 logger = logging.getLogger(__name__)
 
-# Only request access to files created by this app
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# Full Drive access needed to browse user-uploaded files
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 ROOT_FOLDER_NAME = "RAG_Residuos_Industriales"
 
@@ -474,3 +476,69 @@ class GoogleDriveService:
     def get_file_url(self, file_id: str) -> str:
         """Get the web view URL for a file."""
         return f"https://drive.google.com/file/d/{file_id}/view"
+
+    # ──────────────────────────────────────────────────
+    # BROWSE & DOWNLOAD
+    # ──────────────────────────────────────────────────
+
+    def list_folder(self, folder_id: str, page_token: Optional[str] = None) -> dict:
+        """
+        List contents of a folder.
+        Returns {items: [{id, name, mimeType, size, modifiedTime, isFolder}], nextPageToken?}
+        """
+        q = f"'{folder_id}' in parents and trashed=false"
+        fields = "nextPageToken, files(id, name, mimeType, size, modifiedTime)"
+
+        result = (
+            self.service.files()
+            .list(
+                q=q,
+                fields=fields,
+                pageSize=100,
+                orderBy="folder,name",
+                pageToken=page_token or None,
+            )
+            .execute()
+        )
+
+        items = []
+        for f in result.get("files", []):
+            is_folder = f["mimeType"] == "application/vnd.google-apps.folder"
+            items.append({
+                "id": f["id"],
+                "name": f["name"],
+                "mimeType": f["mimeType"],
+                "size": int(f.get("size", 0)) if not is_folder else None,
+                "modifiedTime": f.get("modifiedTime"),
+                "isFolder": is_folder,
+            })
+
+        resp: dict = {"items": items}
+        if result.get("nextPageToken"):
+            resp["nextPageToken"] = result["nextPageToken"]
+        return resp
+
+    def download_file(self, file_id: str) -> tuple[bytes, str, str]:
+        """
+        Download a file from Drive.
+        Returns (file_bytes, filename, mime_type).
+        """
+        # Get file metadata first
+        meta = (
+            self.service.files()
+            .get(fileId=file_id, fields="name, mimeType, size")
+            .execute()
+        )
+        filename = meta["name"]
+        mime_type = meta.get("mimeType", "application/octet-stream")
+
+        # Download content
+        request = self.service.files().get_media(fileId=file_id)
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        buffer.seek(0)
+        return buffer.read(), filename, mime_type
