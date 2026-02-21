@@ -21,6 +21,7 @@ const ACCEPTED_EXTENSIONS = [".pdf", ".xlsx", ".xls", ".csv"];
 
 const stepLabels: Record<string, string> = {
   iniciando: "Iniciando...",
+  subiendo: "Subiendo archivo...",
   detectando_tipo: "Detectando tipo de documento",
   extrayendo_contenido: "Extrayendo contenido",
   clasificando_documento: "Clasificando documento",
@@ -37,6 +38,7 @@ interface FileUploadState {
   status: "pending" | "uploading" | "processing" | "done" | "error";
   progress: PipelineProgress | null;
   error: string | null;
+  result: Record<string, unknown> | null;
 }
 
 export default function UploadPage({
@@ -66,11 +68,8 @@ export default function UploadPage({
 
   // Subscribe to pipeline_progress via Supabase Realtime
   useEffect(() => {
-    const docIds = files
-      .filter((f) => f.status === "processing")
-      .map((f) => `doc_${f.file.name}`);
-
-    if (docIds.length === 0) return;
+    const processingFiles = files.filter((f) => f.status === "processing");
+    if (processingFiles.length === 0) return;
 
     const supabase = createClient();
     const channel = supabase
@@ -86,8 +85,9 @@ export default function UploadPage({
           const progress = payload.new as PipelineProgress;
           setFiles((prev) =>
             prev.map((f) => {
-              const expectedDocId = `doc_${f.file.name}`;
-              if (progress.doc_id === expectedDocId) {
+              if (f.status !== "processing") return f;
+              // Match by filename pattern
+              if (progress.doc_id && progress.doc_id.includes(f.file.name)) {
                 return {
                   ...f,
                   progress,
@@ -128,6 +128,7 @@ export default function UploadPage({
         status: "pending" as const,
         progress: null,
         error: null,
+        result: null,
       })),
     ]);
   }, []);
@@ -158,64 +159,18 @@ export default function UploadPage({
       const fileState = files[index];
       if (!fileState) return;
 
-      setFiles((prev) =>
-        prev.map((f, i) => (i === index ? { ...f, status: "uploading" } : f))
-      );
-
-      const supabase = createClient();
-      const filePath = `${id}/${Date.now()}_${fileState.file.name}`;
-
-      // Upload to Supabase Storage
-      const { error: uploadError } = await supabase.storage
-        .from("documentos")
-        .upload(filePath, fileState.file);
-
-      if (uploadError) {
-        setFiles((prev) =>
-          prev.map((f, i) =>
-            i === index
-              ? { ...f, status: "error", error: uploadError.message }
-              : f
-          )
-        );
-        return;
-      }
-
-      // Create document record
-      const { error: insertError } = await supabase
-        .from("client_documents")
-        .insert({
-          id: `doc_${fileState.file.name}_${Date.now()}`,
-          client_id: id,
-          titulo: fileState.file.name.replace(/\.[^.]+$/, ""),
-          estado: "pendiente",
-          naturaleza_pdf: fileState.file.name.endsWith(".pdf") ? null : "excel",
-          fecha_ingesta: new Date().toISOString(),
-        });
-
-      if (insertError) {
-        setFiles((prev) =>
-          prev.map((f, i) =>
-            i === index
-              ? { ...f, status: "error", error: insertError.message }
-              : f
-          )
-        );
-        return;
-      }
-
-      // Mark as processing (waiting for pipeline to pick it up via Realtime)
+      // Phase 1: Uploading
       setFiles((prev) =>
         prev.map((f, i) =>
           i === index
             ? {
                 ...f,
-                status: "processing",
+                status: "uploading",
                 progress: {
-                  doc_id: `doc_${f.file.name}`,
-                  step: "iniciando",
+                  doc_id: "",
+                  step: "subiendo",
                   percentage: 5,
-                  mensaje: "Documento subido, esperando procesamiento...",
+                  mensaje: "Subiendo archivo...",
                   error: null,
                 },
               }
@@ -223,45 +178,95 @@ export default function UploadPage({
         )
       );
 
-      // Simulate pipeline progress for now (will be replaced by real pipeline)
-      const steps = [
-        { step: "detectando_tipo", percentage: 10 },
-        { step: "extrayendo_contenido", percentage: 25 },
-        { step: "clasificando_documento", percentage: 40 },
-        { step: "fragmentando", percentage: 55 },
-        { step: "generando_embeddings", percentage: 70 },
-        { step: "extrayendo_metadatos", percentage: 85 },
-        { step: "almacenando", percentage: 95 },
-        { step: "completado", percentage: 100 },
-      ];
+      // Send to API
+      const formData = new FormData();
+      formData.append("file", fileState.file);
+      formData.append("client_id", id);
 
-      for (const s of steps) {
-        await new Promise((resolve) => setTimeout(resolve, 600 + Math.random() * 400));
+      try {
+        // Phase 2: Processing
         setFiles((prev) =>
           prev.map((f, i) =>
             i === index
               ? {
                   ...f,
+                  status: "processing",
                   progress: {
-                    doc_id: `doc_${f.file.name}`,
-                    step: s.step,
-                    percentage: s.percentage,
-                    mensaje: stepLabels[s.step],
+                    doc_id: "",
+                    step: "detectando_tipo",
+                    percentage: 10,
+                    mensaje: "Enviado al pipeline, procesando...",
                     error: null,
                   },
-                  status: s.step === "completado" ? "done" : "processing",
+                }
+              : f
+          )
+        );
+
+        const response = await fetch("/api/ingest", {
+          method: "POST",
+          body: formData,
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || result.error) {
+          setFiles((prev) =>
+            prev.map((f, i) =>
+              i === index
+                ? {
+                    ...f,
+                    status: "error",
+                    error: result.error || result.detail || "Error en el procesamiento",
+                    progress: {
+                      doc_id: "",
+                      step: "error",
+                      percentage: 0,
+                      mensaje: null,
+                      error: result.error || "Error",
+                    },
+                  }
+                : f
+            )
+          );
+          return;
+        }
+
+        // Phase 3: Done
+        setFiles((prev) =>
+          prev.map((f, i) =>
+            i === index
+              ? {
+                  ...f,
+                  status: "done",
+                  result,
+                  progress: {
+                    doc_id: result.doc_id || "",
+                    step: "completado",
+                    percentage: 100,
+                    mensaje: "Completado",
+                    error: null,
+                  },
+                }
+              : f
+          )
+        );
+      } catch (err) {
+        setFiles((prev) =>
+          prev.map((f, i) =>
+            i === index
+              ? {
+                  ...f,
+                  status: "error",
+                  error:
+                    err instanceof Error
+                      ? err.message
+                      : "Error de conexion con el pipeline",
                 }
               : f
           )
         );
       }
-
-      // Update document status to indexado
-      await supabase
-        .from("client_documents")
-        .update({ estado: "indexado" })
-        .eq("client_id", id)
-        .eq("titulo", fileState.file.name.replace(/\.[^.]+$/, ""));
     },
     [files, id]
   );
@@ -398,12 +403,15 @@ export default function UploadPage({
                         </p>
                       )}
 
-                      {fileState.status === "uploading" && (
-                        <div className="mt-1 flex items-center gap-2">
-                          <Loader2 className="h-3 w-3 animate-spin text-vandarum-teal" />
-                          <span className="text-xs text-vandarum-teal">
-                            Subiendo a Supabase Storage...
-                          </span>
+                      {fileState.status === "uploading" && fileState.progress && (
+                        <div className="mt-2 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="h-3 w-3 animate-spin text-vandarum-teal" />
+                            <span className="text-xs text-vandarum-teal">
+                              {stepLabels[fileState.progress.step] ?? "Subiendo..."}
+                            </span>
+                          </div>
+                          <Progress value={fileState.progress.percentage} />
                         </div>
                       )}
 
@@ -411,7 +419,8 @@ export default function UploadPage({
                         fileState.progress && (
                           <div className="mt-2 space-y-1">
                             <div className="flex items-center justify-between text-xs">
-                              <span className="text-muted-foreground">
+                              <span className="flex items-center gap-2 text-muted-foreground">
+                                <Loader2 className="h-3 w-3 animate-spin" />
                                 {stepLabels[fileState.progress.step] ??
                                   fileState.progress.step}
                               </span>
@@ -424,9 +433,31 @@ export default function UploadPage({
                         )}
 
                       {fileState.status === "done" && (
-                        <div className="mt-1 flex items-center gap-1 text-xs text-vandarum-green">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Documento indexado correctamente
+                        <div className="mt-1 space-y-1">
+                          <div className="flex items-center gap-1 text-xs text-vandarum-green">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Documento indexado correctamente
+                          </div>
+                          {fileState.result && (
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              {"doc_type" in fileState.result && (
+                                <Badge variant="outline" className="text-xs">
+                                  {String(fileState.result.doc_type).replace(/_/g, " ")}
+                                </Badge>
+                              )}
+                              {"num_chunks" in fileState.result && (
+                                <span className="text-xs text-muted-foreground">
+                                  {String(fileState.result.num_chunks)} chunks
+                                </span>
+                              )}
+                              {Array.isArray(fileState.result.ler_codes_found) &&
+                                fileState.result.ler_codes_found.length > 0 && (
+                                  <span className="text-xs text-muted-foreground">
+                                    LERs: {(fileState.result.ler_codes_found as string[]).join(", ")}
+                                  </span>
+                                )}
+                            </div>
+                          )}
                         </div>
                       )}
 
