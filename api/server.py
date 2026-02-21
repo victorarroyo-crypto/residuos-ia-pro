@@ -586,6 +586,296 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════
+# GOOGLE DRIVE SYNC - Auto-sync & bulk ingestion
+# ═══════════════════════════════════════════════════════════════
+
+class GDriveSyncRequest(BaseModel):
+    consultant_id: str
+    folder_id: Optional[str] = None  # None = use root folder
+
+
+@app.post("/api/gdrive/sync")
+async def gdrive_sync(request: GDriveSyncRequest):
+    """
+    Scan Google Drive for new documents and ingest them automatically.
+    Recursively finds all files, skips already-indexed ones, ingests the rest.
+    """
+    if service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    gd, sb = await _get_gdrive_service(request.consultant_id)
+
+    # Determine root folder
+    folder_id = request.folder_id
+    if not folder_id:
+        gdrive_row = await (
+            sb.table("consultant_gdrive")
+            .select("root_folder_id")
+            .eq("consultant_id", request.consultant_id)
+            .execute()
+        )
+        if not gdrive_row.data or not gdrive_row.data[0].get("root_folder_id"):
+            raise HTTPException(status_code=404, detail="No root folder configured")
+        folder_id = gdrive_row.data[0]["root_folder_id"]
+
+    # Create sync log entry
+    sync_log = await (
+        sb.table("gdrive_sync_log")
+        .insert({
+            "consultant_id": request.consultant_id,
+            "status": "running",
+        })
+        .execute()
+    )
+    sync_id = sync_log.data[0]["id"]
+
+    try:
+        # 1. Recursively list all files in Drive
+        all_files = gd.list_all_files_recursive(folder_id)
+        total_found = len(all_files)
+
+        # 2. Check which are already indexed
+        all_drive_ids = [f["id"] for f in all_files]
+        indexed_ids: set[str] = set()
+        for i in range(0, len(all_drive_ids), 50):
+            batch = all_drive_ids[i:i + 50]
+            result = await (
+                sb.table("client_documents")
+                .select("drive_file_id")
+                .in_("drive_file_id", batch)
+                .execute()
+            )
+            for row in result.data or []:
+                if row.get("drive_file_id"):
+                    indexed_ids.add(row["drive_file_id"])
+
+        new_files = [f for f in all_files if f["id"] not in indexed_ids]
+
+        # 3. Ingest new files
+        ingested = 0
+        skipped = len(all_files) - len(new_files)
+        failed = 0
+        details: list[dict] = []
+
+        for file_info in new_files:
+            try:
+                file_bytes, filename, mime_type = gd.download_file(file_info["id"])
+
+                if len(file_bytes) == 0:
+                    details.append({
+                        "file": file_info["name"],
+                        "status": "skipped",
+                        "reason": "empty file",
+                    })
+                    skipped += 1
+                    continue
+
+                if len(file_bytes) > 100 * 1024 * 1024:
+                    details.append({
+                        "file": file_info["name"],
+                        "status": "skipped",
+                        "reason": "too large (>100MB)",
+                    })
+                    skipped += 1
+                    continue
+
+                result = await service.ingest(
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    rag_scope="general",
+                )
+
+                if result.document_id:
+                    await (
+                        sb.table("client_documents")
+                        .update({"drive_file_id": file_info["id"]})
+                        .eq("id", result.document_id)
+                        .execute()
+                    )
+
+                ingested += 1
+                details.append({
+                    "file": file_info["name"],
+                    "path": file_info.get("path", ""),
+                    "status": "ingested",
+                    "document_id": result.document_id,
+                    "chunks": result.num_chunks,
+                })
+
+            except Exception as e:
+                failed += 1
+                details.append({
+                    "file": file_info["name"],
+                    "path": file_info.get("path", ""),
+                    "status": "error",
+                    "error": str(e)[:200],
+                })
+
+        # 4. Update sync log
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await (
+            sb.table("gdrive_sync_log")
+            .update({
+                "status": "completed",
+                "completed_at": now_iso,
+                "total_files_found": total_found,
+                "files_ingested": ingested,
+                "files_skipped": skipped,
+                "files_failed": failed,
+                "details": details,
+            })
+            .eq("id", sync_id)
+            .execute()
+        )
+
+        # Update last_synced_at
+        await (
+            sb.table("consultant_gdrive")
+            .update({"last_synced_at": now_iso})
+            .eq("consultant_id", request.consultant_id)
+            .execute()
+        )
+
+        return {
+            "sync_id": sync_id,
+            "status": "completed",
+            "total_files_found": total_found,
+            "files_ingested": ingested,
+            "files_skipped": skipped,
+            "files_failed": failed,
+            "details": details,
+        }
+
+    except Exception as e:
+        # Update sync log with error
+        from datetime import datetime, timezone
+        await (
+            sb.table("gdrive_sync_log")
+            .update({
+                "status": "error",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "error_message": str(e)[:500],
+            })
+            .eq("id", sync_id)
+            .execute()
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gdrive/sync-status")
+async def gdrive_sync_status(consultant_id: str = Query(...)):
+    """
+    Get sync status: last sync info + auto-sync setting.
+    """
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+
+    # Get GDrive config
+    gdrive_result = await (
+        sb.table("consultant_gdrive")
+        .select("last_synced_at, auto_sync_enabled")
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+
+    gdrive_config = gdrive_result.data[0] if gdrive_result.data else {}
+
+    # Get last 5 sync logs
+    logs_result = await (
+        sb.table("gdrive_sync_log")
+        .select("*")
+        .eq("consultant_id", consultant_id)
+        .order("started_at", desc=True)
+        .limit(5)
+        .execute()
+    )
+
+    # Check if a sync is currently running
+    running = any(
+        log.get("status") == "running" for log in (logs_result.data or [])
+    )
+
+    return {
+        "last_synced_at": gdrive_config.get("last_synced_at"),
+        "auto_sync_enabled": gdrive_config.get("auto_sync_enabled", True),
+        "is_syncing": running,
+        "recent_syncs": logs_result.data or [],
+    }
+
+
+class GDriveAutoSyncToggle(BaseModel):
+    consultant_id: str
+    enabled: bool
+
+
+@app.post("/api/gdrive/sync-toggle")
+async def gdrive_sync_toggle(request: GDriveAutoSyncToggle):
+    """Toggle auto-sync on/off."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    await (
+        sb.table("consultant_gdrive")
+        .update({"auto_sync_enabled": request.enabled})
+        .eq("consultant_id", request.consultant_id)
+        .execute()
+    )
+    return {"success": True, "auto_sync_enabled": request.enabled}
+
+
+@app.post("/api/gdrive/sync-all")
+async def gdrive_sync_all():
+    """
+    Sync ALL consultants with auto_sync_enabled=true.
+    Called by cron job.
+    """
+    if service is None or rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    # Verify cron secret
+    # (In production, check Authorization header against CRON_SECRET)
+
+    sb = await rag_service._get_supabase()
+
+    # Get all consultants with auto-sync enabled
+    result = await (
+        sb.table("consultant_gdrive")
+        .select("consultant_id, root_folder_id")
+        .eq("auto_sync_enabled", True)
+        .execute()
+    )
+
+    results = []
+    for row in result.data or []:
+        cid = row["consultant_id"]
+        try:
+            sync_result = await gdrive_sync(GDriveSyncRequest(
+                consultant_id=cid,
+                folder_id=row.get("root_folder_id"),
+            ))
+            results.append({
+                "consultant_id": cid,
+                "status": "completed",
+                "files_ingested": sync_result.get("files_ingested", 0),
+            })
+        except Exception as e:
+            results.append({
+                "consultant_id": cid,
+                "status": "error",
+                "error": str(e)[:200],
+            })
+
+    return {
+        "consultants_synced": len(results),
+        "results": results,
+    }
+
+
 @app.delete("/api/gdrive/disconnect")
 async def gdrive_disconnect(consultant_id: str = Query(...)):
     """Disconnect Google Drive (delete stored tokens)."""

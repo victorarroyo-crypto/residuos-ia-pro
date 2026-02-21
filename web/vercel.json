@@ -5,6 +5,12 @@
   "outputDirectory": ".next",
   "installCommand": "npm install",
   "regions": ["cdg1"],
+  "crons": [
+    {
+      "path": "/api/cron/gdrive-sync",
+      "schedule": "*/30 * * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
