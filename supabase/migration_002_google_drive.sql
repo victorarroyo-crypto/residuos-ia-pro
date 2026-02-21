@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS consultant_gdrive (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   consultant_id       UUID NOT NULL UNIQUE,
   access_token        TEXT,
-  refresh_token       TEXT NOT NULL,
+  refresh_token       TEXT,
   token_expiry        TIMESTAMPTZ,
   root_folder_id      TEXT,             -- GD ID of "RAG_Residuos_Industriales"
   folder_mapping      JSONB DEFAULT '{}', -- All folder IDs: {section_name: folder_id, ...}

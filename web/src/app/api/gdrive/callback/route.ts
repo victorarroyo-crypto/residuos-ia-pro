@@ -93,20 +93,29 @@ export async function GET(request: NextRequest) {
 
     const sb = createClient(supabaseUrl, serviceKey);
 
+    // Build upsert payload – refresh_token may be absent on re-auth
+    const upsertPayload: Record<string, unknown> = {
+      consultant_id: consultantId,
+      access_token: tokenData.access_token,
+      token_expiry: tokenExpiry,
+      folder_mapping: {},
+    };
+    if (tokenData.refresh_token) {
+      upsertPayload.refresh_token = tokenData.refresh_token;
+    }
+
     const { error: dbError } = await sb.from("consultant_gdrive").upsert(
-      {
-        consultant_id: consultantId,
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
-        token_expiry: tokenExpiry,
-        folder_mapping: {},
-      },
+      upsertPayload,
       { onConflict: "consultant_id" }
     );
 
     if (dbError) {
+      console.error("[gdrive/callback] DB upsert error:", JSON.stringify(dbError));
       settingsUrl.searchParams.set("gdrive", "error");
-      settingsUrl.searchParams.set("gdrive_error", "db_save_failed");
+      settingsUrl.searchParams.set(
+        "gdrive_error",
+        `db_save_failed: ${dbError.message || dbError.code || "unknown"}`
+      );
       return NextResponse.redirect(settingsUrl);
     }
 
