@@ -16,6 +16,10 @@ langchain-core==0.3.0       # tipos base compartidos con LangGraph
 # Base de datos
 supabase==2.7.0             # cliente Supabase async
 
+# Excel
+openpyxl==3.1.5             # lectura de archivos Excel (.xlsx)
+pandas==2.2.2               # procesamiento tabular de datos Excel/CSV
+
 # Utilidades
 python-dotenv==1.0.1
 asyncio==3.4.3
