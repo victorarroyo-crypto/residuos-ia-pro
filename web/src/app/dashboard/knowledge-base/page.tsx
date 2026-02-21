@@ -11,7 +11,6 @@ import {
   Loader2,
   MessageSquare,
   Database,
-  ChevronDown,
   X,
   File,
   AlertCircle,
