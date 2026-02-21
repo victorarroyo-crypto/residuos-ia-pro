@@ -172,6 +172,7 @@ export default function UploadPage({
                   percentage: 5,
                   mensaje: "Subiendo archivo...",
                   error: null,
+                  updated_at: null,
                 },
               }
             : f
@@ -197,6 +198,7 @@ export default function UploadPage({
                     percentage: 10,
                     mensaje: "Enviado al pipeline, procesando...",
                     error: null,
+                    updated_at: null,
                   },
                 }
               : f
@@ -224,6 +226,7 @@ export default function UploadPage({
                       percentage: 0,
                       mensaje: null,
                       error: result.error || "Error",
+                      updated_at: null,
                     },
                   }
                 : f
@@ -246,6 +249,7 @@ export default function UploadPage({
                     percentage: 100,
                     mensaje: "Completado",
                     error: null,
+                    updated_at: null,
                   },
                 }
               : f

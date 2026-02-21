@@ -27,11 +27,10 @@ export default function NewClientPage() {
       nombre: form.get("nombre") as string,
       cnae: (form.get("cnae") as string) || null,
       sector: (form.get("sector") as string) || null,
-      comunidad: (form.get("comunidad") as string) || null,
+      comunidad_autonoma: (form.get("comunidad_autonoma") as string) || null,
       municipio: (form.get("municipio") as string) || null,
       tipo_relacion: (form.get("tipo_relacion") as string) || null,
       consultant_id: user?.id ?? null,
-      metadata: null,
     });
 
     if (error) {
@@ -93,7 +92,7 @@ export default function NewClientPage() {
               <div>
                 <label className="text-sm font-medium">Comunidad Autonoma</label>
                 <input
-                  name="comunidad"
+                  name="comunidad_autonoma"
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
                   placeholder="Ej: Comunitat Valenciana"
                 />
