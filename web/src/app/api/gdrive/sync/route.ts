@@ -24,9 +24,16 @@ export async function POST(request: NextRequest) {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: "Error" }));
+        const text = await response.text().catch(() => "");
+        let message = `Pipeline respondio con status ${response.status}`;
+        try {
+          const body = JSON.parse(text);
+          message = body.detail || body.error || body.message || message;
+        } catch {
+          if (text) message = text;
+        }
         return NextResponse.json(
-          { error: error.detail },
+          { error: message },
           { status: response.status }
         );
       }
