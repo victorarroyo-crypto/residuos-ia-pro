@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from supabase import AsyncClient, acreate_client
+from supabase._async.client import AsyncClient, create_client as acreate_client
 
 from .pdf_pipeline import DocType, DocumentChunk, ProcessedDocument, PipelineConfig
 
