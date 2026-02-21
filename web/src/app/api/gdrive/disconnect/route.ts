@@ -1,20 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { readFileSync } from "fs";
-import { resolve } from "path";
-
-function loadEnvVar(name: string): string {
-  if (process.env[name]) return process.env[name]!;
-  try {
-    const envPath = resolve(process.cwd(), "..", ".env");
-    const content = readFileSync(envPath, "utf-8");
-    const match = content.match(new RegExp(`^${name}=(.+)$`, "m"));
-    if (match) return match[1].trim();
-  } catch {
-    // ignore
-  }
-  return "";
-}
+import { loadEnv } from "@/lib/env";
 
 export async function DELETE(request: NextRequest) {
   const consultantId = request.nextUrl.searchParams.get("consultant_id");
@@ -26,8 +12,8 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const supabaseUrl = loadEnvVar("NEXT_PUBLIC_SUPABASE_URL") || loadEnvVar("SUPABASE_URL");
-    const serviceKey = loadEnvVar("SUPABASE_SERVICE_ROLE_KEY");
+    const supabaseUrl = loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
+    const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
     const sb = createClient(supabaseUrl, serviceKey);
 
     await sb
