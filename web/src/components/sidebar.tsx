@@ -9,7 +9,6 @@ import type { User } from "@supabase/supabase-js";
 import {
   LayoutDashboard,
   Users,
-  FileText,
   AlertTriangle,
   TrendingDown,
   Settings,
@@ -21,7 +20,6 @@ import {
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/clients", label: "Clientes", icon: Users },
-  { href: "/dashboard/documents", label: "Documentos", icon: FileText },
   { href: "/dashboard/knowledge-base", label: "Base de Conocimiento", icon: BookOpen },
   { href: "/dashboard/alerts", label: "Alertas", icon: AlertTriangle },
   { href: "/dashboard/savings", label: "Ahorros", icon: TrendingDown },
