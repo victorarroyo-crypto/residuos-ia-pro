@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createAuthClient } from "@/lib/supabase/server";
-import { createClient } from "@supabase/supabase-js";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { loadEnv } from "@/lib/env";
 
 export async function GET(request: NextRequest) {
@@ -70,7 +70,8 @@ export async function GET(request: NextRequest) {
     const tokenData = await tokenResponse.json();
 
     if (!tokenResponse.ok || !tokenData.access_token) {
-      const errorDetail = tokenData.error_description || tokenData.error || "token_exchange_failed";
+      const errorDetail =
+        tokenData.error_description || tokenData.error || "token_exchange_failed";
       settingsUrl.searchParams.set("gdrive", "error");
       settingsUrl.searchParams.set("gdrive_error", errorDetail);
       return NextResponse.redirect(settingsUrl);
@@ -81,17 +82,13 @@ export async function GET(request: NextRequest) {
       ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
       : null;
 
-    // Store tokens in Supabase using service role
-    const supabaseUrl = loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-    const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-    if (!supabaseUrl || !serviceKey) {
+    // Get validated admin client
+    const admin = getAdminClient();
+    if (!admin.ok) {
       settingsUrl.searchParams.set("gdrive", "error");
-      settingsUrl.searchParams.set("gdrive_error", "supabase_not_configured");
+      settingsUrl.searchParams.set("gdrive_error", admin.detail);
       return NextResponse.redirect(settingsUrl);
     }
-
-    const sb = createClient(supabaseUrl, serviceKey);
 
     // Build upsert payload – refresh_token may be absent on re-auth
     const upsertPayload: Record<string, unknown> = {
@@ -104,13 +101,15 @@ export async function GET(request: NextRequest) {
       upsertPayload.refresh_token = tokenData.refresh_token;
     }
 
-    const { error: dbError } = await sb.from("consultant_gdrive").upsert(
-      upsertPayload,
-      { onConflict: "consultant_id" }
-    );
+    const { error: dbError } = await admin.client
+      .from("consultant_gdrive")
+      .upsert(upsertPayload, { onConflict: "consultant_id" });
 
     if (dbError) {
-      console.error("[gdrive/callback] DB upsert error:", JSON.stringify(dbError));
+      console.error(
+        "[gdrive/callback] DB upsert error:",
+        JSON.stringify(dbError)
+      );
       settingsUrl.searchParams.set("gdrive", "error");
       settingsUrl.searchParams.set(
         "gdrive_error",

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { loadEnv } from "@/lib/env";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function DELETE(request: NextRequest) {
   const consultantId = request.nextUrl.searchParams.get("consultant_id");
@@ -11,12 +10,13 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  try {
-    const supabaseUrl = loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-    const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-    const sb = createClient(supabaseUrl, serviceKey);
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({ error: admin.detail }, { status: admin.status });
+  }
 
-    await sb
+  try {
+    await admin.client
       .from("consultant_gdrive")
       .delete()
       .eq("consultant_id", consultantId);

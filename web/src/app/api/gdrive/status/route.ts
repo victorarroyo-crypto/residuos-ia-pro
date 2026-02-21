@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { loadEnv } from "@/lib/env";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function GET(request: NextRequest) {
   const consultantId = request.nextUrl.searchParams.get("consultant_id");
@@ -11,19 +10,13 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const supabaseUrl = loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-  const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json(
-      { error: "Supabase no configurado en el servidor." },
-      { status: 503 }
-    );
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({ error: admin.detail }, { status: admin.status });
   }
 
   try {
-    const sb = createClient(supabaseUrl, serviceKey);
-    const { data, error } = await sb
+    const { data, error } = await admin.client
       .from("consultant_gdrive")
       .select("root_folder_id, folder_mapping, created_at, updated_at")
       .eq("consultant_id", consultantId)

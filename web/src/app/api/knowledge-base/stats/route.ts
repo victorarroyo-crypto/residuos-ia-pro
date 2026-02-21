@@ -1,22 +1,19 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { loadEnv } from "@/lib/env";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function GET() {
-  const supabaseUrl =
-    loadEnv("NEXT_PUBLIC_SUPABASE_URL") || loadEnv("SUPABASE_URL");
-  const serviceKey = loadEnv("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json(
-      { total_documents: 0, total_chunks: 0, total_pages: 0, by_type: {} },
-    );
+  const admin = getAdminClient();
+  if (!admin.ok) {
+    return NextResponse.json({
+      total_documents: 0,
+      total_chunks: 0,
+      total_pages: 0,
+      by_type: {},
+    });
   }
 
   try {
-    const sb = createClient(supabaseUrl, serviceKey);
-
-    const { data: docs } = await sb
+    const { data: docs } = await admin.client
       .from("client_documents")
       .select("tipo, total_paginas, total_chunks");
 
