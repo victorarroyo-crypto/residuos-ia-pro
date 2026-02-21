@@ -62,7 +62,7 @@ RETURNS TABLE (
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
-  drive_file_id TEXT,
+  storage_path  TEXT,
   rag_scope     TEXT
 )
 LANGUAGE SQL STABLE AS $$
@@ -75,7 +75,7 @@ LANGUAGE SQL STABLE AS $$
     cd.titulo                                AS doc_titulo,
     cd.tipo                                  AS doc_tipo,
     cd.metadata                              AS doc_metadata,
-    cd.drive_file_id,
+    cd.storage_path,
     dc.rag_scope
   FROM document_chunks dc
   JOIN client_documents cd ON dc.document_id = cd.id
@@ -126,7 +126,7 @@ RETURNS TABLE (
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
-  drive_file_id TEXT,
+  storage_path  TEXT,
   rag_scope     TEXT
 )
 LANGUAGE SQL STABLE AS $$
@@ -134,7 +134,7 @@ LANGUAGE SQL STABLE AS $$
   (
     SELECT dc.id, dc.document_id, dc.contenido, dc.chunk_type,
            1 - (dc.embedding <=> query_embedding) AS similarity,
-           cd.titulo, cd.tipo, cd.metadata, cd.drive_file_id, dc.rag_scope
+           cd.titulo, cd.tipo, cd.metadata, cd.storage_path, dc.rag_scope
     FROM document_chunks dc
     JOIN client_documents cd ON dc.document_id = cd.id
     WHERE dc.rag_scope = 'general'
@@ -148,7 +148,7 @@ LANGUAGE SQL STABLE AS $$
   (
     SELECT dc.id, dc.document_id, dc.contenido, dc.chunk_type,
            1 - (dc.embedding <=> query_embedding) AS similarity,
-           cd.titulo, cd.tipo, cd.metadata, cd.drive_file_id, dc.rag_scope
+           cd.titulo, cd.tipo, cd.metadata, cd.storage_path, dc.rag_scope
     FROM document_chunks dc
     JOIN client_documents cd ON dc.document_id = cd.id
     WHERE dc.rag_scope = 'project'

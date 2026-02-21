@@ -48,7 +48,7 @@ class RAGSearchResult:
     doc_title: str
     doc_type: str
     rag_scope: RAGScope
-    drive_file_id: Optional[str]
+    storage_path: Optional[str]
     metadata: dict
 
 
@@ -184,7 +184,7 @@ class RAGScopingService:
                     doc_title=row["doc_titulo"],
                     doc_type=row["doc_tipo"],
                     rag_scope=rag_scope,
-                    drive_file_id=row.get("drive_file_id"),
+                    storage_path=row.get("storage_path"),
                     metadata=row.get("doc_metadata", {}),
                 )
                 for row in (result.data or [])

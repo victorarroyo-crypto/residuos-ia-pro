@@ -7,6 +7,23 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- ────────────────────────────────────────────────
+-- BUCKET: Almacenamiento de documentos originales
+-- Ejecutar desde Supabase Dashboard > Storage o via API
+-- ────────────────────────────────────────────────
+-- Estructura de paths dentro del bucket "documentos":
+--   {client_id}/{tipo_doc}/{filename}
+--   general/normativa/{filename}
+--
+-- Ejemplo:
+--   a1b2c3d4/AAI_Autorizaciones/aai_empresa_2024.pdf
+--   a1b2c3d4/Facturas/factura_gestor_enero.pdf
+--   general/Normativa/ley_residuos_2022.pdf
+--
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('documentos', 'documentos', false)
+ON CONFLICT (id) DO NOTHING;
+
+-- ────────────────────────────────────────────────
 -- TABLA: Documentos procesados
 -- ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS client_documents (
@@ -21,7 +38,7 @@ CREATE TABLE IF NOT EXISTS client_documents (
   ocr_aplicado          BOOLEAN DEFAULT false,
   ocr_confianza_media   DECIMAL(4,3),     -- 0.0 a 1.0
   fue_encriptado        BOOLEAN DEFAULT false,
-  drive_file_id         TEXT,
+  storage_path          TEXT,              -- path en Supabase Storage: {client_id}/{tipo}/{filename}
   advertencias          TEXT[] DEFAULT '{}',
   metadata              JSONB DEFAULT '{}',
   estado                TEXT DEFAULT 'indexado'
@@ -139,7 +156,7 @@ RETURNS TABLE (
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
-  drive_file_id TEXT
+  storage_path  TEXT
 )
 LANGUAGE SQL STABLE AS $$
   SELECT
@@ -151,7 +168,7 @@ LANGUAGE SQL STABLE AS $$
     cd.titulo      AS doc_titulo,
     cd.tipo        AS doc_tipo,
     cd.metadata    AS doc_metadata,
-    cd.drive_file_id
+    cd.storage_path
   FROM document_chunks dc
   JOIN client_documents cd ON dc.document_id = cd.id
   WHERE
@@ -190,6 +207,48 @@ CREATE POLICY "user_own_chunks" ON document_chunks
     document_id IN (
       SELECT id FROM client_documents WHERE client_id IN (
         SELECT id FROM clients WHERE consultant_id = auth.uid()
+      )
+    )
+  );
+
+-- ────────────────────────────────────────────────
+-- RLS para Supabase Storage (bucket "documentos")
+-- Solo el consultor del cliente puede acceder a sus archivos
+-- ────────────────────────────────────────────────
+CREATE POLICY "consultant_upload_documents" ON storage.objects
+  FOR INSERT WITH CHECK (
+    bucket_id = 'documentos'
+    AND (
+      -- Documentos generales (normativa) accesibles por cualquier usuario autenticado
+      (storage.foldername(name))[1] = 'general'
+      OR
+      -- Documentos de cliente: solo si el consultor gestiona ese cliente
+      (storage.foldername(name))[1] IN (
+        SELECT id::text FROM clients WHERE consultant_id = auth.uid()
+      )
+    )
+  );
+
+CREATE POLICY "consultant_read_documents" ON storage.objects
+  FOR SELECT USING (
+    bucket_id = 'documentos'
+    AND (
+      (storage.foldername(name))[1] = 'general'
+      OR
+      (storage.foldername(name))[1] IN (
+        SELECT id::text FROM clients WHERE consultant_id = auth.uid()
+      )
+    )
+  );
+
+CREATE POLICY "consultant_delete_documents" ON storage.objects
+  FOR DELETE USING (
+    bucket_id = 'documentos'
+    AND (
+      (storage.foldername(name))[1] = 'general'
+      OR
+      (storage.foldername(name))[1] IN (
+        SELECT id::text FROM clients WHERE consultant_id = auth.uid()
       )
     )
   );

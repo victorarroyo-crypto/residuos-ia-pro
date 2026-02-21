@@ -16,11 +16,6 @@ langchain-core==0.3.0       # tipos base compartidos con LangGraph
 # Base de datos
 supabase==2.7.0             # cliente Supabase async
 
-# Google Drive
-google-api-python-client==2.143.0
-google-auth==2.34.0
-google-auth-oauthlib==1.2.1
-
 # Utilidades
 python-dotenv==1.0.1
 asyncio==3.4.3

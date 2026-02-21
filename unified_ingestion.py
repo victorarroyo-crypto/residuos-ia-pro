@@ -46,7 +46,7 @@ class IngestionResult:
     doc_type: str
     rag_scope: str
     num_chunks: int
-    drive_file_id: Optional[str]
+    storage_path: Optional[str]
     supabase_doc_id: Optional[str]
     ler_codes_found: list[str]
     warnings: list[str]
@@ -60,7 +60,7 @@ class IngestionResult:
             "doc_type": self.doc_type,
             "rag_scope": self.rag_scope,
             "num_chunks": self.num_chunks,
-            "drive_file_id": self.drive_file_id,
+            "storage_path": self.storage_path,
             "supabase_doc_id": self.supabase_doc_id,
             "ler_codes_found": self.ler_codes_found,
             "warnings": self.warnings,
@@ -89,7 +89,6 @@ class UnifiedIngestionService:
         project_id: Optional[str] = None,
         rag_scope: Optional[str] = None,
         password: Optional[str] = None,
-        drive_upload: bool = True,
     ) -> IngestionResult:
         """
         Punto de entrada único para cualquier documento.
@@ -101,7 +100,7 @@ class UnifiedIngestionService:
             return IngestionResult(
                 success=False, doc_id="", filename=filename,
                 doc_type="desconocido", rag_scope="unknown", num_chunks=0,
-                drive_file_id=None, supabase_doc_id=None,
+                storage_path=None, supabase_doc_id=None,
                 ler_codes_found=[], warnings=[],
                 error=f"Formato no soportado: .{ext}. Formatos válidos: PDF, Excel, CSV",
             )
@@ -111,18 +110,18 @@ class UnifiedIngestionService:
         try:
             if file_type == "pdf":
                 return await self._ingest_pdf(
-                    file_bytes, filename, client_id, project_id, rag_scope, password, drive_upload
+                    file_bytes, filename, client_id, project_id, rag_scope, password
                 )
             else:
                 return await self._ingest_excel(
-                    file_bytes, filename, client_id, project_id, rag_scope, drive_upload
+                    file_bytes, filename, client_id, project_id, rag_scope
                 )
         except Exception as e:
             logger.exception(f"Error en ingesta de {filename}: {e}")
             return IngestionResult(
                 success=False, doc_id="", filename=filename,
                 doc_type="error", rag_scope="unknown", num_chunks=0,
-                drive_file_id=None, supabase_doc_id=None,
+                storage_path=None, supabase_doc_id=None,
                 ler_codes_found=[], warnings=[],
                 error=str(e),
             )
@@ -135,14 +134,12 @@ class UnifiedIngestionService:
         project_id: Optional[str],
         rag_scope_str: Optional[str],
         password: Optional[str],
-        drive_upload: bool,
     ) -> IngestionResult:
         result = await self.pdf_pipeline.process(
             pdf_bytes=file_bytes,
             client_id=client_id or "general",
             filename=filename,
             password=password,
-            drive_upload=drive_upload,
         )
 
         # Determinar scope
@@ -164,7 +161,7 @@ class UnifiedIngestionService:
             doc_type=result.doc_type.value,
             rag_scope=scope.value,
             num_chunks=len(result.chunks),
-            drive_file_id=result.drive_file_id,
+            storage_path=result.storage_path,
             supabase_doc_id=result.supabase_doc_id,
             ler_codes_found=result.metadata.get("ler_codes_found", []),
             warnings=result.extraction_warnings,
@@ -177,11 +174,9 @@ class UnifiedIngestionService:
         client_id: Optional[str],
         project_id: Optional[str],
         rag_scope_str: Optional[str],
-        drive_upload: bool,
     ) -> IngestionResult:
 
         # Determinar scope antes de procesar
-        # (el Excel siempre lleva scope en sus chunks desde el procesador)
         explicit_scope = RAGScope(rag_scope_str) if rag_scope_str else None
         scope = self.router.route(
             doc_type="costes_anuales",   # valor provisional, se refinará
@@ -223,6 +218,15 @@ class UnifiedIngestionService:
             },
             "estado": "indexado",
         }
+
+        # Subir archivo original a Supabase Storage
+        from .pdf_pipeline import DocType
+        storage_path = await self.storage.upload_file(
+            file_bytes, filename, client_id or "general",
+            DocType.DESCONOCIDO,
+        )
+        doc_data["storage_path"] = storage_path
+
         await sb.table("client_documents").upsert(doc_data).execute()
 
         # Guardar chunks con embeddings
@@ -231,15 +235,6 @@ class UnifiedIngestionService:
         # Poblar tablas estructuradas desde los datos del Excel
         await self._populate_structured_tables(sb, result, client_id, project_id)
 
-        # Subir a Drive
-        drive_file_id = None
-        if drive_upload and client_id:
-            from .pdf_pipeline import DocType
-            drive_file_id = await self.storage.upload_to_drive(
-                file_bytes, filename, client_id,
-                DocType.DESCONOCIDO,  # se muestra en carpeta del tipo de Excel
-            )
-
         return IngestionResult(
             success=True,
             doc_id=result.doc_id,
@@ -247,7 +242,7 @@ class UnifiedIngestionService:
             doc_type=result.excel_type.value,
             rag_scope=scope.value,
             num_chunks=len(result.chunks),
-            drive_file_id=drive_file_id,
+            storage_path=storage_path,
             supabase_doc_id=result.doc_id,
             ler_codes_found=result.metadata.get("ler_codes_found", []),
             warnings=result.warnings,
