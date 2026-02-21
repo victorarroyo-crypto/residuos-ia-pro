@@ -6,25 +6,29 @@ Expone el pipeline de procesamiento de documentos via HTTP.
 import os
 import sys
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # Ensure the project root is in the Python path (works locally and in Docker)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from pipeline import UnifiedIngestionService, PipelineConfigImpl
+from pipeline import UnifiedIngestionService, PipelineConfigImpl, RAGScopingService, RAGScope
 
 
 service: UnifiedIngestionService | None = None
+rag_service: RAGScopingService | None = None
+_config: PipelineConfigImpl | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global service
-    config = PipelineConfigImpl(
+    global service, rag_service, _config
+    _config = PipelineConfigImpl(
         anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         openai_api_key=os.environ["OPENAI_API_KEY"],
         supabase_url=os.environ.get(
@@ -34,7 +38,8 @@ async def lifespan(app: FastAPI):
             "SUPABASE_SERVICE_KEY", os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
         ),
     )
-    service = UnifiedIngestionService(config)
+    service = UnifiedIngestionService(_config)
+    rag_service = RAGScopingService(_config)
     yield
 
 
@@ -96,6 +101,223 @@ async def ingest_document(
         return result.to_dict()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════
+# RAG QUERY - Consulta con respuesta generada por LLM
+# ═══════════════════════════════════════════════════════════════
+
+class RAGQueryRequest(BaseModel):
+    query: str
+    client_id: Optional[str] = None
+    project_id: Optional[str] = None
+    scope: Optional[str] = None  # "general", "project", or None (both)
+    top_k: int = 5
+
+
+class RAGQueryResponse(BaseModel):
+    answer: str
+    sources: list[dict]
+    query: str
+    scope_used: list[str]
+
+
+@app.post("/api/rag/query", response_model=RAGQueryResponse)
+async def rag_query(request: RAGQueryRequest):
+    """
+    Consulta al RAG de documentos normativos y técnicos.
+    Busca chunks relevantes y genera una respuesta con Claude.
+    """
+    if rag_service is None or _config is None:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    # Determinar scopes a consultar
+    scopes = None
+    if request.scope == "general":
+        scopes = [RAGScope.GENERAL]
+    elif request.scope == "project":
+        scopes = [RAGScope.PROJECT]
+
+    try:
+        # Buscar en el RAG
+        rag_response = await rag_service.search(
+            query=request.query,
+            project_id=request.project_id,
+            client_id=request.client_id,
+            scopes=scopes,
+            top_k_per_scope=request.top_k,
+        )
+
+        # Generar respuesta con Claude usando el contexto recuperado
+        from anthropic import AsyncAnthropic
+        claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+
+        system_prompt = (
+            "Eres un experto en gestión de residuos industriales en España. "
+            "Respondes preguntas basándote ESTRICTAMENTE en el contexto proporcionado. "
+            "Si el contexto no contiene información suficiente, lo indicas claramente. "
+            "Cita las fuentes de tu respuesta (nombre del documento y tipo). "
+            "Responde siempre en español."
+        )
+
+        user_prompt = (
+            f"{rag_response.context_text}\n\n"
+            f"Basándote en el contexto anterior, responde a esta pregunta:\n"
+            f"{request.query}"
+        )
+
+        message = await claude.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        answer = message.content[0].text
+
+        # Preparar fuentes
+        sources = [
+            {
+                "document_id": r.document_id,
+                "title": r.doc_title,
+                "doc_type": r.doc_type,
+                "chunk_type": r.chunk_type,
+                "similarity": round(r.similarity, 3),
+                "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
+                "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
+            }
+            for r in rag_response.results
+        ]
+
+        scope_used = []
+        if rag_response.general_results:
+            scope_used.append("general")
+        if rag_response.project_results:
+            scope_used.append("project")
+
+        return RAGQueryResponse(
+            answer=answer,
+            sources=sources,
+            query=request.query,
+            scope_used=scope_used,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════
+# KNOWLEDGE BASE - Gestión de documentos normativos generales
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/knowledge-base")
+async def list_knowledge_base(
+    doc_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    """Lista los documentos de la base de conocimiento general (normativa, BREFs, guías)."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+
+    query = sb.table("client_documents").select(
+        "id, titulo, tipo, naturaleza_pdf, total_paginas, total_chunks, "
+        "tablas_encontradas, metadata, estado, fecha_documento, fecha_ingesta"
+    ).or_("client_id.is.null,client_id.eq.general")
+
+    if doc_type:
+        query = query.eq("tipo", doc_type)
+
+    if search:
+        query = query.ilike("titulo", f"%{search}%")
+
+    query = query.order("fecha_ingesta", desc=True)
+    result = await query.execute()
+
+    return {
+        "documents": result.data or [],
+        "total": len(result.data or []),
+    }
+
+
+@app.get("/api/knowledge-base/stats")
+async def knowledge_base_stats():
+    """Estadísticas de la base de conocimiento general."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+
+    # Total de documentos generales
+    docs_result = await (
+        sb.table("client_documents")
+        .select("id, tipo, total_chunks, total_paginas")
+        .or_("client_id.is.null,client_id.eq.general")
+        .execute()
+    )
+    docs = docs_result.data or []
+
+    # Contar por tipo
+    by_type: dict[str, int] = {}
+    total_chunks = 0
+    total_pages = 0
+    for doc in docs:
+        tipo = doc.get("tipo", "desconocido")
+        by_type[tipo] = by_type.get(tipo, 0) + 1
+        total_chunks += doc.get("total_chunks") or 0
+        total_pages += doc.get("total_paginas") or 0
+
+    return {
+        "total_documents": len(docs),
+        "total_chunks": total_chunks,
+        "total_pages": total_pages,
+        "by_type": by_type,
+    }
+
+
+@app.delete("/api/knowledge-base/{doc_id}")
+async def delete_knowledge_base_document(doc_id: str):
+    """Elimina un documento de la base de conocimiento general."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+
+    # Verificar que el documento existe y es general
+    doc_result = await (
+        sb.table("client_documents")
+        .select("id, client_id, storage_path")
+        .eq("id", doc_id)
+        .execute()
+    )
+
+    if not doc_result.data:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    doc = doc_result.data[0]
+    if doc.get("client_id") and doc["client_id"] != "general":
+        raise HTTPException(
+            status_code=403,
+            detail="Solo se pueden eliminar documentos de la base general"
+        )
+
+    # Eliminar chunks
+    await sb.table("document_chunks").delete().eq("document_id", doc_id).execute()
+    # Eliminar documento
+    await sb.table("client_documents").delete().eq("id", doc_id).execute()
+
+    # Eliminar archivo de Storage si existe
+    if doc.get("storage_path"):
+        try:
+            from pipeline import UnifiedIngestionService
+            storage_svc = service.storage if service else None
+            if storage_svc:
+                await storage_svc.delete_file(doc["storage_path"])
+        except Exception:
+            pass  # No fallar si el archivo ya no existe
+
+    return {"success": True, "deleted_id": doc_id}
 
 
 if __name__ == "__main__":
