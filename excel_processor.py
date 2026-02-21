@@ -68,7 +68,7 @@ class ProcessedExcel:
     sheets: list[SheetAnalysis]
     chunks: list                  # DocumentChunk compatibles con el pipeline PDF
     metadata: dict
-    drive_file_id: Optional[str] = None
+    storage_path: Optional[str] = None
     supabase_doc_id: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
 

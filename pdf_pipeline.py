@@ -83,7 +83,7 @@ class ProcessedDocument:
     ocr_avg_confidence: float
     extraction_warnings: list[str]
     metadata: dict              # fechas, números de expediente, LERs detectados, etc.
-    drive_file_id: Optional[str] = None
+    storage_path: Optional[str] = None
     supabase_doc_id: Optional[str] = None
 
 
@@ -100,7 +100,7 @@ class PDFPipeline:
       3. classify_doc()      → ¿AAI, contrato, factura, registro...?
       4. chunk_document()    → chunking semántico inteligente
       5. embed_chunks()      → embeddings con OpenAI
-      6. store()             → Supabase + Drive
+      6. store()             → Supabase (PostgreSQL + Storage)
       7. extract_metadata()  → LERs, fechas, importes, gestores detectados
     """
 
@@ -120,7 +120,6 @@ class PDFPipeline:
         client_id: str,
         filename: str,
         password: Optional[str] = None,
-        drive_upload: bool = True,
     ) -> ProcessedDocument:
         """
         Punto de entrada único. Recibe el PDF y devuelve el documento procesado
@@ -199,10 +198,10 @@ class PDFPipeline:
             metadata=metadata,
         )
 
-        if drive_upload:
-            processed.drive_file_id = await self.storage.upload_to_drive(
-                pdf_bytes, filename, client_id, doc_type
-            )
+        # Subir archivo original a Supabase Storage
+        processed.storage_path = await self.storage.upload_file(
+            pdf_bytes, filename, client_id, doc_type
+        )
 
         processed.supabase_doc_id = await self.storage.save_to_supabase(processed)
         await self.storage.save_chunks_to_supabase(chunks, processed.supabase_doc_id)

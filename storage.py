@@ -1,42 +1,38 @@
 """
 SERVICIO DE ALMACENAMIENTO
 ===========================
-Persiste todo en Supabase y Google Drive de forma organizada.
+Persiste todo en Supabase: metadatos en PostgreSQL y archivos originales
+en Supabase Storage con estructura organizada por cliente y tipo de documento.
 
-Drive:  RAG_Residuos_Industriales/Clientes/{cliente}/tipo_doc/
-        RAG_Residuos_Industriales/Normativa/nivel/
+Storage:  documentos/{client_id}/{tipo_doc}/{filename}
+          documentos/general/Normativa/{filename}
 
 Supabase: client_documents + document_chunks (con embeddings pgvector)
 """
 
-import io
-import json
 import logging
 from datetime import datetime
 from typing import Optional
 
 from supabase import AsyncClient, acreate_client
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 from .pdf_pipeline import DocType, DocumentChunk, ProcessedDocument, PipelineConfig
 
 logger = logging.getLogger(__name__)
 
-# Carpeta raíz en Drive
-DRIVE_ROOT_FOLDER = "RAG_Residuos_Industriales"
+# Bucket de Supabase Storage
+STORAGE_BUCKET = "documentos"
 
-# Subcarpetas por tipo de documento
-DRIVE_DOC_FOLDERS = {
-    DocType.AAI:      "AAI_Autorizaciones",
-    DocType.DARI:     "DARI_Declaraciones",
-    DocType.CONTRATO: "Contratos_Gestores",
-    DocType.FACTURA:  "Facturas",
-    DocType.REGISTRO: "Registros_Produccion",
-    DocType.PERMISO:  "Permisos",
-    DocType.NORMATIVA:"Normativa",
-    DocType.MANUAL:   "Manuales",
+# Subcarpetas por tipo de documento (misma organización que antes tenía Drive)
+DOC_TYPE_FOLDERS = {
+    DocType.AAI:         "AAI_Autorizaciones",
+    DocType.DARI:        "DARI_Declaraciones",
+    DocType.CONTRATO:    "Contratos_Gestores",
+    DocType.FACTURA:     "Facturas",
+    DocType.REGISTRO:    "Registros_Produccion",
+    DocType.PERMISO:     "Permisos",
+    DocType.NORMATIVA:   "Normativa",
+    DocType.MANUAL:      "Manuales",
     DocType.DESCONOCIDO: "_Sin_Clasificar",
 }
 
@@ -46,12 +42,10 @@ class StorageService:
     def __init__(self, config: PipelineConfig):
         self.config = config
         self._supabase: Optional[AsyncClient] = None
-        self._drive = None
-        self._folder_cache: dict[str, str] = {}  # path → drive_folder_id
 
-    # ──────────────────────────────────────────────────────
-    # SUPABASE
-    # ──────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────
+    # SUPABASE CLIENT
+    # ──────────────────────────────────────────────────
 
     async def _get_supabase(self) -> AsyncClient:
         if not self._supabase:
@@ -60,6 +54,76 @@ class StorageService:
                 self.config.supabase_service_key,
             )
         return self._supabase
+
+    # ──────────────────────────────────────────────────
+    # SUPABASE STORAGE (archivos originales)
+    # ──────────────────────────────────────────────────
+
+    def _build_storage_path(
+        self, filename: str, client_id: str, doc_type: DocType
+    ) -> str:
+        """
+        Construye el path dentro del bucket:
+          {client_id}/{tipo_doc}/{filename}
+          general/Normativa/{filename}
+        """
+        folder = DOC_TYPE_FOLDERS.get(doc_type, "_Sin_Clasificar")
+
+        if doc_type == DocType.NORMATIVA:
+            return f"general/{folder}/{filename}"
+
+        return f"{client_id}/{folder}/{filename}"
+
+    async def upload_file(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        client_id: str,
+        doc_type: DocType,
+    ) -> str:
+        """
+        Sube el archivo original a Supabase Storage.
+        Retorna el storage_path para guardarlo en client_documents.
+        """
+        sb = await self._get_supabase()
+        storage_path = self._build_storage_path(filename, client_id, doc_type)
+
+        # Detectar mimetype básico
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        mime_map = {
+            "pdf": "application/pdf",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "xls": "application/vnd.ms-excel",
+            "csv": "text/csv",
+        }
+        content_type = mime_map.get(ext, "application/octet-stream")
+
+        sb.storage.from_(STORAGE_BUCKET).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+
+        logger.info(f"Archivo subido a Storage: {STORAGE_BUCKET}/{storage_path}")
+        return storage_path
+
+    async def get_download_url(self, storage_path: str, expires_in: int = 3600) -> str:
+        """Genera una URL firmada temporal para descargar el documento original."""
+        sb = await self._get_supabase()
+        result = sb.storage.from_(STORAGE_BUCKET).create_signed_url(
+            storage_path, expires_in
+        )
+        return result["signedURL"]
+
+    async def delete_file(self, storage_path: str):
+        """Elimina un archivo del Storage."""
+        sb = await self._get_supabase()
+        sb.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        logger.info(f"Archivo eliminado de Storage: {storage_path}")
+
+    # ──────────────────────────────────────────────────
+    # SUPABASE POSTGRESQL (metadatos + chunks)
+    # ──────────────────────────────────────────────────
 
     async def save_to_supabase(self, doc: ProcessedDocument) -> str:
         """Guarda el documento procesado en la tabla client_documents."""
@@ -77,22 +141,20 @@ class StorageService:
             "ocr_aplicado": doc.ocr_applied,
             "ocr_confianza_media": doc.ocr_avg_confidence,
             "fue_encriptado": doc.was_encrypted,
-            "drive_file_id": doc.drive_file_id,
+            "storage_path": doc.storage_path,
             "advertencias": doc.extraction_warnings,
             "metadata": doc.metadata,
             "estado": "indexado",
             "fecha_ingesta": datetime.utcnow().isoformat(),
-            # Campos de fechas extraídos por el metadata extractor
             "fecha_documento": doc.metadata.get("fecha_concesion")
                 or doc.metadata.get("fecha_factura")
                 or doc.metadata.get("fecha_inicio"),
             "fecha_vencimiento": doc.metadata.get("fecha_vencimiento"),
         }
 
-        result = await sb.table("client_documents").upsert(data).execute()
+        await sb.table("client_documents").upsert(data).execute()
         logger.info(f"Documento guardado en Supabase: {doc.doc_id}")
 
-        # Guardar también los metadatos estructurados en tablas específicas
         await self._save_structured_metadata(sb, doc)
 
         return doc.doc_id
@@ -103,7 +165,6 @@ class StorageService:
         """Guarda todos los chunks con sus embeddings en document_chunks."""
         sb = await self._get_supabase()
 
-        # Insertar en lotes de 100 para no sobrecargar
         batch_size = 100
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
@@ -174,103 +235,3 @@ class StorageService:
                     "doc_id": doc.doc_id,
                     "estado": "pendiente",
                 }).execute()
-
-    # ──────────────────────────────────────────────────────
-    # GOOGLE DRIVE
-    # ──────────────────────────────────────────────────────
-
-    def _get_drive_service(self):
-        if not self._drive:
-            creds = Credentials.from_service_account_file(
-                self.config.google_drive_credentials_path,
-                scopes=["https://www.googleapis.com/auth/drive"],
-            )
-            self._drive = build("drive", "v3", credentials=creds)
-        return self._drive
-
-    async def upload_to_drive(
-        self,
-        pdf_bytes: bytes,
-        filename: str,
-        client_id: str,
-        doc_type: DocType,
-    ) -> str:
-        """
-        Sube el PDF a Drive en la carpeta correcta:
-        RAG_Residuos_Industriales/Clientes/{client_name}/{tipo_doc}/
-        """
-        drive = self._get_drive_service()
-
-        # Obtener nombre del cliente
-        sb = await self._get_supabase()
-        client_result = await sb.table("clients").select("nombre").eq("id", client_id).execute()
-        client_name = client_result.data[0]["nombre"] if client_result.data else client_id
-
-        # Asegurar que existe la estructura de carpetas
-        folder_path = f"{DRIVE_ROOT_FOLDER}/Clientes/{client_name}/{DRIVE_DOC_FOLDERS[doc_type]}"
-        folder_id = await self._ensure_folder_path(drive, folder_path)
-
-        # Subir archivo
-        file_metadata = {
-            "name": filename,
-            "parents": [folder_id],
-        }
-        media = MediaIoBaseUpload(
-            io.BytesIO(pdf_bytes),
-            mimetype="application/pdf",
-            resumable=True,
-        )
-        file = drive.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, webViewLink",
-        ).execute()
-
-        logger.info(f"Subido a Drive: {folder_path}/{filename} → {file['id']}")
-        return file["id"]
-
-    async def _ensure_folder_path(self, drive, path: str) -> str:
-        """
-        Crea recursivamente la estructura de carpetas en Drive si no existe.
-        Usa caché para no hacer llamadas redundantes.
-        """
-        if path in self._folder_cache:
-            return self._folder_cache[path]
-
-        parts = path.split("/")
-        parent_id = "root"
-
-        for i, part in enumerate(parts):
-            current_path = "/".join(parts[:i + 1])
-            if current_path in self._folder_cache:
-                parent_id = self._folder_cache[current_path]
-                continue
-
-            # Buscar si ya existe
-            query = (
-                f"name='{part}' and "
-                f"'{parent_id}' in parents and "
-                f"mimeType='application/vnd.google-apps.folder' and "
-                f"trashed=false"
-            )
-            results = drive.files().list(q=query, fields="files(id)").execute()
-            files = results.get("files", [])
-
-            if files:
-                folder_id = files[0]["id"]
-            else:
-                folder_metadata = {
-                    "name": part,
-                    "mimeType": "application/vnd.google-apps.folder",
-                    "parents": [parent_id],
-                }
-                folder = drive.files().create(
-                    body=folder_metadata, fields="id"
-                ).execute()
-                folder_id = folder["id"]
-                logger.info(f"Carpeta Drive creada: {current_path}")
-
-            self._folder_cache[current_path] = folder_id
-            parent_id = folder_id
-
-        return parent_id
