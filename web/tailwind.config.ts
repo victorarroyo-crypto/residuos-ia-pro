@@ -44,11 +44,24 @@ const config: Config = {
           DEFAULT: "hsl(var(--popover))",
           foreground: "hsl(var(--popover-foreground))",
         },
+        // Vandarum brand colors
+        vandarum: {
+          teal: "#307177",
+          blue: "#32b4cd",
+          green: "#8cb63c",
+          orange: "#ffa720",
+          "teal-light": "#3d8d94",
+          "teal-dark": "#265a5f",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      fontFamily: {
+        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        heading: ["Inter", "system-ui", "-apple-system", "sans-serif"],
       },
     },
   },

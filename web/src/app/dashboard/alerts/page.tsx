@@ -31,9 +31,9 @@ const severityOrder: Record<string, number> = {
 };
 
 const estadoIcons: Record<string, React.ReactNode> = {
-  pendiente: <Clock className="h-4 w-4 text-yellow-500" />,
-  vista: <ShieldAlert className="h-4 w-4 text-blue-500" />,
-  resuelta: <CheckCircle2 className="h-4 w-4 text-green-500" />,
+  pendiente: <Clock className="h-4 w-4 text-vandarum-orange" />,
+  vista: <ShieldAlert className="h-4 w-4 text-vandarum-blue" />,
+  resuelta: <CheckCircle2 className="h-4 w-4 text-vandarum-green" />,
 };
 
 type FilterSeveridad = "todos" | "critica" | "alta" | "media" | "baja";
@@ -80,7 +80,7 @@ export default function AlertsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Pendientes</CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
+            <Clock className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{pendingCount}</div>
@@ -106,10 +106,10 @@ export default function AlertsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Resueltas</CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <CheckCircle2 className="h-4 w-4 text-vandarum-green" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-600">{resolvedCount}</div>
+            <div className="text-2xl font-bold text-vandarum-green">{resolvedCount}</div>
             <p className="text-xs text-muted-foreground">
               de {mockAlerts.length} totales
             </p>
@@ -128,7 +128,7 @@ export default function AlertsPage() {
                 placeholder="Buscar por descripción, cliente o tipo..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -164,7 +164,7 @@ export default function AlertsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <AlertTriangle className="h-5 w-5" />
+            <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
             {filtered.length} alerta{filtered.length !== 1 ? "s" : ""}
           </CardTitle>
         </CardHeader>
@@ -180,7 +180,7 @@ export default function AlertsPage() {
                 return (
                   <div
                     key={alert.id}
-                    className="flex items-start gap-4 rounded-lg border p-4 transition-colors hover:bg-accent/50"
+                    className="flex items-start gap-4 rounded-lg border p-4 transition-colors hover:bg-secondary"
                   >
                     <div className="flex flex-col items-center gap-1 pt-0.5">
                       <Badge variant={severityColors[alert.severidad]}>

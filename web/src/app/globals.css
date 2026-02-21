@@ -4,26 +4,37 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    /* Vandarum Brand Colors */
+    --vandarum-teal: #307177;
+    --vandarum-blue: #32b4cd;
+    --vandarum-green: #8cb63c;
+    --vandarum-orange: #ffa720;
+
+    --background: 0 0% 98%;
+    --foreground: 200 15% 15%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 200 15% 15%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 142 71% 28%;
+    --popover-foreground: 200 15% 15%;
+    --primary: 185 42% 33%;
     --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
+    --secondary: 185 20% 95%;
+    --secondary-foreground: 185 42% 25%;
+    --muted: 200 10% 94%;
+    --muted-foreground: 200 10% 45%;
+    --accent: 190 61% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 142 71% 28%;
+    --border: 200 15% 89%;
+    --input: 200 15% 89%;
+    --ring: 185 42% 33%;
     --radius: 0.5rem;
+
+    /* Brand gradients */
+    --gradient-teal-blue: linear-gradient(45deg, #307177, #32b4cd);
+    --gradient-teal-green: linear-gradient(45deg, #307177, #8cb63c);
+    --gradient-teal-orange: linear-gradient(45deg, #307177, #ffa720);
   }
 }
 
@@ -33,6 +44,23 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer utilities {
+  .bg-gradient-brand {
+    background: var(--gradient-teal-blue);
+  }
+  .bg-gradient-brand-green {
+    background: var(--gradient-teal-green);
+  }
+  .bg-gradient-brand-orange {
+    background: var(--gradient-teal-orange);
+  }
+  .text-gradient-brand {
+    background: var(--gradient-teal-blue);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
   }
 }

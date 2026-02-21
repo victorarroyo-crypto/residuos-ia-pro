@@ -29,8 +29,8 @@ import {
 
 function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   const colors = {
-    ok: "bg-green-500",
-    warning: "bg-yellow-500",
+    ok: "bg-vandarum-green",
+    warning: "bg-vandarum-orange",
     danger: "bg-red-500",
   };
   const labels = { ok: "OK", warning: "Revisar", danger: "Alerta" };
@@ -88,7 +88,7 @@ export default function ClientsPage() {
                 placeholder="Buscar por nombre, sector o CCAA..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -121,7 +121,7 @@ export default function ClientsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <Users className="h-5 w-5" />
+            <Users className="h-5 w-5 text-vandarum-teal" />
             {filtered.length} cliente{filtered.length !== 1 ? "s" : ""}
           </CardTitle>
         </CardHeader>
@@ -158,7 +158,7 @@ export default function ClientsPage() {
                       <TableCell className="font-medium">
                         <Link
                           href={`/dashboard/client/${client.id}`}
-                          className="hover:underline"
+                          className="text-vandarum-teal hover:underline"
                         >
                           {client.nombre}
                         </Link>

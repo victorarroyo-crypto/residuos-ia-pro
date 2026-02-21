@@ -220,7 +220,7 @@ export default function UploadPage({
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <p className="text-lg text-muted-foreground">Cliente no encontrado</p>
-        <Link href="/dashboard" className="mt-4 text-primary hover:underline">
+        <Link href="/dashboard" className="mt-4 text-vandarum-teal hover:underline">
           Volver al dashboard
         </Link>
       </div>
@@ -256,8 +256,8 @@ export default function UploadPage({
             onClick={() => fileInputRef.current?.click()}
             className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-12 transition-colors ${
               isDragging
-                ? "border-primary bg-primary/5"
-                : "border-muted-foreground/25 hover:border-primary/50"
+                ? "border-vandarum-teal bg-vandarum-teal/5"
+                : "border-muted-foreground/25 hover:border-vandarum-teal/50"
             }`}
           >
             <Upload className="mb-4 h-10 w-10 text-muted-foreground" />
@@ -286,7 +286,7 @@ export default function UploadPage({
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-lg">
-              <FileUp className="h-5 w-5" />
+              <FileUp className="h-5 w-5 text-vandarum-blue" />
               Archivos ({files.length})
               {doneCount > 0 && (
                 <Badge variant="success">
@@ -328,8 +328,8 @@ export default function UploadPage({
 
                       {fileState.status === "uploading" && (
                         <div className="mt-1 flex items-center gap-2">
-                          <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                          <span className="text-xs text-primary">
+                          <Loader2 className="h-3 w-3 animate-spin text-vandarum-teal" />
+                          <span className="text-xs text-vandarum-teal">
                             Subiendo...
                           </span>
                         </div>
@@ -352,7 +352,7 @@ export default function UploadPage({
                         )}
 
                       {fileState.status === "done" && (
-                        <div className="mt-1 flex items-center gap-1 text-xs text-green-600">
+                        <div className="mt-1 flex items-center gap-1 text-xs text-vandarum-green">
                           <CheckCircle2 className="h-3 w-3" />
                           Documento indexado correctamente
                         </div>
