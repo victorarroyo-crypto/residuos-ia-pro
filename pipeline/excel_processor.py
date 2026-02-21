@@ -490,7 +490,7 @@ Sé preciso con los números. No inventes datos que no estén en la tabla."""
         Genera chunks desde las hojas analizadas.
         Cada hoja genera 1-N chunks según su tamaño.
         """
-        from core.pdf_pipeline import DocumentChunk  # reutilizar la misma estructura
+        from .pdf_pipeline import DocumentChunk
 
         chunks = []
         chunk_index = 0
