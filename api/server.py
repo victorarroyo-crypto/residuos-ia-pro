@@ -320,6 +320,139 @@ async def delete_knowledge_base_document(doc_id: str):
     return {"success": True, "deleted_id": doc_id}
 
 
+# ═══════════════════════════════════════════════════════════════
+# GOOGLE DRIVE - Conexión OAuth2 y gestión de carpetas
+# ═══════════════════════════════════════════════════════════════
+
+_gdrive_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+_gdrive_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+
+def _gdrive_configured() -> bool:
+    return bool(_gdrive_client_id and _gdrive_client_secret)
+
+
+def _gdrive_redirect_uri() -> str:
+    frontend = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    return f"{frontend}/api/gdrive/callback"
+
+
+@app.get("/api/gdrive/auth-url")
+async def gdrive_auth_url(consultant_id: str = Query(...)):
+    """Generate Google OAuth2 authorization URL."""
+    if not _gdrive_configured():
+        raise HTTPException(
+            status_code=501,
+            detail="Google Drive no configurado. Falta GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET.",
+        )
+
+    from pipeline.google_drive import get_auth_url
+
+    url = get_auth_url(
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+        redirect_uri=_gdrive_redirect_uri(),
+        state=consultant_id,
+    )
+    return {"auth_url": url}
+
+
+class GDriveExchangeRequest(BaseModel):
+    code: str
+    consultant_id: str
+
+
+@app.post("/api/gdrive/exchange")
+async def gdrive_exchange(request: GDriveExchangeRequest):
+    """
+    Exchange OAuth code for tokens, save to DB, and create Drive folder structure.
+    """
+    if not _gdrive_configured():
+        raise HTTPException(status_code=501, detail="Google Drive no configurado.")
+
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.google_drive import exchange_code, GoogleDriveService
+
+    # Exchange code for tokens
+    tokens = exchange_code(
+        code=request.code,
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+        redirect_uri=_gdrive_redirect_uri(),
+    )
+
+    # Create folder structure in Drive
+    gd = GoogleDriveService(
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+    )
+    folders = gd.setup_full_structure()
+
+    # Save tokens and folder IDs to database
+    sb = await rag_service._get_supabase()
+    await sb.table("consultant_gdrive").upsert({
+        "consultant_id": request.consultant_id,
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "token_expiry": tokens.get("token_expiry"),
+        "root_folder_id": folders["root_folder_id"],
+        "folder_mapping": folders,
+    }).execute()
+
+    return {
+        "success": True,
+        "root_folder_id": folders["root_folder_id"],
+        "folders_created": len(folders),
+    }
+
+
+@app.get("/api/gdrive/status")
+async def gdrive_status(consultant_id: str = Query(...)):
+    """Check if the consultant has connected Google Drive."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    result = await (
+        sb.table("consultant_gdrive")
+        .select("root_folder_id, folder_mapping, created_at, updated_at")
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+
+    if not result.data:
+        return {"connected": False}
+
+    data = result.data[0]
+    return {
+        "connected": True,
+        "root_folder_id": data["root_folder_id"],
+        "connected_at": data["created_at"],
+        "configured": _gdrive_configured(),
+    }
+
+
+@app.delete("/api/gdrive/disconnect")
+async def gdrive_disconnect(consultant_id: str = Query(...)):
+    """Disconnect Google Drive (delete stored tokens)."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    await (
+        sb.table("consultant_gdrive")
+        .delete()
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+
+    return {"success": True}
+
+
 if __name__ == "__main__":
     import uvicorn
 
