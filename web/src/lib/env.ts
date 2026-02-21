@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "fs";
-import { resolve, dirname } from "path";
+import { resolve } from "path";
 
 /**
  * Load an env var with fallback to reading .env files on disk.
