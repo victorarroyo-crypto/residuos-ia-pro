@@ -33,5 +33,8 @@ export function loadEnv(name: string): string {
     }
   }
 
+  console.error(
+    `[loadEnv] "${name}" NOT FOUND. process.env set: ${name in process.env}. cwd: ${process.cwd()}`
+  );
   return "";
 }
