@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const SCOPES = "https://www.googleapis.com/auth/drive";
 
 function getOrigin(request: NextRequest): string {
   const forwardedHost = request.headers.get("x-forwarded-host");
@@ -12,37 +13,36 @@ function getOrigin(request: NextRequest): string {
 }
 
 export async function GET(request: NextRequest) {
-  try {
-    const consultantId = request.nextUrl.searchParams.get("consultant_id");
-    if (!consultantId) {
-      return NextResponse.json(
-        { error: "consultant_id is required" },
-        { status: 400 }
-      );
-    }
-
-    const origin = getOrigin(request);
-    const redirectUri = `${origin}/api/gdrive/callback`;
-
-    const response = await fetch(
-      `${PIPELINE_URL}/api/gdrive/auth-url?consultant_id=${consultantId}&redirect_uri=${encodeURIComponent(redirectUri)}`,
-      { cache: "no-store" }
-    );
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: "Error desconocido" }));
-      return NextResponse.json(
-        { error: error.detail || `Pipeline error ${response.status}` },
-        { status: response.status }
-      );
-    }
-
-    return NextResponse.json(await response.json());
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+  const consultantId = request.nextUrl.searchParams.get("consultant_id");
+  if (!consultantId) {
     return NextResponse.json(
-      { error: `Pipeline API no disponible (${PIPELINE_URL}): ${detail}` },
-      { status: 502 }
+      { error: "consultant_id is required" },
+      { status: 400 }
     );
   }
+
+  if (!GOOGLE_CLIENT_ID) {
+    return NextResponse.json(
+      { error: "Google Drive no configurado. Falta GOOGLE_CLIENT_ID." },
+      { status: 501 }
+    );
+  }
+
+  const origin = getOrigin(request);
+  const redirectUri = `${origin}/api/gdrive/callback`;
+
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: redirectUri,
+    scope: SCOPES,
+    state: consultantId,
+    access_type: "offline",
+    include_granted_scopes: "true",
+    prompt: "consent",
+  });
+
+  const authUrl = `https://accounts.google.com/o/oauth2/auth?${params.toString()}`;
+
+  return NextResponse.json({ auth_url: authUrl });
 }
