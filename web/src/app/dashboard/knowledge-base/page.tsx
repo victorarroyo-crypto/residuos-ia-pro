@@ -19,6 +19,7 @@ import {
   Download,
   CheckCircle2,
   Home,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -145,6 +146,17 @@ export default function KnowledgeBasePage() {
     success: boolean;
     message: string;
   } | null>(null);
+
+  // Sync state
+  const [syncing, setSyncing] = useState(false);
+  const [autoSync, setAutoSync] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const [syncResult, setSyncResult] = useState<{
+    success: boolean;
+    message: string;
+    newFiles?: number;
+  } | null>(null);
+  const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ─── Init: load user + GDrive status ─────────────────────
   useEffect(() => {
@@ -293,6 +305,105 @@ export default function KnowledgeBasePage() {
     }
   }
 
+  // ─── Sync handler ────────────────────────────────────────
+  const handleSync = useCallback(async () => {
+    if (!userId || !gdriveConnected || syncing) return;
+    setSyncing(true);
+    setSyncResult(null);
+
+    try {
+      const res = await fetch("/api/gdrive/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ consultant_id: userId }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        const newFiles = data.new_files ?? data.indexed ?? 0;
+        setLastSyncTime(new Date());
+        if (newFiles > 0) {
+          setSyncResult({
+            success: true,
+            message: `${newFiles} documento${newFiles !== 1 ? "s" : ""} nuevo${newFiles !== 1 ? "s" : ""} indexado${newFiles !== 1 ? "s" : ""}.`,
+            newFiles,
+          });
+          setLoadingDocs(true);
+          loadDocuments();
+          loadStats();
+          // Refresh drive view
+          if (breadcrumbs.length > 0) {
+            browseDriveFolder(breadcrumbs[breadcrumbs.length - 1].id);
+          }
+        } else {
+          setSyncResult({
+            success: true,
+            message: "Todo al dia, no hay documentos nuevos.",
+            newFiles: 0,
+          });
+        }
+      } else {
+        setSyncResult({
+          success: false,
+          message: data.error || "Error al sincronizar.",
+        });
+      }
+    } catch {
+      setSyncResult({
+        success: false,
+        message: "Pipeline API no disponible.",
+      });
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncResult(null), 8000);
+    }
+  }, [userId, gdriveConnected, syncing, breadcrumbs, browseDriveFolder, loadDocuments, loadStats]);
+
+  // ─── Auto-sync polling (5 min) with visibility API ──────
+  useEffect(() => {
+    if (!autoSync || !gdriveConnected || !userId) {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+      return;
+    }
+
+    const POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+    function startPolling() {
+      if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
+      syncIntervalRef.current = setInterval(() => {
+        if (!document.hidden) {
+          handleSync();
+        }
+      }, POLL_INTERVAL);
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        if (syncIntervalRef.current) {
+          clearInterval(syncIntervalRef.current);
+          syncIntervalRef.current = null;
+        }
+      } else {
+        startPolling();
+      }
+    }
+
+    startPolling();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+        syncIntervalRef.current = null;
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [autoSync, gdriveConnected, userId, handleSync]);
+
   // ─── Upload handler ───────────────────────────────────────
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -428,7 +539,40 @@ export default function KnowledgeBasePage() {
             Navega tu Google Drive, indexa documentos y consulta con IA.
           </p>
         </div>
-        <div>
+        <div className="flex items-center gap-2">
+          {gdriveConnected && (
+            <>
+              <Button
+                onClick={handleSync}
+                disabled={syncing}
+                variant="default"
+                className="bg-vandarum-teal hover:bg-vandarum-teal/90"
+              >
+                {syncing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                {syncing ? "Sincronizando..." : "Sincronizar ahora"}
+              </Button>
+              <button
+                onClick={() => setAutoSync((prev) => !prev)}
+                className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+                  autoSync
+                    ? "border-vandarum-teal bg-vandarum-teal/10 text-vandarum-teal"
+                    : "border-border text-muted-foreground hover:text-foreground"
+                }`}
+                title={autoSync ? "Desactivar auto-sync" : "Activar auto-sync (cada 5 min)"}
+              >
+                <span
+                  className={`inline-block h-2.5 w-2.5 rounded-full ${
+                    autoSync ? "bg-vandarum-teal animate-pulse" : "bg-muted-foreground/40"
+                  }`}
+                />
+                Auto-Sync
+              </button>
+            </>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -452,6 +596,30 @@ export default function KnowledgeBasePage() {
           </Button>
         </div>
       </div>
+
+      {/* Sync status bar */}
+      {gdriveConnected && (
+        <div className="flex items-center gap-3 rounded-md border bg-muted/50 px-4 py-2 text-sm">
+          <RefreshCw
+            className={`h-4 w-4 shrink-0 ${
+              syncing
+                ? "animate-spin text-vandarum-teal"
+                : "text-muted-foreground"
+            }`}
+          />
+          <span className="text-muted-foreground">
+            {syncing
+              ? "Escaneando Google Drive en busca de documentos nuevos..."
+              : autoSync
+                ? lastSyncTime
+                  ? `Auto-sync activo · Ultima comprobacion: ${lastSyncTime.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })} · Proxima en 5 min`
+                  : "Auto-sync activo · Comprobacion automatica cada 5 minutos"
+                : lastSyncTime
+                  ? `Ultima sincronizacion: ${lastSyncTime.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`
+                  : "Pulsa \"Sincronizar ahora\" para escanear Google Drive"}
+          </span>
+        </div>
+      )}
 
       {/* Toasts */}
       {uploadResult && (
@@ -489,6 +657,26 @@ export default function KnowledgeBasePage() {
           )}
           {ingestResult.message}
           <button onClick={() => setIngestResult(null)} className="ml-auto">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {syncResult && (
+        <div
+          className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+            syncResult.success
+              ? "bg-green-50 text-green-800 border border-green-200"
+              : "bg-red-50 text-red-800 border border-red-200"
+          }`}
+        >
+          {syncResult.success ? (
+            <CheckCircle2 className="h-4 w-4" />
+          ) : (
+            <AlertCircle className="h-4 w-4" />
+          )}
+          {syncResult.message}
+          <button onClick={() => setSyncResult(null)} className="ml-auto">
             <X className="h-4 w-4" />
           </button>
         </div>
