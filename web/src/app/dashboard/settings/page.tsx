@@ -111,17 +111,33 @@ function SettingsContent() {
     setGdriveLoading(true);
     setGdriveError(null);
     try {
-      const res = await fetch(`/api/gdrive/auth-url?consultant_id=${userId}`);
+      const url = `/api/gdrive/auth-url?consultant_id=${userId}`;
+      console.log("[GDrive] Calling:", url, "userId:", userId);
+      const res = await fetch(url);
+      console.log("[GDrive] Response status:", res.status, "ok:", res.ok, "redirected:", res.redirected, "url:", res.url);
       if (!res.ok) {
-        const err = await res.json();
-        setGdriveError(err.error || "Error generando URL de autorizacion.");
+        let errMsg = `Error ${res.status}`;
+        try {
+          const err = await res.json();
+          errMsg = err.error || errMsg;
+        } catch {
+          const text = await res.text();
+          errMsg = `Status ${res.status}: ${text.substring(0, 100)}`;
+        }
+        setGdriveError(errMsg);
         setGdriveLoading(false);
         return;
       }
-      const { auth_url } = await res.json();
-      // Redirect to Google consent screen
-      window.location.href = auth_url;
-    } catch {
+      const data = await res.json();
+      console.log("[GDrive] Got auth_url:", data.auth_url?.substring(0, 50));
+      if (data.auth_url) {
+        window.location.href = data.auth_url;
+      } else {
+        setGdriveError("No se recibio URL de autorizacion.");
+        setGdriveLoading(false);
+      }
+    } catch (e) {
+      console.error("[GDrive] Error:", e);
       setGdriveError("Pipeline API no disponible. Asegurate de que el servidor Python esta corriendo.");
       setGdriveLoading(false);
     }
