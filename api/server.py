@@ -416,7 +416,13 @@ async def gdrive_status(consultant_id: str = Query(...)):
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    sb = await rag_service._get_supabase()
+    try:
+        sb = await rag_service._get_supabase()
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Error conectando a Supabase: {e}. Verifica SUPABASE_SERVICE_ROLE_KEY.",
+        )
     result = await (
         sb.table("consultant_gdrive")
         .select("root_folder_id, folder_mapping, created_at, updated_at")
