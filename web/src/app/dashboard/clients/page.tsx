@@ -76,7 +76,7 @@ export default function ClientsPage() {
       search === "" ||
       c.nombre.toLowerCase().includes(search.toLowerCase()) ||
       c.sector?.toLowerCase().includes(search.toLowerCase()) ||
-      c.comunidad?.toLowerCase().includes(search.toLowerCase());
+      c.comunidad_autonoma?.toLowerCase().includes(search.toLowerCase());
     const matchRelacion =
       filterRelacion === "todos" || c.tipo_relacion === filterRelacion;
     return matchSearch && matchRelacion;
@@ -195,7 +195,7 @@ export default function ClientsPage() {
                       <TableCell>
                         <span className="flex items-center gap-1 text-sm">
                           <MapPin className="h-3 w-3 text-muted-foreground" />
-                          {client.municipio}, {client.comunidad}
+                          {client.municipio}, {client.comunidad_autonoma}
                         </span>
                       </TableCell>
                       <TableCell>

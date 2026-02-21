@@ -79,14 +79,22 @@ export type Database = {
 
 export interface Client {
   id: string;
+  consultant_id: string | null;
   nombre: string;
+  cif: string | null;
   cnae: string | null;
   sector: string | null;
-  comunidad: string | null;
+  comunidad_autonoma: string | null;
   municipio: string | null;
-  consultant_id: string | null;
+  direccion: string | null;
+  contacto_nombre: string | null;
+  contacto_email: string | null;
+  contacto_telefono: string | null;
+  notas: string | null;
   tipo_relacion: "retainer" | "auditoria" | "diagnostico" | null;
   metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface Project {
@@ -94,10 +102,12 @@ export interface Project {
   client_id: string;
   consultant_id: string | null;
   nombre: string;
+  descripcion: string | null;
   tipo: "diagnostico_inicial" | "retainer_anual" | "auditoria" | "optimizacion_puntual";
   estado: "activo" | "completado" | "pausado";
   fecha_inicio: string | null;
   fecha_fin: string | null;
+  created_at: string | null;
 }
 
 export interface WasteInventoryItem {
@@ -113,6 +123,7 @@ export interface WasteInventoryItem {
   frecuencia_recogida: string | null;
   año: number | null;
   fuente_doc_id: string | null;
+  created_at: string | null;
 }
 
 export type DocType =
@@ -142,7 +153,7 @@ export interface ClientDocument {
   ocr_aplicado: boolean | null;
   ocr_confianza_media: number | null;
   fue_encriptado: boolean | null;
-  drive_file_id: string | null;
+  storage_path: string | null;
   advertencias: string[] | null;
   metadata: Record<string, unknown> | null;
   estado: "procesando" | "indexado" | "error" | "pendiente" | null;
@@ -175,6 +186,8 @@ export interface ComplianceAlert {
   doc_id: string | null;
   estado: "pendiente" | "vista" | "resuelta" | "descartada";
   fecha_limite: string | null;
+  created_at: string | null;
+  resolved_at: string | null;
 }
 
 export interface PipelineProgress {
@@ -183,6 +196,7 @@ export interface PipelineProgress {
   percentage: number;
   mensaje: string | null;
   error: string | null;
+  updated_at: string | null;
 }
 
 export interface SavingsOpportunity {
@@ -197,6 +211,7 @@ export interface SavingsOpportunity {
   norma_aplicable: string | null;
   estado: "detectada" | "propuesta" | "aceptada" | "implementada" | "descartada";
   ia_generada: boolean;
+  created_at: string | null;
 }
 
 export interface WasteManager {
@@ -210,6 +225,7 @@ export interface WasteManager {
   precio_referencia_eur_ton: number | null;
   valoracion: number | null;
   activo: boolean;
+  created_at: string | null;
 }
 
 export interface Contract {
@@ -221,6 +237,7 @@ export interface Contract {
   codigos_ler: string[] | null;
   precio_eur_ton: number | null;
   condiciones: Record<string, unknown> | null;
-  drive_file_id: string | null;
+  storage_path: string | null;
   alertar_dias_antes: number;
+  created_at: string | null;
 }

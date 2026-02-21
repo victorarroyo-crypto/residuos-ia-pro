@@ -34,13 +34,17 @@ CREATE TABLE IF NOT EXISTS clients (
   consultant_id   UUID REFERENCES auth.users(id) ON DELETE CASCADE,
   nombre          TEXT NOT NULL,
   cif             TEXT,                -- NIF/CIF de la empresa
+  cnae            TEXT,                -- código CNAE (actividad económica)
   sector          TEXT,                -- industrial, químico, alimentario, etc.
   comunidad_autonoma TEXT,             -- para aplicar normativa autonómica
+  municipio       TEXT,                -- municipio (normativa local)
   direccion       TEXT,
   contacto_nombre TEXT,
   contacto_email  TEXT,
   contacto_telefono TEXT,
   notas           TEXT,
+  tipo_relacion   TEXT CHECK (tipo_relacion IN ('retainer','auditoria','diagnostico')),
+  metadata        JSONB DEFAULT '{}',
   created_at      TIMESTAMPTZ DEFAULT now(),
   updated_at      TIMESTAMPTZ DEFAULT now()
 );
@@ -147,9 +151,12 @@ CREATE TABLE IF NOT EXISTS waste_inventory (
   client_id             UUID REFERENCES clients(id) ON DELETE CASCADE,
   codigo_ler            TEXT,
   descripcion           TEXT,
+  peligroso             BOOLEAN DEFAULT false,   -- LER con * = peligroso
   cantidad_anual_ton    DECIMAL(10,3),
   precio_actual_eur_ton DECIMAL(10,2),
   operacion             TEXT,                    -- D/R + código (ej: R13, D15)
+  gestor_actual         TEXT,                    -- nombre del gestor que lo trata
+  frecuencia_recogida   TEXT,                    -- semanal, mensual, etc.
   fuente_doc_id         TEXT REFERENCES client_documents(id),
   año                   INT,
   created_at            TIMESTAMPTZ DEFAULT now()
@@ -194,6 +201,61 @@ CREATE TABLE IF NOT EXISTS compliance_alerts (
 CREATE INDEX idx_alerts_client ON compliance_alerts(client_id);
 CREATE INDEX idx_alerts_estado ON compliance_alerts(estado);
 CREATE INDEX idx_alerts_severidad ON compliance_alerts(severidad);
+
+-- ── Oportunidades de ahorro (detectadas por IA o manual) ─────
+CREATE TABLE IF NOT EXISTS savings_opportunities (
+  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id               UUID REFERENCES clients(id) ON DELETE CASCADE,
+  waste_id                UUID REFERENCES waste_inventory(id),
+  tipo                    TEXT NOT NULL,          -- cambio_gestor, valorización, reducción, etc.
+  descripcion             TEXT NOT NULL,
+  ahorro_estimado_eur_año DECIMAL(10,2),
+  inversion_necesaria     DECIMAL(10,2),
+  payback_meses           INT,
+  norma_aplicable         TEXT,                   -- ley/reglamento que lo soporta
+  estado                  TEXT DEFAULT 'detectada'
+    CHECK (estado IN ('detectada','propuesta','aceptada','implementada','descartada')),
+  ia_generada             BOOLEAN DEFAULT false,
+  created_at              TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_savings_client ON savings_opportunities(client_id);
+CREATE INDEX idx_savings_estado ON savings_opportunities(estado);
+
+-- ── Gestores de residuos autorizados ─────────────────────────
+CREATE TABLE IF NOT EXISTS waste_managers (
+  id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nombre                    TEXT NOT NULL,
+  nif                       TEXT,
+  numero_autorizacion       TEXT,
+  ccaa_autorizacion         TEXT[],               -- CC.AA. donde opera
+  codigos_ler_autorizados   TEXT[],               -- LERs que puede tratar
+  operaciones_autorizadas   TEXT[],               -- R13, D15, etc.
+  precio_referencia_eur_ton DECIMAL(10,2),
+  valoracion                DECIMAL(3,1),         -- 0.0 a 5.0
+  activo                    BOOLEAN DEFAULT true,
+  created_at                TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── Contratos cliente ↔ gestor ───────────────────────────────
+CREATE TABLE IF NOT EXISTS contracts (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id           UUID REFERENCES clients(id) ON DELETE CASCADE,
+  manager_id          UUID REFERENCES waste_managers(id),
+  fecha_inicio        DATE,
+  fecha_vencimiento   DATE,
+  codigos_ler         TEXT[],
+  precio_eur_ton      DECIMAL(10,2),
+  condiciones         JSONB DEFAULT '{}',
+  storage_path        TEXT,                       -- documento en Supabase Storage
+  alertar_dias_antes  INT DEFAULT 30,
+  created_at          TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_contracts_client ON contracts(client_id);
+CREATE INDEX idx_contracts_manager ON contracts(manager_id);
+CREATE INDEX idx_contracts_vencimiento ON contracts(fecha_vencimiento)
+  WHERE fecha_vencimiento IS NOT NULL;
 
 -- ── Progreso del pipeline (UI en tiempo real) ──────────────────
 CREATE TABLE IF NOT EXISTS pipeline_progress (
@@ -382,6 +444,8 @@ ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE waste_inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE compliance_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE savings_opportunities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contracts ENABLE ROW LEVEL SECURITY;
 
 -- Cada consultor solo ve sus clientes
 CREATE POLICY "consultant_own_clients" ON clients
@@ -432,6 +496,24 @@ CREATE POLICY "user_own_invoice_lines" ON invoice_lines
   );
 
 CREATE POLICY "user_own_alerts" ON compliance_alerts
+  FOR ALL USING (
+    client_id IN (
+      SELECT id FROM clients WHERE consultant_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "user_own_savings" ON savings_opportunities
+  FOR ALL USING (
+    client_id IN (
+      SELECT id FROM clients WHERE consultant_id = auth.uid()
+    )
+  );
+
+-- waste_managers: visible para todos los consultores autenticados
+CREATE POLICY "authenticated_read_managers" ON waste_managers
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+CREATE POLICY "user_own_contracts" ON contracts
   FOR ALL USING (
     client_id IN (
       SELECT id FROM clients WHERE consultant_id = auth.uid()

@@ -160,7 +160,7 @@ export default function ClientDetailPage({
             </span>
             <span className="flex items-center gap-1">
               <MapPin className="h-4 w-4" /> {client.municipio},{" "}
-              {client.comunidad}
+              {client.comunidad_autonoma}
             </span>
             <Badge variant="outline" className="capitalize">
               {client.tipo_relacion}

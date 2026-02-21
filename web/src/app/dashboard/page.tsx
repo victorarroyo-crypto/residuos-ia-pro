@@ -195,7 +195,7 @@ export default async function DashboardPage() {
                       <TableCell className="text-sm text-muted-foreground">
                         {client.sector}
                       </TableCell>
-                      <TableCell>{client.comunidad}</TableCell>
+                      <TableCell>{client.comunidad_autonoma}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">
                           {client.tipo_relacion}
