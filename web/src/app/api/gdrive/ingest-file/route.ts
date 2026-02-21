@@ -22,10 +22,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(await response.json());
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[gdrive/ingest-file] Error:", detail);
     const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible."
-        : "Error interno del servidor";
+      detail.includes("fetch") || detail.includes("ECONNREFUSED") || detail.includes("ENOTFOUND")
+        ? `Pipeline API no disponible (${PIPELINE_URL}).`
+        : `Error al conectar con Pipeline API: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
