@@ -45,10 +45,12 @@ export async function POST(request: NextRequest) {
       throw error; // re-throw for outer catch
     }
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[gdrive/sync] Error:", detail);
     const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible. Verifica que el servidor Python esta activo y PIPELINE_API_URL esta configurado."
-        : "Error interno del servidor";
+      detail.includes("fetch") || detail.includes("ECONNREFUSED") || detail.includes("ENOTFOUND")
+        ? `Pipeline API no disponible (${PIPELINE_URL}). Verifica que el servidor Python esta activo y PIPELINE_API_URL esta configurado.`
+        : `Error al conectar con Pipeline API: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

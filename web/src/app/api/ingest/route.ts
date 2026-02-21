@@ -23,12 +23,12 @@ export async function POST(request: NextRequest) {
     const result = await response.json();
     return NextResponse.json(result);
   } catch (error) {
-    // If pipeline is not running, return a clear error
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[ingest] Error:", detail);
     const message =
-      error instanceof Error && error.message.includes("fetch")
-        ? "Pipeline API no disponible. Asegurate de que el servidor Python esta corriendo."
-        : "Error interno del servidor";
-
+      detail.includes("fetch") || detail.includes("ECONNREFUSED") || detail.includes("ENOTFOUND")
+        ? `Pipeline API no disponible (${PIPELINE_URL}). Asegurate de que el servidor Python esta corriendo.`
+        : `Error al conectar con Pipeline API: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
