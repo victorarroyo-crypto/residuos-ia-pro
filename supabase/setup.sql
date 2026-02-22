@@ -510,58 +510,71 @@ ALTER TABLE savings_opportunities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contracts ENABLE ROW LEVEL SECURITY;
 
 -- Proyectos: solo el consultor dueño
+DROP POLICY IF EXISTS "consultant_own_projects" ON projects;
 CREATE POLICY "consultant_own_projects" ON projects
   FOR ALL USING (consultant_id = auth.uid());
 
 -- Knowledge: accesible por cualquier usuario autenticado (lectura)
+DROP POLICY IF EXISTS "authenticated_read_knowledge_docs" ON knowledge_documents;
 CREATE POLICY "authenticated_read_knowledge_docs" ON knowledge_documents
   FOR SELECT USING (auth.role() = 'authenticated');
 
+DROP POLICY IF EXISTS "authenticated_read_knowledge_chunks" ON knowledge_chunks;
 CREATE POLICY "authenticated_read_knowledge_chunks" ON knowledge_chunks
   FOR SELECT USING (auth.role() = 'authenticated');
 
 -- Knowledge: solo service_role puede insertar/modificar (pipeline backend)
+DROP POLICY IF EXISTS "service_write_knowledge_docs" ON knowledge_documents;
 CREATE POLICY "service_write_knowledge_docs" ON knowledge_documents
   FOR ALL USING (auth.role() = 'service_role');
 
+DROP POLICY IF EXISTS "service_write_knowledge_chunks" ON knowledge_chunks;
 CREATE POLICY "service_write_knowledge_chunks" ON knowledge_chunks
   FOR ALL USING (auth.role() = 'service_role');
 
 -- Project docs: solo el consultor dueño del proyecto
+DROP POLICY IF EXISTS "consultant_own_project_docs" ON project_documents;
 CREATE POLICY "consultant_own_project_docs" ON project_documents
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
+DROP POLICY IF EXISTS "consultant_own_project_chunks" ON project_chunks;
 CREATE POLICY "consultant_own_project_chunks" ON project_chunks
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
 -- Tablas secundarias: solo el consultor dueño del proyecto
+DROP POLICY IF EXISTS "user_own_waste_inventory" ON waste_inventory;
 CREATE POLICY "user_own_waste_inventory" ON waste_inventory
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
+DROP POLICY IF EXISTS "user_own_invoice_lines" ON invoice_lines;
 CREATE POLICY "user_own_invoice_lines" ON invoice_lines
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
+DROP POLICY IF EXISTS "user_own_alerts" ON compliance_alerts;
 CREATE POLICY "user_own_alerts" ON compliance_alerts
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
+DROP POLICY IF EXISTS "user_own_savings" ON savings_opportunities;
 CREATE POLICY "user_own_savings" ON savings_opportunities
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
+DROP POLICY IF EXISTS "authenticated_read_managers" ON waste_managers;
 CREATE POLICY "authenticated_read_managers" ON waste_managers
   FOR SELECT USING (auth.role() = 'authenticated');
 
+DROP POLICY IF EXISTS "user_own_contracts" ON contracts;
 CREATE POLICY "user_own_contracts" ON contracts
   FOR ALL USING (
     project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
@@ -571,6 +584,7 @@ CREATE POLICY "user_own_contracts" ON contracts
 -- 10. STORAGE POLICIES (bucket "documentos")
 -- ════════════════════════════════════════════════════════════════
 
+DROP POLICY IF EXISTS "consultant_upload_documents" ON storage.objects;
 CREATE POLICY "consultant_upload_documents" ON storage.objects
   FOR INSERT WITH CHECK (
     bucket_id = 'documentos'
@@ -582,6 +596,7 @@ CREATE POLICY "consultant_upload_documents" ON storage.objects
     )
   );
 
+DROP POLICY IF EXISTS "consultant_read_documents" ON storage.objects;
 CREATE POLICY "consultant_read_documents" ON storage.objects
   FOR SELECT USING (
     bucket_id = 'documentos'
@@ -593,6 +608,7 @@ CREATE POLICY "consultant_read_documents" ON storage.objects
     )
   );
 
+DROP POLICY IF EXISTS "consultant_delete_documents" ON storage.objects;
 CREATE POLICY "consultant_delete_documents" ON storage.objects
   FOR DELETE USING (
     bucket_id = 'documentos'
