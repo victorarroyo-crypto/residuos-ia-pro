@@ -39,26 +39,40 @@ BEGIN
 END;
 $$;
 
-DROP POLICY IF EXISTS "consultant_own_projects" ON projects;
-DROP POLICY IF EXISTS "user_own_documents" ON client_documents;
-DROP POLICY IF EXISTS "user_own_chunks" ON document_chunks;
-DROP POLICY IF EXISTS "read_general_rag" ON document_chunks;
-DROP POLICY IF EXISTS "read_scoped_chunks" ON document_chunks;
-DROP POLICY IF EXISTS "insert_own_chunks" ON document_chunks;
-DROP POLICY IF EXISTS "authenticated_read_knowledge_docs" ON knowledge_documents;
-DROP POLICY IF EXISTS "authenticated_read_knowledge_chunks" ON knowledge_chunks;
-DROP POLICY IF EXISTS "service_write_knowledge_docs" ON knowledge_documents;
-DROP POLICY IF EXISTS "service_write_knowledge_chunks" ON knowledge_chunks;
-DROP POLICY IF EXISTS "consultant_own_project_docs" ON project_documents;
-DROP POLICY IF EXISTS "consultant_own_project_chunks" ON project_chunks;
-DROP POLICY IF EXISTS "user_own_waste_inventory" ON waste_inventory;
-DROP POLICY IF EXISTS "user_own_invoice_lines" ON invoice_lines;
-DROP POLICY IF EXISTS "user_own_alerts" ON compliance_alerts;
-DROP POLICY IF EXISTS "user_own_savings" ON savings_opportunities;
-DROP POLICY IF EXISTS "user_own_contracts" ON contracts;
-DROP POLICY IF EXISTS "consultant_upload_documents" ON storage.objects;
-DROP POLICY IF EXISTS "consultant_read_documents" ON storage.objects;
-DROP POLICY IF EXISTS "consultant_delete_documents" ON storage.objects;
+DO $$
+DECLARE
+  _sql TEXT;
+BEGIN
+  FOREACH _sql IN ARRAY ARRAY[
+    'DROP POLICY IF EXISTS "consultant_own_projects" ON projects',
+    'DROP POLICY IF EXISTS "user_own_documents" ON client_documents',
+    'DROP POLICY IF EXISTS "user_own_chunks" ON document_chunks',
+    'DROP POLICY IF EXISTS "read_general_rag" ON document_chunks',
+    'DROP POLICY IF EXISTS "read_scoped_chunks" ON document_chunks',
+    'DROP POLICY IF EXISTS "insert_own_chunks" ON document_chunks',
+    'DROP POLICY IF EXISTS "authenticated_read_knowledge_docs" ON knowledge_documents',
+    'DROP POLICY IF EXISTS "authenticated_read_knowledge_chunks" ON knowledge_chunks',
+    'DROP POLICY IF EXISTS "service_write_knowledge_docs" ON knowledge_documents',
+    'DROP POLICY IF EXISTS "service_write_knowledge_chunks" ON knowledge_chunks',
+    'DROP POLICY IF EXISTS "consultant_own_project_docs" ON project_documents',
+    'DROP POLICY IF EXISTS "consultant_own_project_chunks" ON project_chunks',
+    'DROP POLICY IF EXISTS "user_own_waste_inventory" ON waste_inventory',
+    'DROP POLICY IF EXISTS "user_own_invoice_lines" ON invoice_lines',
+    'DROP POLICY IF EXISTS "user_own_alerts" ON compliance_alerts',
+    'DROP POLICY IF EXISTS "user_own_savings" ON savings_opportunities',
+    'DROP POLICY IF EXISTS "user_own_contracts" ON contracts',
+    'DROP POLICY IF EXISTS "consultant_upload_documents" ON storage.objects',
+    'DROP POLICY IF EXISTS "consultant_read_documents" ON storage.objects',
+    'DROP POLICY IF EXISTS "consultant_delete_documents" ON storage.objects'
+  ]
+  LOOP
+    BEGIN
+      EXECUTE _sql;
+    EXCEPTION WHEN undefined_table THEN NULL;
+    END;
+  END LOOP;
+END;
+$$;
 
 -- ────────────────────────────────────────────────────────
 -- PART A: Ensure projects table has all columns
