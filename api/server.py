@@ -899,6 +899,17 @@ async def _run_sync_job(
                     rag_scope="general",
                 )
 
+                if not result.success:
+                    failed += 1
+                    details.append({
+                        "file": file_info["name"],
+                        "path": file_info.get("path", ""),
+                        "status": "error",
+                        "error": result.error or "Ingestion failed",
+                    })
+                    logger.warning("Sync %s: ingestion failed for %s: %s", sync_id, filename, result.error)
+                    continue
+
                 doc_id = result.supabase_doc_id or result.doc_id
                 if doc_id:
                     await (
