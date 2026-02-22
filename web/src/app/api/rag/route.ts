@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
 
     // Search chunks using ilike for each significant term
     const scope = (body.scope as string) || "general";
-    const clientId = body.client_id as string | undefined;
+    const projectId = body.project_id as string | undefined;
 
     let chunkQuery = sb
       .from("document_chunks")
@@ -39,19 +39,19 @@ export async function POST(request: NextRequest) {
       .eq("rag_scope", scope)
       .limit(topK * 3);
 
-    // For project scope, filter by client ownership
-    if (scope === "project" && clientId) {
-      const { data: clientDocs } = await sb
+    // For project scope, filter by project ownership
+    if (scope === "project" && projectId) {
+      const { data: projectDocs } = await sb
         .from("client_documents")
         .select("id")
-        .eq("client_id", clientId);
-      const docIds = (clientDocs || []).map((d) => d.id);
+        .eq("project_id", projectId);
+      const docIds = (projectDocs || []).map((d) => d.id);
       if (docIds.length > 0) {
         chunkQuery = chunkQuery.in("document_id", docIds);
       } else {
-        // No docs for this client → empty result
+        // No docs for this project → empty result
         return NextResponse.json({
-          answer: "No hay documentos indexados para este cliente.",
+          answer: "No hay documentos indexados para este proyecto.",
           sources: [],
         });
       }
@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
       doc_type: docMap.get(c.document_id)?.tipo || "desconocido",
       chunk_type: c.chunk_type || "texto",
       similarity: c.score,
-      scope: "general",
+      scope,
       excerpt:
         (c.contenido || "").substring(0, 200) +
         ((c.contenido || "").length > 200 ? "..." : ""),
