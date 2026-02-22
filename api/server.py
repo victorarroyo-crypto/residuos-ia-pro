@@ -103,7 +103,14 @@ async def ingest_document(
             rag_scope=rag_scope,
             password=password,
         )
+        if not result.success:
+            raise HTTPException(
+                status_code=422,
+                detail=result.error or f"Error al procesar '{file.filename}'.",
+            )
         return result.to_dict()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -701,6 +708,12 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
             filename=filename,
             rag_scope="general",
         )
+
+        if not result.success:
+            raise HTTPException(
+                status_code=422,
+                detail=result.error or f"Error al procesar '{filename}'.",
+            )
 
         # Update the document record with drive_file_id
         doc_id = result.supabase_doc_id or result.doc_id
