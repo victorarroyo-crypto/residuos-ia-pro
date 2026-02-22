@@ -1,11 +1,19 @@
 import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 
+/**
+ * GET /api/knowledge-base/health
+ *
+ * Diagnostic endpoint that checks whether documents and chunks
+ * are actually persisted in Supabase. Useful for verifying the
+ * ingestion pipeline is working end-to-end.
+ */
 export async function GET() {
   const admin = getAdminClient();
   if (!admin.ok) {
     return NextResponse.json(
       {
+        ok: false,
         error: admin.detail,
         supabase_connected: false,
       },
@@ -23,16 +31,18 @@ export async function GET() {
 
     if (docsErr) {
       return NextResponse.json(
-        { error: `Error querying client_documents: ${docsErr.message}`, supabase_connected: true },
+        { ok: false, error: `client_documents: ${docsErr.message}`, supabase_connected: true },
         { status: 500 }
       );
     }
 
     const documents = docs || [];
     const docsByStatus: Record<string, number> = {};
+    let totalChunksExpected = 0;
     for (const d of documents) {
       const s = d.estado || "sin_estado";
       docsByStatus[s] = (docsByStatus[s] || 0) + 1;
+      totalChunksExpected += d.total_chunks || 0;
     }
 
     // 2. Chunks & embeddings
@@ -40,13 +50,27 @@ export async function GET() {
       .from("document_chunks")
       .select("id", { count: "exact", head: true });
 
+    if (chunksErr) {
+      return NextResponse.json(
+        { ok: false, error: `document_chunks: ${chunksErr.message}`, supabase_connected: true },
+        { status: 500 }
+      );
+    }
+
     const { count: chunksWithEmbedding, error: embErr } = await sb
       .from("document_chunks")
       .select("id", { count: "exact", head: true })
       .not("embedding", "is", null);
 
-    const chunksTotal = chunksErr ? null : (totalChunks ?? 0);
-    const embeddingsTotal = embErr ? null : (chunksWithEmbedding ?? 0);
+    if (embErr) {
+      return NextResponse.json(
+        { ok: false, error: `embeddings check: ${embErr.message}`, supabase_connected: true },
+        { status: 500 }
+      );
+    }
+
+    const chunksTotal = totalChunks ?? 0;
+    const embeddingsTotal = chunksWithEmbedding ?? 0;
 
     // 3. Last 5 documents
     const lastDocs = [...documents]
@@ -78,7 +102,7 @@ export async function GET() {
     const { data: syncData, error: syncErr } = await sb
       .from("gdrive_sync_log")
       .select(
-        "id, status, started_at, completed_at, total_files_found, files_ingested, files_skipped, files_failed"
+        "id, status, started_at, completed_at, total_files_found, files_ingested, files_skipped, files_failed, error_message"
       )
       .order("started_at", { ascending: false })
       .limit(5);
@@ -90,14 +114,7 @@ export async function GET() {
       syncLog = syncData || [];
     }
 
-    // 6. Expected vs actual chunks
-    const expectedChunks = documents.reduce(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (sum: number, d: any) => sum + (d.total_chunks || 0),
-      0
-    );
-
-    // 7. Build diagnosis text
+    // 6. Build diagnosis text
     const diagParts: string[] = [];
 
     if (documents.length === 0) {
@@ -117,24 +134,20 @@ export async function GET() {
       diagParts.push(
         "No hay chunks en document_chunks. Los documentos se registraron pero no se particionaron."
       );
-    } else if (chunksTotal !== null) {
+    } else {
       diagParts.push(`${chunksTotal} chunk(s) encontrado(s).`);
-      if (chunksTotal < expectedChunks) {
+      if (chunksTotal < totalChunksExpected) {
         diagParts.push(
-          `Faltan chunks: se esperaban ${expectedChunks} segun total_chunks de los documentos, pero solo hay ${chunksTotal}.`
+          `Faltan chunks: se esperaban ${totalChunksExpected} segun total_chunks de los documentos, pero solo hay ${chunksTotal}.`
         );
       }
     }
 
-    if (embeddingsTotal === 0 && (chunksTotal ?? 0) > 0) {
+    if (embeddingsTotal === 0 && chunksTotal > 0) {
       diagParts.push(
-        "Hay chunks pero NINGUNO tiene embedding. El RAG no funcionara."
+        "Hay chunks pero NINGUNO tiene embedding. El RAG no funcionara (revisa OPENAI_API_KEY)."
       );
-    } else if (
-      embeddingsTotal !== null &&
-      chunksTotal !== null &&
-      embeddingsTotal < chunksTotal
-    ) {
+    } else if (embeddingsTotal < chunksTotal) {
       diagParts.push(
         `${chunksTotal - embeddingsTotal} chunk(s) sin embedding.`
       );
@@ -142,28 +155,24 @@ export async function GET() {
 
     if (
       documents.length > 0 &&
-      chunksTotal !== null &&
       chunksTotal > 0 &&
-      embeddingsTotal !== null &&
       embeddingsTotal > 0
     ) {
       diagParts.push(
-        "Todo OK. Documentos, chunks y embeddings presentes."
+        "Todo OK. Documentos, chunks y embeddings presentes en Supabase."
       );
     }
 
     return NextResponse.json({
+      ok: documents.length > 0 && chunksTotal > 0,
       supabase_connected: true,
       total_documents: documents.length,
       documents_by_status: docsByStatus,
       chunks: {
         total: chunksTotal,
         with_embedding: embeddingsTotal,
-        without_embedding:
-          chunksTotal !== null && embeddingsTotal !== null
-            ? chunksTotal - embeddingsTotal
-            : null,
-        expected_from_docs: expectedChunks,
+        without_embedding: chunksTotal - embeddingsTotal,
+        expected_from_docs: totalChunksExpected,
       },
       drive_file_id_column: driveFileIdExists,
       last_5_documents: lastDocs,
@@ -175,7 +184,7 @@ export async function GET() {
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: `Error interno: ${detail}`, supabase_connected: true },
+      { ok: false, error: `Error inesperado: ${detail}`, supabase_connected: true },
       { status: 500 }
     );
   }
