@@ -43,7 +43,11 @@ FILENAME_SIGNALS = {
     DocType.CONTRATO: ["contrato", "acuerdo", "convenio", "servicio"],
     DocType.FACTURA:  ["factura", "fra", "invoice", "alb"],
     DocType.REGISTRO: ["libro_registro", "registro_residuos", "control_residuos"],
-    DocType.NORMATIVA:["ley", "decreto", "orden", "boe", "dogc", "bopv"],
+    DocType.NORMATIVA:[
+        "ley", "decreto", "orden", "boe", "dogc", "bopv",
+        "bref", "directiva", "reglamento", "normativa",
+        "real_decreto", "uwwtd", "nca", "bat_", "mtd",
+    ],
 }
 
 # Señales en contenido de texto
@@ -65,11 +69,19 @@ CONTENT_SIGNALS = {
     DocType.FACTURA: [
         "factura", "importe total", "base imponible", "iva", "nif",
         "número de factura", "fecha de emisión", "concepto",
-        "recogida de residuos", "gestión de",
     ],
     DocType.REGISTRO: [
         "libro registro", "fecha de entrega", "cantidad entregada",
         "gestor autorizado", "documento de aceptación", "e-dasri",
+    ],
+    DocType.NORMATIVA: [
+        "mejores técnicas disponibles", "best available techniques",
+        "bref", "bat conclusions", "bat-ael",
+        "directiva", "directive", "reglamento", "regulation",
+        "diario oficial", "official journal",
+        "artículo", "considerando", "transposición",
+        "estado miembro", "member state",
+        "valores límite de emisión", "emission limit values",
     ],
 }
 
@@ -117,17 +129,25 @@ class DocumentClassifier:
         self, pages: list[PageContent], filename: str
     ) -> DocType:
         """Usa Claude para clasificar documentos ambiguos."""
-        text_sample = "\n".join(p.text[:1500] for p in pages)
+        text_sample = "\n".join(p.text[:3000] for p in pages[:3])
         valid_types = [dt.value for dt in DocType if dt != DocType.DESCONOCIDO]
 
         prompt = f"""Eres un experto en gestión de residuos industriales en España.
 Clasifica este documento en UNO de estos tipos:
 {chr(10).join(f"- {t}" for t in valid_types)}
 
+Guía de clasificación:
+- normativa: BREFs (Best Available Techniques Reference Documents), Directivas EU, \
+Reglamentos EU, Leyes, Decretos, Órdenes ministeriales, cualquier texto legislativo o regulatorio.
+- factura: Facturas de pago con importes, IVA, NIF. NO clasificar como factura si no tiene importes económicos.
+- autorizacion_ambiental_integrada: AAIs, permisos IPPC con condiciones y LERs autorizados.
+- contrato_gestor: Contratos de servicios de gestión de residuos con cláusulas.
+- declaracion_anual_residuos: DARIs, memorias anuales de producción de residuos.
+
 Nombre del archivo: {filename}
 Primeras páginas del documento:
 ---
-{text_sample[:3000]}
+{text_sample[:6000]}
 ---
 
 Responde ÚNICAMENTE con el tipo exacto de la lista, sin explicación."""
@@ -281,7 +301,7 @@ class SemanticChunker:
     async def _chunk_by_article(
         self, pages: list[PageContent], doc_id: str, doc_type: DocType
     ) -> list[DocumentChunk]:
-        """Para normativa: divide por artículos."""
+        """Para normativa: divide por artículos o headers Markdown."""
         config = CHUNK_CONFIG[doc_type]
         full_text = "\n".join(p.text for p in pages)
 
@@ -292,6 +312,20 @@ class SemanticChunker:
         ]
 
         splits = self._split_by_patterns(full_text, article_patterns)
+
+        # Si no hay artículos (ej: Markdown), intentar con headers Markdown
+        if len(splits) <= 1:
+            md_patterns = [
+                r"(?:^|\n)(#{1,3}\s+[^\n]+)",   # # Title, ## Section, ### Sub
+            ]
+            md_splits = self._split_by_patterns(full_text, md_patterns)
+            if len(md_splits) > 1:
+                splits = md_splits
+
+        # Si aún no hay splits útiles, fallback a ventana deslizante
+        if len(splits) <= 1:
+            return await self._chunk_sliding_window(pages, doc_id, doc_type)
+
         return self._build_chunks(splits, pages, doc_id, doc_type, config)
 
     async def _chunk_sliding_window(

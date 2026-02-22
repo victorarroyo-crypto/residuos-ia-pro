@@ -2,9 +2,9 @@
 SERVICIO DE ALMACENAMIENTO
 ===========================
 Persiste todo en Supabase: metadatos en PostgreSQL y archivos originales
-en Supabase Storage con estructura organizada por cliente y tipo de documento.
+en Supabase Storage con estructura organizada por proyecto y tipo de documento.
 
-Storage:  documentos/{client_id}/{tipo_doc}/{filename}
+Storage:  documentos/{project_id}/{tipo_doc}/{filename}
           documentos/general/Normativa/{filename}
 
 Supabase: client_documents + document_chunks (con embeddings pgvector)
@@ -61,11 +61,11 @@ class StorageService:
     # ──────────────────────────────────────────────────
 
     def _build_storage_path(
-        self, filename: str, client_id: str, doc_type: DocType
+        self, filename: str, project_id: str, doc_type: DocType
     ) -> str:
         """
         Construye el path dentro del bucket:
-          {client_id}/{tipo_doc}/{filename}
+          {project_id}/{tipo_doc}/{filename}
           general/Normativa/{filename}
         """
         folder = DOC_TYPE_FOLDERS.get(doc_type, "_Sin_Clasificar")
@@ -73,13 +73,13 @@ class StorageService:
         if doc_type == DocType.NORMATIVA:
             return f"general/{folder}/{filename}"
 
-        return f"{client_id}/{folder}/{filename}"
+        return f"{project_id}/{folder}/{filename}"
 
     async def upload_file(
         self,
         file_bytes: bytes,
         filename: str,
-        client_id: str,
+        project_id: str,
         doc_type: DocType,
     ) -> str:
         """
@@ -87,7 +87,7 @@ class StorageService:
         Retorna el storage_path para guardarlo en client_documents.
         """
         sb = await self._get_supabase()
-        storage_path = self._build_storage_path(filename, client_id, doc_type)
+        storage_path = self._build_storage_path(filename, project_id, doc_type)
 
         # Detectar mimetype básico
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -134,16 +134,16 @@ class StorageService:
         """Guarda el documento procesado en la tabla client_documents."""
         sb = await self._get_supabase()
 
-        # client_id may be "general" (used for storage paths) — not a valid UUID.
+        # project_id may be "general" (used for storage paths) — not a valid UUID.
         # Only store it in the DB when it's an actual UUID.
         _uuid_re = re.compile(
             r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
         )
-        db_client_id = doc.client_id if _uuid_re.match(doc.client_id or "") else None
+        db_project_id = doc.client_id if _uuid_re.match(doc.client_id or "") else None
 
         data = {
             "id": doc.doc_id,
-            "client_id": db_client_id,
+            "project_id": db_project_id,
             "titulo": doc.original_filename,
             "tipo": doc.doc_type.value,
             "naturaleza_pdf": doc.nature.value,
@@ -195,6 +195,8 @@ class StorageService:
                     "page_end": chunk.page_end,
                     "tokens": len(chunk.content.split()),
                     "metadata": chunk.metadata,
+                    "rag_scope": chunk.metadata.get("rag_scope", "project"),
+                    "project_id": chunk.metadata.get("project_id"),
                 }
                 for chunk in batch
                 if chunk.embedding is not None
@@ -219,7 +221,7 @@ class StorageService:
             for servicio in meta.get("servicios_contratados", []):
                 if servicio.get("codigo_ler"):
                     await sb.table("waste_inventory").upsert({
-                        "client_id": doc.client_id,
+                        "project_id": doc.client_id,
                         "codigo_ler": servicio["codigo_ler"],
                         "descripcion": servicio.get("descripcion_residuo"),
                         "precio_actual_eur_ton": servicio.get("precio_eur_tonelada"),
@@ -231,7 +233,7 @@ class StorageService:
         if doc.doc_type == DocType.FACTURA and "lineas_servicio" in meta:
             for linea in meta.get("lineas_servicio", []):
                 await sb.table("invoice_lines").upsert({
-                    "client_id": doc.client_id,
+                    "project_id": doc.client_id,
                     "doc_id": doc.doc_id,
                     "fecha": meta.get("fecha_factura"),
                     "codigo_ler": linea.get("codigo_ler"),
@@ -246,7 +248,7 @@ class StorageService:
             alertas = meta.get("alertas_almacenamiento", [])
             for alerta in alertas:
                 await sb.table("compliance_alerts").upsert({
-                    "client_id": doc.client_id,
+                    "project_id": doc.client_id,
                     "tipo": "almacenamiento_excedido",
                     "descripcion": f"Posible exceso de tiempo de almacenamiento: {alerta}",
                     "severidad": "alta",

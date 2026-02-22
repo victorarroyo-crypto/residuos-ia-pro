@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/client";
-import type { SavingsOpportunity, Client } from "@/types/database";
+import type { SavingsOpportunity, Project } from "@/types/database";
 
 const estadoColors: Record<string, "secondary" | "default" | "success" | "outline"> = {
   detectada: "secondary",
@@ -34,17 +34,17 @@ export default function SavingsPage() {
   const [filterTipo, setFilterTipo] = useState<FilterTipo>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const supabase = createClient();
     Promise.all([
       supabase.from("savings_opportunities").select("*"),
-      supabase.from("clients").select("id, nombre"),
+      supabase.from("projects").select("id, nombre"),
     ]).then(([savingsRes, clientsRes]) => {
       setSavings(savingsRes.data ?? []);
-      setClients(clientsRes.data as Client[] ?? []);
+      setClients(clientsRes.data as Project[] ?? []);
       setLoading(false);
     });
   }, []);
@@ -52,7 +52,7 @@ export default function SavingsPage() {
   const tipos = Array.from(new Set(savings.map((s) => s.tipo)));
 
   const filtered = savings.filter((s) => {
-    const client = clients.find((c) => c.id === s.client_id);
+    const client = clients.find((c) => c.id === s.project_id);
     const matchSearch =
       search === "" ||
       s.descripcion.toLowerCase().includes(search.toLowerCase()) ||
@@ -211,7 +211,7 @@ export default function SavingsPage() {
           ) : (
             <div className="space-y-4">
               {filtered.map((opp) => {
-                const client = clients.find((c) => c.id === opp.client_id);
+                const client = clients.find((c) => c.id === opp.project_id);
                 return (
                   <div
                     key={opp.id}

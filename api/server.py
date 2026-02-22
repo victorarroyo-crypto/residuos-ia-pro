@@ -95,7 +95,6 @@ async def health():
 @app.post("/api/ingest")
 async def ingest_document(
     file: UploadFile = File(...),
-    client_id: str = Form(default=None),
     project_id: str = Form(default=None),
     rag_scope: str = Form(default=None),
     password: str = Form(default=None),
@@ -118,7 +117,6 @@ async def ingest_document(
         result = await service.ingest(
             file_bytes=file_bytes,
             filename=file.filename,
-            client_id=client_id,
             project_id=project_id,
             rag_scope=rag_scope,
             password=password,
@@ -141,7 +139,6 @@ async def ingest_document(
 
 class RAGQueryRequest(BaseModel):
     query: str
-    client_id: Optional[str] = None
     project_id: Optional[str] = None
     scope: Optional[str] = None  # "general", "project", or None (both)
     top_k: int = 5
@@ -175,7 +172,6 @@ async def rag_query(request: RAGQueryRequest):
         rag_response = await rag_service.search(
             query=request.query,
             project_id=request.project_id,
-            client_id=request.client_id,
             scopes=scopes,
             top_k_per_scope=request.top_k,
         )
@@ -256,7 +252,7 @@ async def list_knowledge_base(
     query = sb.table("client_documents").select(
         "id, titulo, tipo, naturaleza_pdf, total_paginas, total_chunks, "
         "tablas_encontradas, metadata, estado, fecha_documento, fecha_ingesta"
-    ).or_("client_id.is.null,client_id.eq.general")
+    ).is_("project_id", "null")
 
     if doc_type:
         query = query.eq("tipo", doc_type)
@@ -285,7 +281,7 @@ async def knowledge_base_stats():
     docs_result = await (
         sb.table("client_documents")
         .select("id, tipo, total_chunks, total_paginas")
-        .or_("client_id.is.null,client_id.eq.general")
+        .is_("project_id", "null")
         .execute()
     )
     docs = docs_result.data or []
@@ -319,7 +315,7 @@ async def delete_knowledge_base_document(doc_id: str):
     # Verificar que el documento existe y es general
     doc_result = await (
         sb.table("client_documents")
-        .select("id, client_id, storage_path")
+        .select("id, project_id, storage_path")
         .eq("id", doc_id)
         .execute()
     )
@@ -328,7 +324,7 @@ async def delete_knowledge_base_document(doc_id: str):
         raise HTTPException(status_code=404, detail="Documento no encontrado")
 
     doc = doc_result.data[0]
-    if doc.get("client_id") and doc["client_id"] != "general":
+    if doc.get("project_id") is not None:
         raise HTTPException(
             status_code=403,
             detail="Solo se pueden eliminar documentos de la base general"
@@ -968,7 +964,6 @@ async def _run_sync_job(
                 result = await service.ingest(
                     file_bytes=file_bytes,
                     filename=filename,
-                    rag_scope="general",
                 )
 
                 if not result.success:

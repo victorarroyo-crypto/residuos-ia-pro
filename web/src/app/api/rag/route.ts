@@ -30,10 +30,32 @@ export async function POST(request: NextRequest) {
       .slice(0, 8);
 
     // Search chunks using ilike for each significant term
+    const scope = (body.scope as string) || "general";
+    const projectId = body.project_id as string | undefined;
+
     let chunkQuery = sb
       .from("document_chunks")
       .select("id, document_id, contenido, chunk_type, metadata")
+      .eq("rag_scope", scope)
       .limit(topK * 3);
+
+    // For project scope, filter by project ownership
+    if (scope === "project" && projectId) {
+      const { data: projectDocs } = await sb
+        .from("client_documents")
+        .select("id")
+        .eq("project_id", projectId);
+      const docIds = (projectDocs || []).map((d) => d.id);
+      if (docIds.length > 0) {
+        chunkQuery = chunkQuery.in("document_id", docIds);
+      } else {
+        // No docs for this project → empty result
+        return NextResponse.json({
+          answer: "No hay documentos indexados para este proyecto.",
+          sources: [],
+        });
+      }
+    }
 
     if (searchTerms.length > 0) {
       // Use OR filter matching any term
@@ -87,7 +109,7 @@ export async function POST(request: NextRequest) {
       doc_type: docMap.get(c.document_id)?.tipo || "desconocido",
       chunk_type: c.chunk_type || "texto",
       similarity: c.score,
-      scope: "general",
+      scope,
       excerpt:
         (c.contenido || "").substring(0, 200) +
         ((c.contenido || "").length > 200 ? "..." : ""),

@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
-import type { Client, ComplianceAlert, ClientDocument } from "@/types/database";
+import type { Project, ComplianceAlert, ClientDocument } from "@/types/database";
 
 function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   const colors = {
@@ -45,7 +45,7 @@ type FilterRelacion = "todos" | "retainer" | "auditoria" | "diagnostico";
 export default function ClientsPage() {
   const [search, setSearch] = useState("");
   const [filterRelacion, setFilterRelacion] = useState<FilterRelacion>("todos");
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
   const [documents, setDocuments] = useState<ClientDocument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,9 +53,9 @@ export default function ClientsPage() {
   useEffect(() => {
     const supabase = createClient();
     Promise.all([
-      supabase.from("clients").select("*").order("nombre"),
+      supabase.from("projects").select("*").order("nombre"),
       supabase.from("compliance_alerts").select("*").eq("estado", "pendiente"),
-      supabase.from("client_documents").select("id, client_id"),
+      supabase.from("client_documents").select("id, project_id"),
     ]).then(([clientsRes, alertsRes, docsRes]) => {
       setClients(clientsRes.data ?? []);
       setAlerts(alertsRes.data ?? []);
@@ -65,7 +65,7 @@ export default function ClientsPage() {
   }, []);
 
   function getComplianceStatus(clientId: string): "ok" | "warning" | "danger" {
-    const clientAlerts = alerts.filter((a) => a.client_id === clientId);
+    const clientAlerts = alerts.filter((a) => a.project_id === clientId);
     if (clientAlerts.some((a) => a.severidad === "critica")) return "danger";
     if (clientAlerts.length > 0) return "warning";
     return "ok";
@@ -171,8 +171,8 @@ export default function ClientsPage() {
               <TableBody>
                 {filtered.map((client) => {
                   const status = getComplianceStatus(client.id);
-                  const alertCount = alerts.filter((a) => a.client_id === client.id).length;
-                  const docCount = documents.filter((d) => d.client_id === client.id).length;
+                  const alertCount = alerts.filter((a) => a.project_id === client.id).length;
+                  const docCount = documents.filter((d) => d.project_id === client.id).length;
                   return (
                     <TableRow key={client.id}>
                       <TableCell>

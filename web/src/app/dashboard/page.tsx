@@ -25,18 +25,18 @@ export default async function DashboardPage() {
   const supabase = await createClient();
 
   const [
-    { data: clients },
+    { data: projects },
     { data: documents },
     { data: alerts },
     { data: savings },
   ] = await Promise.all([
-    supabase.from("clients").select("*").order("nombre"),
+    supabase.from("projects").select("*").order("nombre"),
     supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
     supabase.from("compliance_alerts").select("*").order("severidad"),
     supabase.from("savings_opportunities").select("*"),
   ]);
 
-  const allClients = clients ?? [];
+  const allClients = projects ?? [];
   const allDocuments = documents ?? [];
   const allAlerts = alerts ?? [];
   const allSavings = savings ?? [];
@@ -151,11 +151,11 @@ export default async function DashboardPage() {
             ) : (
               <div className="space-y-3">
                 {pendingAlerts.slice(0, 5).map((alert) => {
-                  const client = allClients.find((c) => c.id === alert.client_id);
+                  const client = allClients.find((c) => c.id === alert.project_id);
                   return (
                     <Link
                       key={alert.id}
-                      href={`/dashboard/client/${alert.client_id}`}
+                      href={`/dashboard/client/${alert.project_id}`}
                       className="flex items-start gap-3 rounded-md border p-3 transition-colors hover:bg-secondary"
                     >
                       <Badge variant={severityColors[alert.severidad]}>
@@ -198,7 +198,7 @@ export default async function DashboardPage() {
             ) : (
               <div className="space-y-3">
                 {recentDocs.map((doc) => {
-                  const client = allClients.find((c) => c.id === doc.client_id);
+                  const client = allClients.find((c) => c.id === doc.project_id);
                   return (
                     <div
                       key={doc.id}

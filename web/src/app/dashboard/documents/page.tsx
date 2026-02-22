@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
-import type { ClientDocument, Client } from "@/types/database";
+import type { ClientDocument, Project } from "@/types/database";
 
 const docTypeLabels: Record<string, string> = {
   autorizacion_ambiental_integrada: "AAI",
@@ -49,23 +49,23 @@ export default function DocumentsPage() {
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [filterNaturaleza, setFilterNaturaleza] = useState<FilterNaturaleza>("todos");
   const [documents, setDocuments] = useState<ClientDocument[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const supabase = createClient();
     Promise.all([
       supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
-      supabase.from("clients").select("id, nombre"),
+      supabase.from("projects").select("id, nombre"),
     ]).then(([docsRes, clientsRes]) => {
       setDocuments(docsRes.data ?? []);
-      setClients(clientsRes.data as Client[] ?? []);
+      setClients(clientsRes.data as Project[] ?? []);
       setLoading(false);
     });
   }, []);
 
   const filtered = documents.filter((d) => {
-    const client = clients.find((c) => c.id === d.client_id);
+    const client = clients.find((c) => c.id === d.project_id);
     const matchSearch =
       search === "" ||
       d.titulo?.toLowerCase().includes(search.toLowerCase()) ||
@@ -230,7 +230,7 @@ export default function DocumentsPage() {
               </TableHeader>
               <TableBody>
                 {filtered.map((doc) => {
-                  const client = clients.find((c) => c.id === doc.client_id);
+                  const client = clients.find((c) => c.id === doc.project_id);
                   return (
                     <TableRow key={doc.id}>
                       <TableCell className="max-w-[250px] truncate font-medium">

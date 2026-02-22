@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/client";
-import type { ComplianceAlert, Client } from "@/types/database";
+import type { ComplianceAlert, Project } from "@/types/database";
 
 const severityColors: Record<string, "danger" | "warning" | "secondary" | "destructive"> = {
   critica: "destructive",
@@ -46,17 +46,17 @@ export default function AlertsPage() {
   const [filterSeveridad, setFilterSeveridad] = useState<FilterSeveridad>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
     const [alertsRes, clientsRes] = await Promise.all([
       supabase.from("compliance_alerts").select("*"),
-      supabase.from("clients").select("id, nombre"),
+      supabase.from("projects").select("id, nombre"),
     ]);
     setAlerts(alertsRes.data ?? []);
-    setClients(clientsRes.data as Client[] ?? []);
+    setClients(clientsRes.data as Project[] ?? []);
     setLoading(false);
   }, []);
 
@@ -74,7 +74,7 @@ export default function AlertsPage() {
 
   const filtered = alerts
     .filter((a) => {
-      const client = clients.find((c) => c.id === a.client_id);
+      const client = clients.find((c) => c.id === a.project_id);
       const matchSearch =
         search === "" ||
         a.descripcion.toLowerCase().includes(search.toLowerCase()) ||
@@ -208,7 +208,7 @@ export default function AlertsPage() {
           ) : (
             <div className="space-y-3">
               {filtered.map((alert) => {
-                const client = clients.find((c) => c.id === alert.client_id);
+                const client = clients.find((c) => c.id === alert.project_id);
                 return (
                   <div
                     key={alert.id}
