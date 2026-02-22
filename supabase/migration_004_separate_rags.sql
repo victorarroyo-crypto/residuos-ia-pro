@@ -498,7 +498,7 @@ LANGUAGE SQL STABLE AS $$
       AND 1 - (pc.embedding <=> query_embedding) > match_threshold
     ORDER BY pc.embedding <=> query_embedding LIMIT match_count_project
   )
-  ORDER BY similarity DESC;
+  ORDER BY 5 DESC;
 $$;
 
 -- Views
