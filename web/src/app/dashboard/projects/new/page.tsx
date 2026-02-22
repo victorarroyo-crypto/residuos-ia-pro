@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
 
-export default function NewClientPage() {
+export default function NewProjectPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +45,7 @@ export default function NewClientPage() {
       return;
     }
 
-    router.push("/dashboard/clients");
+    router.push("/dashboard/projects");
     router.refresh();
   }
 
@@ -56,16 +56,15 @@ export default function NewClientPage() {
     <div className="space-y-8">
       <div>
         <Link
-          href="/dashboard/clients"
+          href="/dashboard/projects"
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft className="h-3 w-3" /> Clientes
+          <ArrowLeft className="h-3 w-3" /> Proyectos
         </Link>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">Nuevo cliente</h1>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight">Nuevo proyecto</h1>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6 max-w-3xl">
-        {/* Datos empresa */}
         <Card>
           <CardHeader>
             <CardTitle>Datos de la empresa</CardTitle>
@@ -116,7 +115,6 @@ export default function NewClientPage() {
           </CardContent>
         </Card>
 
-        {/* Contacto */}
         <Card>
           <CardHeader>
             <CardTitle>Persona de contacto</CardTitle>
@@ -139,7 +137,6 @@ export default function NewClientPage() {
           </CardContent>
         </Card>
 
-        {/* Notas */}
         <Card>
           <CardHeader>
             <CardTitle>Notas</CardTitle>
@@ -149,7 +146,7 @@ export default function NewClientPage() {
               name="notas"
               rows={3}
               className={inputClass}
-              placeholder="Observaciones, contexto del cliente, particularidades..."
+              placeholder="Observaciones, contexto del proyecto, particularidades..."
             />
           </CardContent>
         </Card>
@@ -163,9 +160,9 @@ export default function NewClientPage() {
         <div className="flex gap-3">
           <Button type="submit" disabled={loading}>
             {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Crear cliente
+            Crear proyecto
           </Button>
-          <Link href="/dashboard/clients">
+          <Link href="/dashboard/projects">
             <Button type="button" variant="outline">Cancelar</Button>
           </Link>
         </div>
