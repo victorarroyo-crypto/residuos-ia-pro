@@ -240,7 +240,8 @@ class PDFPipeline:
     async def _emit_progress(self, doc_id: str, step: str, pct: int):
         """Emite progreso via Supabase Realtime para actualizar la UI en tiempo real."""
         try:
-            await self.storage.supabase.table("pipeline_progress").upsert({
+            sb = await self.storage._get_supabase()
+            await sb.table("pipeline_progress").upsert({
                 "doc_id": doc_id,
                 "step": step,
                 "percentage": pct,

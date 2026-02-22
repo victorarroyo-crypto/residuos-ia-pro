@@ -33,15 +33,35 @@ _config: PipelineConfigImpl | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global service, rag_service, _config
+
+    supabase_url = os.environ.get(
+        "SUPABASE_URL", os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "")
+    )
+    supabase_key = os.environ.get(
+        "SUPABASE_SERVICE_KEY", os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    )
+
+    if not supabase_url:
+        logger.error(
+            "SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL no configurado. "
+            "Los datos NO llegarán a Supabase."
+        )
+        raise RuntimeError("SUPABASE_URL no configurado")
+    if not supabase_key:
+        logger.error(
+            "SUPABASE_SERVICE_KEY / SUPABASE_SERVICE_ROLE_KEY no configurado. "
+            "Los datos NO llegarán a Supabase."
+        )
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY no configurado")
+
+    logger.info(f"Supabase URL: {supabase_url[:40]}...")
+    logger.info("Supabase service key: configurada ✓")
+
     _config = PipelineConfigImpl(
         anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         openai_api_key=os.environ["OPENAI_API_KEY"],
-        supabase_url=os.environ.get(
-            "SUPABASE_URL", os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "")
-        ),
-        supabase_service_key=os.environ.get(
-            "SUPABASE_SERVICE_KEY", os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-        ),
+        supabase_url=supabase_url,
+        supabase_service_key=supabase_key,
     )
     service = UnifiedIngestionService(_config)
     rag_service = RAGScopingService(_config)

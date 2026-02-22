@@ -99,19 +99,23 @@ class StorageService:
         }
         content_type = mime_map.get(ext, "application/octet-stream")
 
-        sb.storage.from_(STORAGE_BUCKET).upload(
-            path=storage_path,
-            file=file_bytes,
-            file_options={"content-type": content_type, "upsert": "true"},
-        )
+        try:
+            await sb.storage.from_(STORAGE_BUCKET).upload(
+                path=storage_path,
+                file=file_bytes,
+                file_options={"content-type": content_type, "upsert": "true"},
+            )
+            logger.info(f"Archivo subido a Storage: {STORAGE_BUCKET}/{storage_path}")
+        except Exception as e:
+            logger.error(f"Error subiendo archivo a Storage: {e}")
+            raise
 
-        logger.info(f"Archivo subido a Storage: {STORAGE_BUCKET}/{storage_path}")
         return storage_path
 
     async def get_download_url(self, storage_path: str, expires_in: int = 3600) -> str:
         """Genera una URL firmada temporal para descargar el documento original."""
         sb = await self._get_supabase()
-        result = sb.storage.from_(STORAGE_BUCKET).create_signed_url(
+        result = await sb.storage.from_(STORAGE_BUCKET).create_signed_url(
             storage_path, expires_in
         )
         return result["signedURL"]
@@ -119,7 +123,7 @@ class StorageService:
     async def delete_file(self, storage_path: str):
         """Elimina un archivo del Storage."""
         sb = await self._get_supabase()
-        sb.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        await sb.storage.from_(STORAGE_BUCKET).remove([storage_path])
         logger.info(f"Archivo eliminado de Storage: {storage_path}")
 
     # ──────────────────────────────────────────────────
@@ -160,7 +164,10 @@ class StorageService:
             "fecha_vencimiento": doc.metadata.get("fecha_vencimiento"),
         }
 
-        await sb.table("client_documents").upsert(data).execute()
+        result = await sb.table("client_documents").upsert(data).execute()
+        if not result.data:
+            logger.error(f"Upsert client_documents devolvió vacío para {doc.doc_id}")
+            raise RuntimeError(f"Fallo al guardar documento {doc.doc_id} en Supabase")
         logger.info(f"Documento guardado en Supabase: {doc.doc_id}")
 
         await self._save_structured_metadata(sb, doc)
@@ -193,7 +200,10 @@ class StorageService:
                 if chunk.embedding is not None
             ]
             if data:
-                await sb.table("document_chunks").upsert(data).execute()
+                result = await sb.table("document_chunks").upsert(data).execute()
+                if not result.data:
+                    logger.error(f"Upsert document_chunks devolvió vacío para batch {i} de doc {doc_id}")
+                    raise RuntimeError(f"Fallo al guardar chunks (batch {i}) para doc {doc_id}")
 
         logger.info(f"{len(chunks)} chunks guardados en Supabase para doc {doc_id}")
 

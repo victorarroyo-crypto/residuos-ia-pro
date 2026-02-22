@@ -248,7 +248,9 @@ class UnifiedIngestionService:
         )
         doc_data["storage_path"] = storage_path
 
-        await sb.table("client_documents").upsert(doc_data).execute()
+        upsert_result = await sb.table("client_documents").upsert(doc_data).execute()
+        if not upsert_result.data:
+            raise RuntimeError(f"Fallo al guardar documento Excel {result.doc_id} en Supabase")
 
         # Guardar chunks con embeddings
         await self.storage.save_chunks_to_supabase(result.chunks, result.doc_id)
