@@ -1,6 +1,7 @@
 -- ================================================================
 -- Migration 004: Merge clients → projects + fix RAG scope
 -- ================================================================
+-- Idempotent: safe to run multiple times.
 -- 1. Merge clients table into projects (single entity)
 -- 2. Rename client_id → project_id across all tables
 -- 3. Fix rag_scope column for existing chunks
@@ -21,84 +22,102 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS contacto_nombre TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS contacto_email TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS contacto_telefono TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS notas TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
--- Copy data from clients to projects (if clients has data and projects doesn't)
-INSERT INTO projects (id, consultant_id, nombre, cif, cnae, sector,
-  comunidad_autonoma, municipio, direccion, contacto_nombre,
-  contacto_email, contacto_telefono, notas, metadata, created_at, updated_at)
-SELECT id, consultant_id, nombre, cif, cnae, sector,
-  comunidad_autonoma, municipio, direccion, contacto_nombre,
-  contacto_email, contacto_telefono, notas, metadata, created_at, updated_at
-FROM clients
-WHERE id NOT IN (SELECT id FROM projects)
-ON CONFLICT (id) DO NOTHING;
+-- Copy data from clients to projects (if clients table exists and has data)
+DO $$
+BEGIN
+  -- Try full copy including metadata
+  BEGIN
+    INSERT INTO projects (id, consultant_id, nombre, cif, cnae, sector,
+      comunidad_autonoma, municipio, direccion, contacto_nombre,
+      contacto_email, contacto_telefono, notas, metadata, created_at, updated_at)
+    SELECT id, consultant_id, nombre, cif, cnae, sector,
+      comunidad_autonoma, municipio, direccion, contacto_nombre,
+      contacto_email, contacto_telefono, notas, metadata, created_at, updated_at
+    FROM clients
+    WHERE id NOT IN (SELECT id FROM projects)
+    ON CONFLICT (id) DO NOTHING;
+  EXCEPTION WHEN undefined_column THEN
+    -- Fallback: copy without metadata (clients table may not have it)
+    BEGIN
+      INSERT INTO projects (id, consultant_id, nombre, cif, cnae, sector,
+        comunidad_autonoma, municipio, direccion, contacto_nombre,
+        contacto_email, contacto_telefono, notas, created_at, updated_at)
+      SELECT id, consultant_id, nombre, cif, cnae, sector,
+        comunidad_autonoma, municipio, direccion, contacto_nombre,
+        contacto_email, contacto_telefono, notas, created_at, updated_at
+      FROM clients
+      WHERE id NOT IN (SELECT id FROM projects)
+      ON CONFLICT (id) DO NOTHING;
+    EXCEPTION WHEN undefined_column THEN
+      -- Minimal fallback: only copy core columns
+      INSERT INTO projects (id, consultant_id, nombre, created_at)
+      SELECT id, consultant_id, nombre, created_at
+      FROM clients
+      WHERE id NOT IN (SELECT id FROM projects)
+      ON CONFLICT (id) DO NOTHING;
+    END;
+  END;
+EXCEPTION WHEN undefined_table THEN
+  -- clients table doesn't exist — nothing to migrate
+  RAISE NOTICE 'clients table not found, skipping data migration';
+END;
+$$;
 
 -- ────────────────────────────────────────────────────────
 -- PART B: Rename client_id → project_id in all tables
+-- (Safe: checks if column exists before renaming)
 -- ────────────────────────────────────────────────────────
 
--- client_documents
-ALTER TABLE client_documents
-  DROP CONSTRAINT IF EXISTS client_documents_client_id_fkey;
-ALTER TABLE client_documents
-  RENAME COLUMN client_id TO project_id;
-ALTER TABLE client_documents
-  ADD CONSTRAINT client_documents_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
+DO $$
+DECLARE
+  _tbl TEXT;
+  _old_fk TEXT;
+BEGIN
+  -- For each table that has client_id → rename to project_id
+  FOREACH _tbl IN ARRAY ARRAY[
+    'client_documents', 'waste_inventory', 'invoice_lines',
+    'compliance_alerts', 'savings_opportunities', 'contracts'
+  ]
+  LOOP
+    -- Only rename if client_id still exists (skip if already renamed)
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = _tbl AND column_name = 'client_id'
+    ) THEN
+      -- Drop old FK constraint (try common naming patterns)
+      _old_fk := _tbl || '_client_id_fkey';
+      EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', _tbl, _old_fk);
 
--- Update docs that referenced clients → now reference projects
-UPDATE client_documents cd
-SET project_id = c.id
-FROM clients c
-WHERE cd.project_id = c.id
-  AND c.id NOT IN (SELECT id FROM projects);
--- (no-op if clients data was already copied to projects)
+      -- Rename column
+      EXECUTE format('ALTER TABLE %I RENAME COLUMN client_id TO project_id', _tbl);
 
--- waste_inventory
-ALTER TABLE waste_inventory
-  DROP CONSTRAINT IF EXISTS waste_inventory_client_id_fkey;
-ALTER TABLE waste_inventory
-  RENAME COLUMN client_id TO project_id;
-ALTER TABLE waste_inventory
-  ADD CONSTRAINT waste_inventory_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
+      RAISE NOTICE 'Renamed client_id → project_id on %', _tbl;
+    ELSE
+      RAISE NOTICE 'Column client_id not found on %, skipping rename', _tbl;
+    END IF;
 
--- invoice_lines
-ALTER TABLE invoice_lines
-  DROP CONSTRAINT IF EXISTS invoice_lines_client_id_fkey;
-ALTER TABLE invoice_lines
-  RENAME COLUMN client_id TO project_id;
-ALTER TABLE invoice_lines
-  ADD CONSTRAINT invoice_lines_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
-
--- compliance_alerts
-ALTER TABLE compliance_alerts
-  DROP CONSTRAINT IF EXISTS compliance_alerts_client_id_fkey;
-ALTER TABLE compliance_alerts
-  RENAME COLUMN client_id TO project_id;
-ALTER TABLE compliance_alerts
-  ADD CONSTRAINT compliance_alerts_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
-
--- savings_opportunities
-ALTER TABLE savings_opportunities
-  DROP CONSTRAINT IF EXISTS savings_opportunities_client_id_fkey;
-ALTER TABLE savings_opportunities
-  RENAME COLUMN client_id TO project_id;
-ALTER TABLE savings_opportunities
-  ADD CONSTRAINT savings_opportunities_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
-
--- contracts
-ALTER TABLE contracts
-  DROP CONSTRAINT IF EXISTS contracts_client_id_fkey;
-ALTER TABLE contracts
-  RENAME COLUMN client_id TO project_id;
-ALTER TABLE contracts
-  ADD CONSTRAINT contracts_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE;
+    -- Ensure FK to projects exists (drop + recreate for idempotency)
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = _tbl AND column_name = 'project_id'
+    ) THEN
+      _old_fk := _tbl || '_project_id_fkey';
+      EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', _tbl, _old_fk);
+      BEGIN
+        EXECUTE format(
+          'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE',
+          _tbl, _old_fk
+        );
+      EXCEPTION WHEN others THEN
+        RAISE NOTICE 'Could not add FK on %.project_id: %', _tbl, SQLERRM;
+      END;
+    END IF;
+  END LOOP;
+END;
+$$;
 
 -- Drop old projects.client_id column (referenced old clients table)
 ALTER TABLE projects DROP COLUMN IF EXISTS client_id;
@@ -129,8 +148,18 @@ WHERE metadata->>'rag_scope' IS NOT NULL
 -- PART D: Update RLS policies
 -- ────────────────────────────────────────────────────────
 
--- Drop old policies referencing clients
-DROP POLICY IF EXISTS "consultant_own_clients" ON clients;
+-- Drop old policies (safe: IF EXISTS handles missing policies/tables)
+DO $$
+BEGIN
+  -- Try dropping policy on clients table (may already be gone)
+  BEGIN
+    EXECUTE 'DROP POLICY IF EXISTS "consultant_own_clients" ON clients';
+  EXCEPTION WHEN undefined_table THEN
+    NULL; -- clients table already dropped
+  END;
+END;
+$$;
+
 DROP POLICY IF EXISTS "user_own_documents" ON client_documents;
 DROP POLICY IF EXISTS "read_scoped_chunks" ON document_chunks;
 DROP POLICY IF EXISTS "insert_own_chunks" ON document_chunks;
@@ -143,7 +172,20 @@ DROP POLICY IF EXISTS "consultant_upload_documents" ON storage.objects;
 DROP POLICY IF EXISTS "consultant_read_documents" ON storage.objects;
 DROP POLICY IF EXISTS "consultant_delete_documents" ON storage.objects;
 
+-- Enable RLS on all tables (idempotent)
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waste_inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoice_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE compliance_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE savings_opportunities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contracts ENABLE ROW LEVEL SECURITY;
+
 -- Recreate policies using projects table
+CREATE POLICY "consultant_own_projects" ON projects
+  FOR ALL USING (consultant_id = auth.uid());
+
 CREATE POLICY "user_own_documents" ON client_documents
   FOR ALL USING (
     project_id IS NULL
