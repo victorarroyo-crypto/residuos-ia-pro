@@ -421,6 +421,61 @@ async def gdrive_exchange(request: GDriveExchangeRequest):
     }
 
 
+class GDriveSetupFoldersRequest(BaseModel):
+    consultant_id: str
+
+
+@app.post("/api/gdrive/setup-folders")
+async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
+    """
+    Create Drive folder structure using tokens already saved in DB.
+    Called by the OAuth callback after tokens are stored.
+    """
+    if not _gdrive_configured():
+        raise HTTPException(status_code=501, detail="Google Drive no configurado.")
+
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    result = await (
+        sb.table("consultant_gdrive")
+        .select("access_token, refresh_token, root_folder_id")
+        .eq("consultant_id", request.consultant_id)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Google Drive no conectado. Conecta primero.")
+
+    data = result.data[0]
+
+    # Skip if folder structure already exists
+    if data.get("root_folder_id"):
+        return {"success": True, "root_folder_id": data["root_folder_id"], "already_exists": True}
+
+    from pipeline.google_drive import GoogleDriveService
+
+    gd = GoogleDriveService(
+        access_token=data["access_token"],
+        refresh_token=data["refresh_token"],
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+    )
+    folders = gd.setup_full_structure()
+
+    await sb.table("consultant_gdrive").update({
+        "root_folder_id": folders["root_folder_id"],
+        "folder_mapping": folders,
+    }).eq("consultant_id", request.consultant_id).execute()
+
+    return {
+        "success": True,
+        "root_folder_id": folders["root_folder_id"],
+        "folders_created": len(folders),
+    }
+
+
 @app.get("/api/gdrive/status")
 async def gdrive_status(consultant_id: str = Query(...)):
     """Check if the consultant has connected Google Drive."""
@@ -634,7 +689,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
             logger.error("Sync: error querying root folder: %s", e)
             raise HTTPException(status_code=500, detail=f"Error consultando carpeta raiz: {e}")
         if not gdrive_row.data or not gdrive_row.data[0].get("root_folder_id"):
-            raise HTTPException(status_code=404, detail="No root folder configured. Reconecta Google Drive desde Ajustes.")
+            raise HTTPException(status_code=404, detail="No hay carpeta raiz configurada. Ve a Ajustes y pulsa 'Crear estructura de carpetas'.")
         folder_id = gdrive_row.data[0]["root_folder_id"]
 
     # Check if a sync is already running for this consultant
