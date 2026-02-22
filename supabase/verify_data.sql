@@ -121,6 +121,29 @@ ORDER BY started_at DESC
 LIMIT 5;
 
 -- ════════════════════════════════════════════════════════════════
+-- PASO 8b: REPARAR syncs atascados (>30 min en "running")
+-- ════════════════════════════════════════════════════════════════
+-- Descomenta las lineas UPDATE si quieres forzar la reparacion.
+-- Por defecto solo muestra los syncs atascados.
+
+SELECT 'SYNCS ATASCADOS (>30 min en running)' AS diagnostico;
+
+SELECT id, consultant_id, started_at,
+       now() - started_at AS tiempo_transcurrido,
+       total_files_found, files_ingested
+FROM gdrive_sync_log
+WHERE status = 'running'
+  AND started_at < now() - INTERVAL '30 minutes';
+
+-- DESCOMENTA para reparar:
+-- UPDATE gdrive_sync_log
+-- SET status = 'error',
+--     completed_at = now(),
+--     error_message = 'Reparado manualmente: sync expirado tras >30 min sin respuesta.'
+-- WHERE status = 'running'
+--   AND started_at < now() - INTERVAL '30 minutes';
+
+-- ════════════════════════════════════════════════════════════════
 -- PASO 9: Funciones RAG existen?
 -- ════════════════════════════════════════════════════════════════
 SELECT 'FUNCIONES RAG' AS diagnostico;
