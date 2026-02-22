@@ -11,8 +11,10 @@
 -- ================================================================
 
 -- ────────────────────────────────────────────────────────
--- PART 0: Drop ALL dependent objects
+-- PART 0: Extensions + Drop ALL dependent objects
 -- ────────────────────────────────────────────────────────
+
+CREATE EXTENSION IF NOT EXISTS vector;
 
 DROP VIEW IF EXISTS rag_stats CASCADE;
 DROP VIEW IF EXISTS knowledge_stats CASCADE;
@@ -143,8 +145,7 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
+  USING hnsw (embedding vector_cosine_ops);
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_type ON knowledge_chunks(chunk_type);
@@ -203,8 +204,7 @@ CREATE TABLE IF NOT EXISTS project_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_chunks_embedding ON project_chunks
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
+  USING hnsw (embedding vector_cosine_ops);
 
 CREATE INDEX IF NOT EXISTS idx_project_chunks_document ON project_chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_project_chunks_project ON project_chunks(project_id);
