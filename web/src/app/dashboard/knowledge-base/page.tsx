@@ -121,6 +121,7 @@ const knowledgeTypeLabels: Record<string, string> = {
   gestores_residuos: "Gestores",
   clasificacion_residuos: "Clasificación",
   gestion_operativa: "Gestión Operativa",
+  herramientas_plantillas: "Herramientas",
   referencia: "Referencia",
   desconocido: "Sin clasificar",
 };

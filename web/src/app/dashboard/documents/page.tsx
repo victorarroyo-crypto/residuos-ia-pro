@@ -28,13 +28,14 @@ const knowledgeTypeLabels: Record<string, string> = {
   gestores_residuos: "Gestores",
   clasificacion_residuos: "Clasificación",
   gestion_operativa: "Gestión Operativa",
+  herramientas_plantillas: "Herramientas",
   referencia: "Referencia",
   desconocido: "Sin clasificar",
 };
 
 type FilterEstado = "todos" | "indexado" | "procesando" | "error" | "pendiente";
 type FilterNaturaleza = "todos" | "digital" | "scanned" | "hybrid" | "excel";
-type FilterTipo = "todos" | "legislacion" | "documentacion_tecnica" | "gestores_residuos" | "clasificacion_residuos" | "gestion_operativa" | "referencia" | "desconocido";
+type FilterTipo = "todos" | "legislacion" | "documentacion_tecnica" | "gestores_residuos" | "clasificacion_residuos" | "gestion_operativa" | "herramientas_plantillas" | "referencia" | "desconocido";
 
 export default function DocumentsPage() {
   const [search, setSearch] = useState("");
@@ -185,6 +186,7 @@ export default function DocumentsPage() {
                 <option value="gestores_residuos">Gestores</option>
                 <option value="clasificacion_residuos">Clasificacion</option>
                 <option value="gestion_operativa">Gestion Operativa</option>
+                <option value="herramientas_plantillas">Herramientas</option>
                 <option value="referencia">Referencia</option>
                 <option value="desconocido">Sin clasificar</option>
               </select>

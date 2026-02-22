@@ -120,7 +120,8 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
 
   CONSTRAINT valid_knowledge_tipo CHECK (tipo IN (
     'legislacion','documentacion_tecnica','gestores_residuos',
-    'clasificacion_residuos','gestion_operativa','referencia','desconocido'
+    'clasificacion_residuos','gestion_operativa','herramientas_plantillas',
+    'referencia','desconocido'
   ))
 );
 

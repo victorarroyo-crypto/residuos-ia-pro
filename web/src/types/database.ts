@@ -129,7 +129,8 @@ export type KnowledgeDocType =
   | "gestores_residuos"       // 03_Gestores_Residuos
   | "clasificacion_residuos"  // 04_Clasificacion_Residuos (LER)
   | "gestion_operativa"       // 05_Gestion_Operativa
-  | "referencia"              // 06_Referencia
+  | "herramientas_plantillas" // 06_Herramientas_Plantillas
+  | "referencia"              // Referencia
   | "desconocido";
 
 /** Tipos de documento de proyecto */
