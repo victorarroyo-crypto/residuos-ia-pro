@@ -224,7 +224,7 @@ export default function AlertsPage() {
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                         {client && (
                           <Link
-                            href={`/dashboard/client/${client.id}`}
+                            href={`/dashboard/projects/${client.id}`}
                             className="hover:underline"
                           >
                             {client.nombre}
@@ -256,7 +256,7 @@ export default function AlertsPage() {
                         </Button>
                       )}
                       {client && (
-                        <Link href={`/dashboard/client/${client.id}`}>
+                        <Link href={`/dashboard/projects/${client.id}`}>
                           <Button variant="ghost" size="sm">
                             <ArrowRight className="h-4 w-4" />
                           </Button>

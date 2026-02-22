@@ -47,7 +47,7 @@ export default function UploadPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [client, setClient] = useState<Project | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [files, setFiles] = useState<FileUploadState[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -61,12 +61,11 @@ export default function UploadPage({
       .eq("id", id)
       .single()
       .then(({ data }) => {
-        setClient(data);
+        setProject(data);
         setLoading(false);
       });
   }, [id]);
 
-  // Subscribe to pipeline_progress via Supabase Realtime
   useEffect(() => {
     const processingFiles = files.filter((f) => f.status === "processing");
     if (processingFiles.length === 0) return;
@@ -86,7 +85,6 @@ export default function UploadPage({
           setFiles((prev) =>
             prev.map((f) => {
               if (f.status !== "processing") return f;
-              // Match by filename pattern
               if (progress.doc_id && progress.doc_id.includes(f.file.name)) {
                 return {
                   ...f,
@@ -159,7 +157,6 @@ export default function UploadPage({
       const fileState = files[index];
       if (!fileState) return;
 
-      // Phase 1: Uploading
       setFiles((prev) =>
         prev.map((f, i) =>
           i === index
@@ -179,13 +176,11 @@ export default function UploadPage({
         )
       );
 
-      // Send to API
       const formData = new FormData();
       formData.append("file", fileState.file);
       formData.append("project_id", id);
 
       try {
-        // Phase 2: Processing
         setFiles((prev) =>
           prev.map((f, i) =>
             i === index
@@ -235,7 +230,6 @@ export default function UploadPage({
           return;
         }
 
-        // Phase 3: Done
         setFiles((prev) =>
           prev.map((f, i) =>
             i === index
@@ -297,12 +291,12 @@ export default function UploadPage({
     );
   }
 
-  if (!client) {
+  if (!project) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
-        <p className="text-lg text-muted-foreground">Cliente no encontrado</p>
-        <Link href="/dashboard" className="mt-4 text-vandarum-teal hover:underline">
-          Volver al dashboard
+        <p className="text-lg text-muted-foreground">Proyecto no encontrado</p>
+        <Link href="/dashboard/projects" className="mt-4 text-vandarum-teal hover:underline">
+          Volver a proyectos
         </Link>
       </div>
     );
@@ -313,13 +307,12 @@ export default function UploadPage({
 
   return (
     <div className="space-y-8">
-      {/* Header */}
       <div className="space-y-1">
         <Link
-          href={`/dashboard/client/${id}`}
+          href={`/dashboard/projects/${id}`}
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft className="h-3 w-3" /> {client.nombre}
+          <ArrowLeft className="h-3 w-3" /> {project.nombre}
         </Link>
         <h1 className="text-3xl font-bold tracking-tight">Subir documentos</h1>
         <p className="text-muted-foreground">
@@ -327,7 +320,6 @@ export default function UploadPage({
         </p>
       </div>
 
-      {/* Drop zone */}
       <Card>
         <CardContent className="p-0">
           <div
@@ -362,7 +354,6 @@ export default function UploadPage({
         </CardContent>
       </Card>
 
-      {/* File list */}
       {files.length > 0 && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
@@ -393,44 +384,25 @@ export default function UploadPage({
                     <File className="h-5 w-5 text-muted-foreground" />
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium">
-                          {fileState.file.name}
-                        </p>
+                        <p className="text-sm font-medium">{fileState.file.name}</p>
                         <span className="text-xs text-muted-foreground">
                           ({(fileState.file.size / 1024).toFixed(0)} KB)
                         </span>
                       </div>
 
                       {fileState.status === "pending" && (
-                        <p className="text-xs text-muted-foreground">
-                          Pendiente de procesar
-                        </p>
+                        <p className="text-xs text-muted-foreground">Pendiente de procesar</p>
                       )}
 
-                      {fileState.status === "uploading" && fileState.progress && (
-                        <div className="mt-2 space-y-1">
-                          <div className="flex items-center gap-2">
-                            <Loader2 className="h-3 w-3 animate-spin text-vandarum-teal" />
-                            <span className="text-xs text-vandarum-teal">
-                              {stepLabels[fileState.progress.step] ?? "Subiendo..."}
-                            </span>
-                          </div>
-                          <Progress value={fileState.progress.percentage} />
-                        </div>
-                      )}
-
-                      {fileState.status === "processing" &&
+                      {(fileState.status === "uploading" || fileState.status === "processing") &&
                         fileState.progress && (
                           <div className="mt-2 space-y-1">
                             <div className="flex items-center justify-between text-xs">
                               <span className="flex items-center gap-2 text-muted-foreground">
                                 <Loader2 className="h-3 w-3 animate-spin" />
-                                {stepLabels[fileState.progress.step] ??
-                                  fileState.progress.step}
+                                {stepLabels[fileState.progress.step] ?? fileState.progress.step}
                               </span>
-                              <span className="font-medium">
-                                {fileState.progress.percentage}%
-                              </span>
+                              <span className="font-medium">{fileState.progress.percentage}%</span>
                             </div>
                             <Progress value={fileState.progress.percentage} />
                           </div>
@@ -454,12 +426,6 @@ export default function UploadPage({
                                   {String(fileState.result.num_chunks)} chunks
                                 </span>
                               )}
-                              {Array.isArray(fileState.result.ler_codes_found) &&
-                                fileState.result.ler_codes_found.length > 0 && (
-                                  <span className="text-xs text-muted-foreground">
-                                    LERs: {(fileState.result.ler_codes_found as string[]).join(", ")}
-                                  </span>
-                                )}
                             </div>
                           )}
                         </div>
@@ -474,11 +440,7 @@ export default function UploadPage({
                     </div>
 
                     {fileState.status === "pending" && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeFile(index)}
-                      >
+                      <Button variant="ghost" size="sm" onClick={() => removeFile(index)}>
                         <XCircle className="h-4 w-4" />
                       </Button>
                     )}

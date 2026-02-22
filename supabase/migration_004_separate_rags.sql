@@ -11,8 +11,10 @@
 -- ================================================================
 
 -- ────────────────────────────────────────────────────────
--- PART 0: Drop ALL dependent objects
+-- PART 0: Extensions + Drop ALL dependent objects
 -- ────────────────────────────────────────────────────────
+
+CREATE EXTENSION IF NOT EXISTS vector;
 
 DROP VIEW IF EXISTS rag_stats CASCADE;
 DROP VIEW IF EXISTS knowledge_stats CASCADE;
@@ -37,26 +39,40 @@ BEGIN
 END;
 $$;
 
-DROP POLICY IF EXISTS "consultant_own_projects" ON projects;
-DROP POLICY IF EXISTS "user_own_documents" ON client_documents;
-DROP POLICY IF EXISTS "user_own_chunks" ON document_chunks;
-DROP POLICY IF EXISTS "read_general_rag" ON document_chunks;
-DROP POLICY IF EXISTS "read_scoped_chunks" ON document_chunks;
-DROP POLICY IF EXISTS "insert_own_chunks" ON document_chunks;
-DROP POLICY IF EXISTS "authenticated_read_knowledge_docs" ON knowledge_documents;
-DROP POLICY IF EXISTS "authenticated_read_knowledge_chunks" ON knowledge_chunks;
-DROP POLICY IF EXISTS "service_write_knowledge_docs" ON knowledge_documents;
-DROP POLICY IF EXISTS "service_write_knowledge_chunks" ON knowledge_chunks;
-DROP POLICY IF EXISTS "consultant_own_project_docs" ON project_documents;
-DROP POLICY IF EXISTS "consultant_own_project_chunks" ON project_chunks;
-DROP POLICY IF EXISTS "user_own_waste_inventory" ON waste_inventory;
-DROP POLICY IF EXISTS "user_own_invoice_lines" ON invoice_lines;
-DROP POLICY IF EXISTS "user_own_alerts" ON compliance_alerts;
-DROP POLICY IF EXISTS "user_own_savings" ON savings_opportunities;
-DROP POLICY IF EXISTS "user_own_contracts" ON contracts;
-DROP POLICY IF EXISTS "consultant_upload_documents" ON storage.objects;
-DROP POLICY IF EXISTS "consultant_read_documents" ON storage.objects;
-DROP POLICY IF EXISTS "consultant_delete_documents" ON storage.objects;
+DO $$
+DECLARE
+  _sql TEXT;
+BEGIN
+  FOREACH _sql IN ARRAY ARRAY[
+    'DROP POLICY IF EXISTS "consultant_own_projects" ON projects',
+    'DROP POLICY IF EXISTS "user_own_documents" ON client_documents',
+    'DROP POLICY IF EXISTS "user_own_chunks" ON document_chunks',
+    'DROP POLICY IF EXISTS "read_general_rag" ON document_chunks',
+    'DROP POLICY IF EXISTS "read_scoped_chunks" ON document_chunks',
+    'DROP POLICY IF EXISTS "insert_own_chunks" ON document_chunks',
+    'DROP POLICY IF EXISTS "authenticated_read_knowledge_docs" ON knowledge_documents',
+    'DROP POLICY IF EXISTS "authenticated_read_knowledge_chunks" ON knowledge_chunks',
+    'DROP POLICY IF EXISTS "service_write_knowledge_docs" ON knowledge_documents',
+    'DROP POLICY IF EXISTS "service_write_knowledge_chunks" ON knowledge_chunks',
+    'DROP POLICY IF EXISTS "consultant_own_project_docs" ON project_documents',
+    'DROP POLICY IF EXISTS "consultant_own_project_chunks" ON project_chunks',
+    'DROP POLICY IF EXISTS "user_own_waste_inventory" ON waste_inventory',
+    'DROP POLICY IF EXISTS "user_own_invoice_lines" ON invoice_lines',
+    'DROP POLICY IF EXISTS "user_own_alerts" ON compliance_alerts',
+    'DROP POLICY IF EXISTS "user_own_savings" ON savings_opportunities',
+    'DROP POLICY IF EXISTS "user_own_contracts" ON contracts',
+    'DROP POLICY IF EXISTS "consultant_upload_documents" ON storage.objects',
+    'DROP POLICY IF EXISTS "consultant_read_documents" ON storage.objects',
+    'DROP POLICY IF EXISTS "consultant_delete_documents" ON storage.objects'
+  ]
+  LOOP
+    BEGIN
+      EXECUTE _sql;
+    EXCEPTION WHEN undefined_table THEN NULL;
+    END;
+  END LOOP;
+END;
+$$;
 
 -- ────────────────────────────────────────────────────────
 -- PART A: Ensure projects table has all columns
@@ -143,8 +159,7 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding ON knowledge_chunks
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
+  USING hnsw (embedding vector_cosine_ops);
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_type ON knowledge_chunks(chunk_type);
@@ -203,8 +218,7 @@ CREATE TABLE IF NOT EXISTS project_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_chunks_embedding ON project_chunks
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
+  USING hnsw (embedding vector_cosine_ops);
 
 CREATE INDEX IF NOT EXISTS idx_project_chunks_document ON project_chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_project_chunks_project ON project_chunks(project_id);

@@ -8,17 +8,21 @@ import { createClient } from "@/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
 import {
   LayoutDashboard,
-  Users,
+  FolderKanban,
+  BookOpen,
+  AlertTriangle,
+  TrendingDown,
   Settings,
   Leaf,
   LogOut,
-  BookOpen,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/clients", label: "Clientes", icon: Users },
+  { href: "/dashboard/projects", label: "Proyectos", icon: FolderKanban },
   { href: "/dashboard/knowledge-base", label: "Base de Conocimiento", icon: BookOpen },
+  { href: "/dashboard/alerts", label: "Alertas", icon: AlertTriangle },
+  { href: "/dashboard/savings", label: "Ahorros", icon: TrendingDown },
   { href: "/dashboard/settings", label: "Ajustes", icon: Settings },
 ];
 
@@ -48,7 +52,6 @@ export function Sidebar() {
 
   return (
     <aside className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r bg-card">
-      {/* Brand header with Vandarum gradient */}
       <div className="flex h-16 items-center gap-3 border-b px-6 bg-gradient-brand">
         <Leaf className="h-6 w-6 text-white" />
         <div className="flex flex-col">

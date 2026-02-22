@@ -1,13 +1,14 @@
 import Link from "next/link";
 import {
-  Users,
-  FileText,
+  FolderKanban,
   AlertTriangle,
   TrendingDown,
   ArrowRight,
   Leaf,
   Clock,
   CheckCircle2,
+  BookOpen,
+  Plus,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -26,29 +27,29 @@ export default async function DashboardPage() {
 
   const [
     { data: projects },
-    { data: documents },
+    { data: kbDocs },
     { data: alerts },
     { data: savings },
+    { data: projectDocs },
   ] = await Promise.all([
     supabase.from("projects").select("*").order("nombre"),
-    supabase.from("knowledge_documents").select("*").order("fecha_ingesta", { ascending: false }),
-    supabase.from("compliance_alerts").select("*").order("severidad"),
+    supabase.from("knowledge_documents").select("id, titulo, tipo, estado, fecha_ingesta").order("fecha_ingesta", { ascending: false }).limit(5),
+    supabase.from("compliance_alerts").select("*").eq("estado", "pendiente").order("severidad"),
     supabase.from("savings_opportunities").select("*"),
+    supabase.from("project_documents").select("id, project_id"),
   ]);
 
-  const allClients = projects ?? [];
-  const allDocuments = documents ?? [];
+  const allProjects = projects ?? [];
+  const allKbDocs = kbDocs ?? [];
   const allAlerts = alerts ?? [];
   const allSavings = savings ?? [];
+  const allProjectDocs = projectDocs ?? [];
 
-  const pendingAlerts = allAlerts.filter((a) => a.estado === "pendiente");
-  const criticalAlerts = pendingAlerts.filter((a) => a.severidad === "critica");
+  const criticalAlerts = allAlerts.filter((a) => a.severidad === "critica");
   const totalSavings = allSavings.reduce(
     (sum, s) => sum + (s.ahorro_estimado_eur_año ?? 0),
     0
   );
-  const recentDocs = allDocuments.slice(0, 5);
-  const processingDocs = allDocuments.filter((d) => d.estado === "procesando");
 
   return (
     <div className="space-y-8">
@@ -56,7 +57,7 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground">
-            Resumen ejecutivo de tu cartera de clientes.
+            Resumen ejecutivo de tu cartera de proyectos.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-lg bg-gradient-brand px-4 py-2 text-white">
@@ -69,27 +70,26 @@ export default async function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card className="border-t-2 border-t-vandarum-teal">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Clientes</CardTitle>
-            <Users className="h-4 w-4 text-vandarum-teal" />
+            <CardTitle className="text-sm font-medium">Proyectos</CardTitle>
+            <FolderKanban className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{allClients.length}</div>
+            <div className="text-2xl font-bold">{allProjects.length}</div>
             <p className="text-xs text-muted-foreground">
-              Total en cartera
+              {allProjectDocs.length} documentos de proyecto
             </p>
           </CardContent>
         </Card>
 
         <Card className="border-t-2 border-t-vandarum-blue">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Documentos</CardTitle>
-            <FileText className="h-4 w-4 text-vandarum-blue" />
+            <CardTitle className="text-sm font-medium">Base de Conocimiento</CardTitle>
+            <BookOpen className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{allDocuments.length}</div>
+            <div className="text-2xl font-bold">{allKbDocs.length}</div>
             <p className="text-xs text-muted-foreground">
-              {allDocuments.filter((d) => d.estado === "indexado").length} procesados
-              {processingDocs.length > 0 && `, ${processingDocs.length} en curso`}
+              documentos normativos indexados
             </p>
           </CardContent>
         </Card>
@@ -100,7 +100,7 @@ export default async function DashboardPage() {
             <AlertTriangle className="h-4 w-4 text-vandarum-orange" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{pendingAlerts.length}</div>
+            <div className="text-2xl font-bold">{allAlerts.length}</div>
             <p className="text-xs text-muted-foreground">
               {criticalAlerts.length > 0
                 ? `${criticalAlerts.length} criticas`
@@ -119,13 +119,13 @@ export default async function DashboardPage() {
               {totalSavings.toLocaleString("es-ES")} EUR/a
             </div>
             <p className="text-xs text-muted-foreground">
-              {allSavings.length} oportunidades detectadas
+              {allSavings.length} oportunidades
             </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Two-column layout: Alerts + Recent docs */}
+      {/* Two-column: Alerts + KB docs */}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Urgent alerts */}
         <Card>
@@ -134,14 +134,14 @@ export default async function DashboardPage() {
               <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
               Alertas urgentes
             </CardTitle>
-            {pendingAlerts.length > 5 && (
-              <span className="text-xs text-muted-foreground">
-                Mostrando 5 de {pendingAlerts.length}
-              </span>
+            {allAlerts.length > 0 && (
+              <Link href="/dashboard/alerts" className="text-xs text-vandarum-teal hover:underline">
+                Ver todas
+              </Link>
             )}
           </CardHeader>
           <CardContent>
-            {pendingAlerts.length === 0 ? (
+            {allAlerts.length === 0 ? (
               <div className="flex flex-col items-center py-6 text-center">
                 <CheckCircle2 className="h-8 w-8 text-vandarum-green mb-2" />
                 <p className="text-sm text-muted-foreground">
@@ -150,12 +150,12 @@ export default async function DashboardPage() {
               </div>
             ) : (
               <div className="space-y-3">
-                {pendingAlerts.slice(0, 5).map((alert) => {
-                  const client = allClients.find((c) => c.id === alert.project_id);
+                {allAlerts.slice(0, 5).map((alert) => {
+                  const project = allProjects.find((p) => p.id === alert.project_id);
                   return (
                     <Link
                       key={alert.id}
-                      href={`/dashboard/client/${alert.project_id}`}
+                      href={`/dashboard/projects/${alert.project_id}`}
                       className="flex items-start gap-3 rounded-md border p-3 transition-colors hover:bg-secondary"
                     >
                       <Badge variant={severityColors[alert.severidad]}>
@@ -164,7 +164,7 @@ export default async function DashboardPage() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{alert.descripcion}</p>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>{client?.nombre}</span>
+                          <span>{project?.nombre}</span>
                           {alert.fecha_limite && (
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
@@ -182,48 +182,49 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Recent documents */}
+        {/* Recent KB documents */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-lg">
-              <FileText className="h-5 w-5 text-vandarum-blue" />
-              Documentos recientes
+              <BookOpen className="h-5 w-5 text-vandarum-blue" />
+              Base de Conocimiento
             </CardTitle>
+            <Link href="/dashboard/knowledge-base" className="text-xs text-vandarum-teal hover:underline">
+              Gestionar
+            </Link>
           </CardHeader>
           <CardContent>
-            {recentDocs.length === 0 ? (
+            {allKbDocs.length === 0 ? (
               <p className="py-6 text-center text-sm text-muted-foreground">
-                Sin documentos procesados todavia.
+                Sin documentos normativos indexados.
               </p>
             ) : (
               <div className="space-y-3">
-                {recentDocs.map((doc) => (
-                    <div
-                      key={doc.id}
-                      className="flex items-center gap-3 rounded-md border p-3"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{doc.titulo}</p>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          {doc.tipo && (
-                            <Badge variant="outline" className="text-xs">
-                              {doc.tipo}
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                      <Badge
-                        variant={
-                          doc.estado === "indexado"
-                            ? "success"
-                            : doc.estado === "error"
-                            ? "destructive"
-                            : "secondary"
-                        }
-                      >
-                        {doc.estado}
-                      </Badge>
+                {allKbDocs.map((doc) => (
+                  <div
+                    key={doc.id}
+                    className="flex items-center gap-3 rounded-md border p-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{doc.titulo}</p>
+                      {doc.tipo && (
+                        <Badge variant="outline" className="text-xs mt-1">
+                          {doc.tipo.replace(/_/g, " ")}
+                        </Badge>
+                      )}
                     </div>
+                    <Badge
+                      variant={
+                        doc.estado === "indexado"
+                          ? "success"
+                          : doc.estado === "error"
+                          ? "destructive"
+                          : "secondary"
+                      }
+                    >
+                      {doc.estado}
+                    </Badge>
+                  </div>
                 ))}
               </div>
             )}
@@ -235,21 +236,21 @@ export default async function DashboardPage() {
       <Card>
         <CardContent className="pt-6">
           <div className="flex flex-wrap gap-3">
-            <Link href="/dashboard/clients/new">
+            <Link href="/dashboard/projects/new">
               <Button>
-                <Users className="mr-2 h-4 w-4" />
-                Nuevo cliente
+                <Plus className="mr-2 h-4 w-4" />
+                Nuevo proyecto
               </Button>
             </Link>
-            <Link href="/dashboard/clients">
+            <Link href="/dashboard/projects">
               <Button variant="outline">
-                <ArrowRight className="mr-2 h-4 w-4" />
-                Ver clientes
+                <FolderKanban className="mr-2 h-4 w-4" />
+                Ver proyectos
               </Button>
             </Link>
             <Link href="/dashboard/knowledge-base">
               <Button variant="outline">
-                <FileText className="mr-2 h-4 w-4" />
+                <BookOpen className="mr-2 h-4 w-4" />
                 Base de conocimiento
               </Button>
             </Link>
