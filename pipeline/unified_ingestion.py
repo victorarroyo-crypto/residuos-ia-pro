@@ -19,6 +19,7 @@ Uso desde la UI (Lovable/Next.js):
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -229,6 +230,7 @@ class UnifiedIngestionService:
                 "project_id": project_id,
             },
             "estado": "indexado",
+            "fecha_ingesta": datetime.now(timezone.utc).isoformat(),
         }
 
         # Subir archivo original a Supabase Storage

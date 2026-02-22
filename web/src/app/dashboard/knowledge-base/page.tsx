@@ -220,7 +220,10 @@ export default function KnowledgeBasePage() {
     try {
       const params = new URLSearchParams();
       if (search) params.set("search", search);
-      const res = await fetch(`/api/knowledge-base?${params.toString()}`);
+      params.set("_t", Date.now().toString());
+      const res = await fetch(`/api/knowledge-base?${params.toString()}`, {
+        cache: "no-store",
+      });
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents || []);
