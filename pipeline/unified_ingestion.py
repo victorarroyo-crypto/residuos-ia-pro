@@ -215,9 +215,16 @@ class UnifiedIngestionService:
         sb = await self.storage._get_supabase()
 
         # Registro del documento
+        # client_id might be "general" (for storage paths) — not a valid UUID
+        import re
+        _uuid_re = re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+        )
+        db_client_id = client_id if _uuid_re.match(client_id or "") else None
+
         doc_data = {
             "id": result.doc_id,
-            "client_id": client_id,
+            "client_id": db_client_id,
             "titulo": filename,
             "tipo": result.excel_type.value,
             "naturaleza_pdf": "excel",

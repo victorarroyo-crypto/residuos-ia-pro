@@ -11,6 +11,7 @@ Supabase: client_documents + document_chunks (con embeddings pgvector)
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -129,9 +130,16 @@ class StorageService:
         """Guarda el documento procesado en la tabla client_documents."""
         sb = await self._get_supabase()
 
+        # client_id may be "general" (used for storage paths) — not a valid UUID.
+        # Only store it in the DB when it's an actual UUID.
+        _uuid_re = re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+        )
+        db_client_id = doc.client_id if _uuid_re.match(doc.client_id or "") else None
+
         data = {
             "id": doc.doc_id,
-            "client_id": doc.client_id,
+            "client_id": db_client_id,
             "titulo": doc.original_filename,
             "tipo": doc.doc_type.value,
             "naturaleza_pdf": doc.nature.value,
