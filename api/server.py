@@ -574,11 +574,12 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
         )
 
         # Update the document record with drive_file_id
-        if result.document_id:
+        doc_id = result.supabase_doc_id or result.doc_id
+        if doc_id:
             await (
                 sb.table("client_documents")
                 .update({"drive_file_id": request.file_id})
-                .eq("id", result.document_id)
+                .eq("id", doc_id)
                 .execute()
             )
 
@@ -611,30 +612,44 @@ async def gdrive_sync(request: GDriveSyncRequest):
     if service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    gd, sb = await _get_gdrive_service(request.consultant_id)
+    try:
+        gd, sb = await _get_gdrive_service(request.consultant_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Sync: error getting GDrive service: %s", e)
+        raise HTTPException(status_code=500, detail=f"Error obteniendo servicio GDrive: {e}")
 
     # Determine root folder
     folder_id = request.folder_id
     if not folder_id:
-        gdrive_row = await (
-            sb.table("consultant_gdrive")
-            .select("root_folder_id")
-            .eq("consultant_id", request.consultant_id)
-            .execute()
-        )
+        try:
+            gdrive_row = await (
+                sb.table("consultant_gdrive")
+                .select("root_folder_id")
+                .eq("consultant_id", request.consultant_id)
+                .execute()
+            )
+        except Exception as e:
+            logger.error("Sync: error querying root folder: %s", e)
+            raise HTTPException(status_code=500, detail=f"Error consultando carpeta raiz: {e}")
         if not gdrive_row.data or not gdrive_row.data[0].get("root_folder_id"):
-            raise HTTPException(status_code=404, detail="No root folder configured")
+            raise HTTPException(status_code=404, detail="No root folder configured. Reconecta Google Drive desde Ajustes.")
         folder_id = gdrive_row.data[0]["root_folder_id"]
 
     # Check if a sync is already running for this consultant
-    running_check = await (
-        sb.table("gdrive_sync_log")
-        .select("id")
-        .eq("consultant_id", request.consultant_id)
-        .eq("status", "running")
-        .limit(1)
-        .execute()
-    )
+    try:
+        running_check = await (
+            sb.table("gdrive_sync_log")
+            .select("id")
+            .eq("consultant_id", request.consultant_id)
+            .eq("status", "running")
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.error("Sync: error checking running sync: %s", e)
+        raise HTTPException(status_code=500, detail=f"Error consultando estado de sync: {e}")
     if running_check.data:
         return {
             "sync_id": running_check.data[0]["id"],
@@ -643,15 +658,23 @@ async def gdrive_sync(request: GDriveSyncRequest):
         }
 
     # Create sync log entry
-    sync_log = await (
-        sb.table("gdrive_sync_log")
-        .insert({
-            "consultant_id": request.consultant_id,
-            "status": "running",
-        })
-        .execute()
-    )
-    sync_id = sync_log.data[0]["id"]
+    try:
+        sync_log = await (
+            sb.table("gdrive_sync_log")
+            .insert({
+                "consultant_id": request.consultant_id,
+                "status": "running",
+            })
+            .execute()
+        )
+        if not sync_log.data:
+            raise HTTPException(status_code=500, detail="No se pudo crear el registro de sync en gdrive_sync_log.")
+        sync_id = sync_log.data[0]["id"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Sync: error creating sync log: %s", e)
+        raise HTTPException(status_code=500, detail=f"Error creando registro de sync: {e}")
 
     # Fire-and-forget: launch heavy work in background
     asyncio.create_task(
@@ -734,11 +757,12 @@ async def _run_sync_job(
                     rag_scope="general",
                 )
 
-                if result.document_id:
+                doc_id = result.supabase_doc_id or result.doc_id
+                if doc_id:
                     await (
                         sb.table("client_documents")
                         .update({"drive_file_id": file_info["id"]})
-                        .eq("id", result.document_id)
+                        .eq("id", doc_id)
                         .execute()
                     )
 
@@ -747,7 +771,7 @@ async def _run_sync_job(
                     "file": file_info["name"],
                     "path": file_info.get("path", ""),
                     "status": "ingested",
-                    "document_id": result.document_id,
+                    "document_id": doc_id,
                     "chunks": result.num_chunks,
                 })
                 logger.info("Sync %s: ingested %s (%d chunks)", sync_id, filename, result.num_chunks or 0)
