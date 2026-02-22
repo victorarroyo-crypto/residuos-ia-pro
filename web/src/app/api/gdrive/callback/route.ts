@@ -118,34 +118,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(settingsUrl);
     }
 
-    // Call Python backend to create folder structure in Google Drive
+    // Fire-and-forget: ask Python backend to create folder structure in background
     const pipelineUrl = process.env.PIPELINE_API_URL || "http://localhost:8000";
-    try {
-      const setupRes = await fetch(`${pipelineUrl}/api/gdrive/setup-folders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consultant_id: consultantId }),
-      });
-      if (!setupRes.ok) {
-        const detail = await setupRes.text();
-        console.error("[gdrive/callback] setup-folders failed:", detail);
-        // Tokens are saved, so connection is partial – inform user
-        settingsUrl.searchParams.set("gdrive", "error");
-        settingsUrl.searchParams.set(
-          "gdrive_error",
-          `Conectado pero no se pudo crear carpetas: ${detail.substring(0, 120)}`
-        );
-        return NextResponse.redirect(settingsUrl);
-      }
-    } catch (setupErr) {
-      console.error("[gdrive/callback] setup-folders error:", setupErr);
-      settingsUrl.searchParams.set("gdrive", "error");
-      settingsUrl.searchParams.set(
-        "gdrive_error",
-        `Conectado pero pipeline no disponible para crear carpetas.`
-      );
-      return NextResponse.redirect(settingsUrl);
-    }
+    fetch(`${pipelineUrl}/api/gdrive/setup-folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ consultant_id: consultantId }),
+    }).catch((err) =>
+      console.error("[gdrive/callback] setup-folders fire-and-forget error:", err)
+    );
 
     settingsUrl.searchParams.set("gdrive", "connected");
     return NextResponse.redirect(settingsUrl);

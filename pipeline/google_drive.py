@@ -214,6 +214,8 @@ class GoogleDriveService:
         self.service = build("drive", "v3", credentials=creds)
         self._creds = creds
         self._created_count = 0
+        # Cache: (parent_id, name) -> folder_id  — avoids repeated API lookups
+        self._folder_cache: dict[tuple[str | None, str], str] = {}
 
     @property
     def refreshed_token(self) -> Optional[str]:
@@ -239,8 +241,43 @@ class GoogleDriveService:
         logger.debug(f"Carpeta creada [{self._created_count}]: {name}")
         return folder_id
 
+    def _preload_folder_tree(self, root_id: str) -> None:
+        """Fetch ALL folders from the user's Drive in one paginated query.
+
+        Populates _folder_cache so get_or_create_folder can skip individual
+        find_folder API calls (~1800 lookups reduced to ~2-5 paginated list calls).
+        """
+        self._folder_cache.clear()
+        page_token = None
+        total = 0
+        q = "mimeType='application/vnd.google-apps.folder' and trashed=false"
+        while True:
+            resp = (
+                self.service.files()
+                .list(
+                    q=q,
+                    fields="nextPageToken, files(id, name, parents)",
+                    pageSize=1000,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            for f in resp.get("files", []):
+                for p in f.get("parents", []):
+                    self._folder_cache[(p, f["name"])] = f["id"]
+                total += 1
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        logger.info("Preloaded %d existing folders into cache", total)
+
     def find_folder(self, name: str, parent_id: Optional[str] = None) -> Optional[str]:
         """Find a folder by name under a parent. Returns folder ID or None."""
+        # Check cache first
+        cached = self._folder_cache.get((parent_id, name))
+        if cached:
+            return cached
+
         q = (
             f"name='{name}' "
             f"and mimeType='application/vnd.google-apps.folder' "
@@ -251,14 +288,19 @@ class GoogleDriveService:
 
         result = self.service.files().list(q=q, fields="files(id)", pageSize=1).execute()
         files = result.get("files", [])
-        return files[0]["id"] if files else None
+        if files:
+            self._folder_cache[(parent_id, name)] = files[0]["id"]
+            return files[0]["id"]
+        return None
 
     def get_or_create_folder(self, name: str, parent_id: Optional[str] = None) -> str:
-        """Find an existing folder or create it. Returns folder ID."""
+        """Find an existing folder (from cache or API) or create it. Returns folder ID."""
         existing = self.find_folder(name, parent_id)
         if existing:
             return existing
-        return self.create_folder(name, parent_id)
+        folder_id = self.create_folder(name, parent_id)
+        self._folder_cache[(parent_id, name)] = folder_id
+        return folder_id
 
     def _create_children(self, parent_id: str, children: list[str]) -> dict[str, str]:
         """Create multiple child folders under a parent. Returns name->id mapping."""
@@ -280,6 +322,9 @@ class GoogleDriveService:
         logger.info("Creando estructura completa de carpetas en Google Drive...")
 
         root_id = self.get_or_create_folder(ROOT_FOLDER_NAME)
+
+        # Preload existing folder tree to avoid ~1800 individual API lookups
+        self._preload_folder_tree(root_id)
 
         # Create all 7 top-level sections
         s01 = self.get_or_create_folder("01_Legislacion_Regulacion", root_id)

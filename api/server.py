@@ -429,7 +429,8 @@ class GDriveSetupFoldersRequest(BaseModel):
 async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
     """
     Create Drive folder structure using tokens already saved in DB.
-    Called by the OAuth callback after tokens are stored.
+    Runs in background and returns immediately. Poll /api/gdrive/status
+    to check when root_folder_id is set.
     """
     if not _gdrive_configured():
         raise HTTPException(status_code=501, detail="Google Drive no configurado.")
@@ -452,7 +453,7 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
 
     # Skip if folder structure already exists
     if data.get("root_folder_id"):
-        return {"success": True, "root_folder_id": data["root_folder_id"], "already_exists": True}
+        return {"status": "done", "root_folder_id": data["root_folder_id"], "already_exists": True}
 
     from pipeline.google_drive import GoogleDriveService
 
@@ -462,18 +463,35 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
         client_id=_gdrive_client_id,
         client_secret=_gdrive_client_secret,
     )
-    folders = gd.setup_full_structure()
 
-    await sb.table("consultant_gdrive").update({
-        "root_folder_id": folders["root_folder_id"],
-        "folder_mapping": folders,
-    }).eq("consultant_id", request.consultant_id).execute()
+    # Fire-and-forget: run folder creation in background
+    asyncio.create_task(
+        _run_setup_folders(request.consultant_id, gd, sb)
+    )
 
     return {
-        "success": True,
-        "root_folder_id": folders["root_folder_id"],
-        "folders_created": len(folders),
+        "status": "running",
+        "message": "Creando estructura de carpetas en segundo plano. Esto puede tardar 1-2 minutos.",
     }
+
+
+async def _run_setup_folders(
+    consultant_id: str,
+    gd: "GoogleDriveService",  # noqa: F821
+    sb: "AsyncClient",  # noqa: F821
+) -> None:
+    """Background task that creates the full folder structure in Google Drive."""
+    try:
+        folders = await asyncio.to_thread(gd.setup_full_structure)
+
+        await sb.table("consultant_gdrive").update({
+            "root_folder_id": folders["root_folder_id"],
+            "folder_mapping": folders,
+        }).eq("consultant_id", consultant_id).execute()
+
+        logger.info("Setup-folders complete for %s: root=%s", consultant_id, folders["root_folder_id"])
+    except Exception as e:
+        logger.error("Setup-folders failed for %s: %s", consultant_id, e)
 
 
 @app.get("/api/gdrive/status")

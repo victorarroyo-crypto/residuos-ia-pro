@@ -156,18 +156,48 @@ function SettingsContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ consultant_id: userId }),
       });
-      if (res.ok) {
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setGdriveError(data.error || "Error al crear estructura de carpetas.");
+        setGdriveLoading(false);
+        return;
+      }
+      const data = await res.json();
+      if (data.already_exists) {
+        // Already done
         setGdriveSuccess(true);
         setTimeout(() => setGdriveSuccess(false), 5000);
         fetchGdriveStatus(userId);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setGdriveError(data.error || "Error al crear estructura de carpetas.");
+        setGdriveLoading(false);
+        return;
       }
+      // Running in background — poll status until root_folder_id appears
+      const poll = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/gdrive/status?consultant_id=${userId}`);
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            if (status.root_folder_id) {
+              clearInterval(poll);
+              setGdriveStatus(status);
+              setGdriveSuccess(true);
+              setTimeout(() => setGdriveSuccess(false), 5000);
+              setGdriveLoading(false);
+            }
+          }
+        } catch {
+          // keep polling
+        }
+      }, 5000);
+      // Stop polling after 3 minutes
+      setTimeout(() => {
+        clearInterval(poll);
+        setGdriveLoading(false);
+      }, 180_000);
     } catch (e) {
       setGdriveError(`Error de red: ${e instanceof Error ? e.message : String(e)}`);
+      setGdriveLoading(false);
     }
-    setGdriveLoading(false);
   }
 
   async function handleDisconnectGdrive() {
@@ -335,7 +365,7 @@ function SettingsContent() {
                       ) : (
                         <FolderOpen className="mr-2 h-4 w-4" />
                       )}
-                      Crear estructura de carpetas
+                      {gdriveLoading ? "Creando carpetas..." : "Crear estructura de carpetas"}
                     </Button>
                   </div>
                 )}
