@@ -30,10 +30,32 @@ export async function POST(request: NextRequest) {
       .slice(0, 8);
 
     // Search chunks using ilike for each significant term
+    const scope = (body.scope as string) || "general";
+    const clientId = body.client_id as string | undefined;
+
     let chunkQuery = sb
       .from("document_chunks")
       .select("id, document_id, contenido, chunk_type, metadata")
+      .eq("rag_scope", scope)
       .limit(topK * 3);
+
+    // For project scope, filter by client ownership
+    if (scope === "project" && clientId) {
+      const { data: clientDocs } = await sb
+        .from("client_documents")
+        .select("id")
+        .eq("client_id", clientId);
+      const docIds = (clientDocs || []).map((d) => d.id);
+      if (docIds.length > 0) {
+        chunkQuery = chunkQuery.in("document_id", docIds);
+      } else {
+        // No docs for this client → empty result
+        return NextResponse.json({
+          answer: "No hay documentos indexados para este cliente.",
+          sources: [],
+        });
+      }
+    }
 
     if (searchTerms.length > 0) {
       // Use OR filter matching any term

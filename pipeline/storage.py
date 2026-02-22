@@ -195,6 +195,8 @@ class StorageService:
                     "page_end": chunk.page_end,
                     "tokens": len(chunk.content.split()),
                     "metadata": chunk.metadata,
+                    "rag_scope": chunk.metadata.get("rag_scope", "project"),
+                    "project_id": chunk.metadata.get("project_id"),
                 }
                 for chunk in batch
                 if chunk.embedding is not None

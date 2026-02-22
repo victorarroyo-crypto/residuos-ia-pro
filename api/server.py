@@ -968,7 +968,6 @@ async def _run_sync_job(
                 result = await service.ingest(
                     file_bytes=file_bytes,
                     filename=filename,
-                    rag_scope="general",
                 )
 
                 if not result.success:
