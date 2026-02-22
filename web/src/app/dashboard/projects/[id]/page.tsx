@@ -17,7 +17,6 @@ import {
   X,
   Check,
   CheckCircle2,
-  ShieldCheck,
   LayoutList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
