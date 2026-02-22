@@ -803,7 +803,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
     try:
         running_check = await (
             sb.table("gdrive_sync_log")
-            .select("id")
+            .select("id, started_at")
             .eq("consultant_id", request.consultant_id)
             .eq("status", "running")
             .limit(1)
@@ -813,11 +813,40 @@ async def gdrive_sync(request: GDriveSyncRequest):
         logger.error("Sync: error checking running sync: %s", e)
         raise HTTPException(status_code=500, detail=f"Error consultando estado de sync: {e}")
     if running_check.data:
-        return {
-            "sync_id": running_check.data[0]["id"],
-            "status": "already_running",
-            "message": "Ya hay una sincronizacion en curso. Consulta sync-status para ver el progreso.",
-        }
+        # Auto-expire syncs that have been running for more than 30 minutes
+        from datetime import datetime, timezone, timedelta
+        started_at_str = running_check.data[0].get("started_at", "")
+        stale_sync = False
+        try:
+            started_at = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - started_at > timedelta(minutes=30):
+                stale_sync = True
+        except (ValueError, TypeError):
+            stale_sync = True  # Can't parse date — treat as stale
+
+        if stale_sync:
+            stale_id = running_check.data[0]["id"]
+            logger.warning("Sync %s: stale sync detected (started %s), marking as error", stale_id, started_at_str)
+            try:
+                await (
+                    sb.table("gdrive_sync_log")
+                    .update({
+                        "status": "error",
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "error_message": "Sync expirado: superó el límite de 30 minutos. Posible caída del servidor.",
+                    })
+                    .eq("id", stale_id)
+                    .execute()
+                )
+            except Exception:
+                pass
+            # Fall through to create a new sync
+        else:
+            return {
+                "sync_id": running_check.data[0]["id"],
+                "status": "already_running",
+                "message": "Ya hay una sincronizacion en curso. Consulta sync-status para ver el progreso.",
+            }
 
     # Create sync log entry
     try:
@@ -861,11 +890,27 @@ async def _run_sync_job(
     """Background task that does the actual sync work."""
     from datetime import datetime, timezone
 
+    async def _update_sync_progress(**fields: object) -> None:
+        """Helper to update gdrive_sync_log with current progress."""
+        try:
+            await (
+                sb.table("gdrive_sync_log")
+                .update(fields)
+                .eq("id", sync_id)
+                .execute()
+            )
+        except Exception:
+            logger.warning("Sync %s: could not update progress", sync_id)
+
     try:
-        # 1. Recursively list all files in Drive
-        all_files = gd.list_all_files_recursive(folder_id)
+        # 1. Recursively list all files in Drive (run in thread to avoid blocking event loop)
+        logger.info("Sync %s: scanning Drive folder %s ...", sync_id, folder_id)
+        all_files = await asyncio.to_thread(gd.list_all_files_recursive, folder_id)
         total_found = len(all_files)
         logger.info("Sync %s: found %d files in Drive", sync_id, total_found)
+
+        # Update total_files_found immediately so the UI can show scan results
+        await _update_sync_progress(total_files_found=total_found)
 
         # 2. Check which are already indexed
         all_drive_ids = [f["id"] for f in all_files]
@@ -883,17 +928,22 @@ async def _run_sync_job(
                     indexed_ids.add(row["drive_file_id"])
 
         new_files = [f for f in all_files if f["id"] not in indexed_ids]
-        logger.info("Sync %s: %d new files to ingest", sync_id, len(new_files))
+        skipped = len(all_files) - len(new_files)
+        logger.info("Sync %s: %d new files to ingest, %d already indexed", sync_id, len(new_files), skipped)
+
+        # Update skipped count immediately
+        await _update_sync_progress(files_skipped=skipped)
 
         # 3. Ingest new files
         ingested = 0
-        skipped = len(all_files) - len(new_files)
         failed = 0
         details: list[dict] = []
 
         for file_info in new_files:
             try:
-                file_bytes, filename, mime_type = gd.download_file(file_info["id"])
+                file_bytes, filename, mime_type = await asyncio.to_thread(
+                    gd.download_file, file_info["id"]
+                )
 
                 if len(file_bytes) == 0:
                     details.append({
@@ -902,6 +952,7 @@ async def _run_sync_job(
                         "reason": "empty file",
                     })
                     skipped += 1
+                    await _update_sync_progress(files_skipped=skipped)
                     continue
 
                 if len(file_bytes) > 100 * 1024 * 1024:
@@ -911,6 +962,7 @@ async def _run_sync_job(
                         "reason": "too large (>100MB)",
                     })
                     skipped += 1
+                    await _update_sync_progress(files_skipped=skipped)
                     continue
 
                 result = await service.ingest(
@@ -928,6 +980,7 @@ async def _run_sync_job(
                         "error": result.error or "Ingestion failed",
                     })
                     logger.warning("Sync %s: ingestion failed for %s: %s", sync_id, filename, result.error)
+                    await _update_sync_progress(files_failed=failed)
                     continue
 
                 doc_id = result.supabase_doc_id or result.doc_id
@@ -949,6 +1002,9 @@ async def _run_sync_job(
                 })
                 logger.info("Sync %s: ingested %s (%d chunks)", sync_id, filename, result.num_chunks or 0)
 
+                # Update progress after each successful ingestion
+                await _update_sync_progress(files_ingested=ingested)
+
             except Exception as e:
                 failed += 1
                 details.append({
@@ -958,8 +1014,9 @@ async def _run_sync_job(
                     "error": str(e)[:200],
                 })
                 logger.warning("Sync %s: failed %s: %s", sync_id, file_info["name"], e)
+                await _update_sync_progress(files_failed=failed)
 
-        # 4. Update sync log
+        # 4. Final update of sync log
         now_iso = datetime.now(timezone.utc).isoformat()
         await (
             sb.table("gdrive_sync_log")
