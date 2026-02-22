@@ -1,17 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 import {
   FileText,
   Search,
   Filter,
   Eye,
   Calendar,
-  ArrowRight,
   Loader2,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -23,7 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
-import type { ClientDocument, Project } from "@/types/database";
+import type { KnowledgeDocument } from "@/types/database";
 
 const docTypeLabels: Record<string, string> = {
   autorizacion_ambiental_integrada: "AAI",
@@ -48,28 +45,25 @@ export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [filterNaturaleza, setFilterNaturaleza] = useState<FilterNaturaleza>("todos");
-  const [documents, setDocuments] = useState<ClientDocument[]>([]);
-  const [clients, setClients] = useState<Project[]>([]);
+  const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const supabase = createClient();
-    Promise.all([
-      supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
-      supabase.from("projects").select("id, nombre"),
-    ]).then(([docsRes, clientsRes]) => {
-      setDocuments(docsRes.data ?? []);
-      setClients(clientsRes.data as Project[] ?? []);
-      setLoading(false);
-    });
+    supabase
+      .from("knowledge_documents")
+      .select("*")
+      .order("fecha_ingesta", { ascending: false })
+      .then((docsRes) => {
+        setDocuments(docsRes.data ?? []);
+        setLoading(false);
+      });
   }, []);
 
   const filtered = documents.filter((d) => {
-    const client = clients.find((c) => c.id === d.project_id);
     const matchSearch =
       search === "" ||
-      d.titulo?.toLowerCase().includes(search.toLowerCase()) ||
-      client?.nombre.toLowerCase().includes(search.toLowerCase());
+      d.titulo?.toLowerCase().includes(search.toLowerCase());
     const matchEstado =
       filterEstado === "todos" || d.estado === filterEstado;
     const matchNaturaleza =
@@ -163,7 +157,7 @@ export default function DocumentsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar por titulo o cliente..."
+                placeholder="Buscar por titulo..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
@@ -218,35 +212,19 @@ export default function DocumentsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Titulo</TableHead>
-                  <TableHead>Cliente</TableHead>
                   <TableHead>Tipo</TableHead>
                   <TableHead>Formato</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Pags</TableHead>
                   <TableHead className="text-right">Chunks</TableHead>
                   <TableHead>Fecha doc</TableHead>
-                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((doc) => {
-                  const client = clients.find((c) => c.id === doc.project_id);
-                  return (
+                {filtered.map((doc) => (
                     <TableRow key={doc.id}>
                       <TableCell className="max-w-[250px] truncate font-medium">
                         {doc.titulo}
-                      </TableCell>
-                      <TableCell>
-                        {client ? (
-                          <Link
-                            href={`/dashboard/client/${client.id}`}
-                            className="text-sm text-vandarum-teal hover:underline"
-                          >
-                            {client.nombre}
-                          </Link>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline">
@@ -278,18 +256,8 @@ export default function DocumentsPage() {
                       <TableCell className="text-sm">
                         {doc.fecha_documento ?? "—"}
                       </TableCell>
-                      <TableCell>
-                        {client && (
-                          <Link href={`/dashboard/client/${client.id}`}>
-                            <Button variant="ghost" size="sm">
-                              <ArrowRight className="h-4 w-4" />
-                            </Button>
-                          </Link>
-                        )}
-                      </TableCell>
                     </TableRow>
-                  );
-                })}
+                ))}
               </TableBody>
             </Table>
           )}

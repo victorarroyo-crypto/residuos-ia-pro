@@ -34,7 +34,7 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   Project,
   WasteInventoryItem,
-  ClientDocument,
+  ProjectDocument,
   ComplianceAlert,
   SavingsOpportunity,
 } from "@/types/database";
@@ -88,7 +88,7 @@ export default function ClientDetailPage({
   const { id } = use(params);
   const [client, setClient] = useState<Project | null>(null);
   const [inventory, setInventory] = useState<WasteInventoryItem[]>([]);
-  const [documents, setDocuments] = useState<ClientDocument[]>([]);
+  const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
   const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
   const [loading, setLoading] = useState(true);
@@ -104,7 +104,7 @@ export default function ClientDetailPage({
     const [clientRes, inventoryRes, docsRes, alertsRes, savingsRes] = await Promise.all([
       supabase.from("projects").select("*").eq("id", id).single(),
       supabase.from("waste_inventory").select("*").eq("project_id", id),
-      supabase.from("client_documents").select("*").eq("project_id", id).order("fecha_ingesta", { ascending: false }),
+      supabase.from("project_documents").select("*").eq("project_id", id).order("fecha_ingesta", { ascending: false }),
       supabase.from("compliance_alerts").select("*").eq("project_id", id),
       supabase.from("savings_opportunities").select("*").eq("project_id", id),
     ]);

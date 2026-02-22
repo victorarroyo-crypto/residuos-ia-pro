@@ -14,11 +14,11 @@ export async function DELETE(
 
   try {
     // Delete chunks first
-    await admin.client.from("document_chunks").delete().eq("document_id", docId);
+    await admin.client.from("knowledge_chunks").delete().eq("document_id", docId);
 
     // Delete document
     const { error } = await admin.client
-      .from("client_documents")
+      .from("knowledge_documents")
       .delete()
       .eq("id", docId);
 

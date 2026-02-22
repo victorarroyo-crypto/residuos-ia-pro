@@ -5,13 +5,13 @@
 --
 -- Modelo de datos:
 --   projects = entidad única (empresa + trabajo)
---   Dos RAGs separados:
---     general → normativa, BREFs, directivas (sin project_id)
---     project → documentos del proyecto (con project_id)
+--   DOS RAGs completamente separados:
+--     knowledge_documents + knowledge_chunks → normativa, BREFs, directivas (de Google Drive)
+--     project_documents   + project_chunks   → docs del proyecto (facturas, AAI, contratos...)
 --
 -- Orden: extensiones → bucket → projects →
---        client_documents → document_chunks → tablas secundarias →
---        funciones RAG → vistas → RLS → realtime → storage policies
+--        knowledge (docs+chunks) → project (docs+chunks) →
+--        tablas secundarias → funciones RAG → vistas → RLS → realtime → storage
 -- ================================================================
 
 -- ════════════════════════════════════════════════════════════════
@@ -22,8 +22,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- ════════════════════════════════════════════════════════════════
 -- 2. BUCKET DE STORAGE (documentos originales)
 -- ════════════════════════════════════════════════════════════════
--- Estructura: {project_id}/{tipo_doc}/{filename}
---             general/Normativa/{filename}
+-- Estructura: general/Normativa/{filename}
+--             {project_id}/{tipo_doc}/{filename}
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('documentos', 'documentos', false)
 ON CONFLICT (id) DO NOTHING;
@@ -31,24 +31,20 @@ ON CONFLICT (id) DO NOTHING;
 -- ════════════════════════════════════════════════════════════════
 -- 3. TABLA PRINCIPAL: PROYECTOS
 -- ════════════════════════════════════════════════════════════════
--- Un proyecto = una empresa + el trabajo que haces para ella.
--- Fusiona lo que antes eran "clients" y "projects" separados.
 CREATE TABLE IF NOT EXISTS projects (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   consultant_id     UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-  -- Datos de la empresa
-  nombre            TEXT NOT NULL,           -- nombre de la empresa
-  cif               TEXT,                    -- NIF/CIF
-  cnae              TEXT,                    -- código CNAE
-  sector            TEXT,                    -- industrial, químico, alimentario...
-  comunidad_autonoma TEXT,                   -- para normativa autonómica
+  nombre            TEXT NOT NULL,
+  cif               TEXT,
+  cnae              TEXT,
+  sector            TEXT,
+  comunidad_autonoma TEXT,
   municipio         TEXT,
   direccion         TEXT,
   contacto_nombre   TEXT,
   contacto_email    TEXT,
   contacto_telefono TEXT,
   notas             TEXT,
-  -- Datos del proyecto/trabajo
   tipo              TEXT CHECK (tipo IN (
     'diagnostico_inicial', 'retainer_anual', 'auditoria', 'optimizacion_puntual'
   )),
@@ -65,13 +61,68 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX idx_projects_consultant ON projects(consultant_id);
 
 -- ════════════════════════════════════════════════════════════════
--- 4. TABLAS DE DOCUMENTOS
+-- 4. RAG GENERAL: Base de conocimiento (normativa, BREFs, directivas)
+--    Documentos de Google Drive. Sin proyecto. Accesibles por todos.
 -- ════════════════════════════════════════════════════════════════
 
--- ── Documentos procesados ──────────────────────────────────────
-CREATE TABLE IF NOT EXISTS client_documents (
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  id                    TEXT PRIMARY KEY,        -- kb_{sha256_16}
+  titulo                TEXT NOT NULL,
+  tipo                  TEXT NOT NULL,
+  naturaleza_pdf        TEXT,                    -- digital/scanned/hybrid/encrypted
+  total_paginas         INT,
+  total_chunks          INT,
+  tablas_encontradas    INT DEFAULT 0,
+  ocr_aplicado          BOOLEAN DEFAULT false,
+  ocr_confianza_media   DECIMAL(4,3),
+  fue_encriptado        BOOLEAN DEFAULT false,
+  storage_path          TEXT,                    -- general/Normativa/{filename}
+  advertencias          TEXT[] DEFAULT '{}',
+  metadata              JSONB DEFAULT '{}',
+  estado                TEXT DEFAULT 'indexado'
+    CHECK (estado IN ('procesando','indexado','error','pendiente')),
+  fecha_documento       DATE,
+  fecha_ingesta         TIMESTAMPTZ DEFAULT now(),
+  drive_file_id         TEXT,                    -- enlace a Google Drive
+
+  CONSTRAINT valid_knowledge_tipo CHECK (tipo IN (
+    'normativa','directiva','bref','reglamento','guia','desconocido'
+  ))
+);
+
+CREATE INDEX idx_knowledge_docs_tipo ON knowledge_documents(tipo);
+CREATE INDEX idx_knowledge_docs_drive ON knowledge_documents(drive_file_id)
+  WHERE drive_file_id IS NOT NULL;
+
+-- Chunks de conocimiento general (embeddings para RAG)
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  id            TEXT PRIMARY KEY,                -- {doc_id}_chunk_{index}
+  document_id   TEXT REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+  chunk_index   INT NOT NULL,
+  contenido     TEXT NOT NULL,
+  embedding     VECTOR(1536),                    -- OpenAI text-embedding-3-large
+  chunk_type    TEXT,                            -- texto/tabla/seccion/articulo
+  page_start    INT,
+  page_end      INT,
+  tokens        INT,
+  metadata      JSONB DEFAULT '{}'
+);
+
+CREATE INDEX idx_knowledge_chunks_embedding ON knowledge_chunks
+  USING ivfflat (embedding vector_cosine_ops)
+  WITH (lists = 100);
+
+CREATE INDEX idx_knowledge_chunks_document ON knowledge_chunks(document_id);
+CREATE INDEX idx_knowledge_chunks_type ON knowledge_chunks(chunk_type);
+
+-- ════════════════════════════════════════════════════════════════
+-- 5. RAG PROYECTO: Documentos de cada proyecto
+--    Facturas, AAI, contratos, declaraciones... Privados por proyecto.
+-- ════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS project_documents (
   id                    TEXT PRIMARY KEY,        -- doc_{sha256_16}
-  project_id            UUID REFERENCES projects(id) ON DELETE CASCADE,
+  project_id            UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   titulo                TEXT NOT NULL,
   tipo                  TEXT NOT NULL,
   naturaleza_pdf        TEXT,                    -- digital/scanned/hybrid/encrypted/excel
@@ -81,7 +132,7 @@ CREATE TABLE IF NOT EXISTS client_documents (
   ocr_aplicado          BOOLEAN DEFAULT false,
   ocr_confianza_media   DECIMAL(4,3),
   fue_encriptado        BOOLEAN DEFAULT false,
-  storage_path          TEXT,                    -- path en Supabase Storage
+  storage_path          TEXT,                    -- {project_id}/{tipo}/{filename}
   advertencias          TEXT[] DEFAULT '{}',
   metadata              JSONB DEFAULT '{}',
   estado                TEXT DEFAULT 'indexado'
@@ -89,28 +140,26 @@ CREATE TABLE IF NOT EXISTS client_documents (
   fecha_documento       DATE,
   fecha_vencimiento     DATE,
   fecha_ingesta         TIMESTAMPTZ DEFAULT now(),
-  -- Google Drive sync
-  drive_file_id         TEXT,
 
-  CONSTRAINT valid_tipo CHECK (tipo IN (
+  CONSTRAINT valid_project_tipo CHECK (tipo IN (
     'autorizacion_ambiental_integrada','declaracion_anual_residuos',
     'contrato_gestor','factura','registro_produccion',
-    'permiso_ambiental','manual_interno','normativa','desconocido',
-    -- Tipos Excel
+    'permiso_ambiental','manual_interno','desconocido',
     'costes_anuales','inventario_ler','comparativa_gestores',
     'facturas_agregadas','presupuesto'
   ))
 );
 
-CREATE INDEX idx_docs_project ON client_documents(project_id);
-CREATE INDEX idx_docs_tipo ON client_documents(tipo);
-CREATE INDEX idx_docs_vencimiento ON client_documents(fecha_vencimiento)
+CREATE INDEX idx_project_docs_project ON project_documents(project_id);
+CREATE INDEX idx_project_docs_tipo ON project_documents(tipo);
+CREATE INDEX idx_project_docs_vencimiento ON project_documents(fecha_vencimiento)
   WHERE fecha_vencimiento IS NOT NULL;
 
--- ── Chunks con embeddings (corazón del RAG) ────────────────────
-CREATE TABLE IF NOT EXISTS document_chunks (
+-- Chunks de proyecto (embeddings para RAG)
+CREATE TABLE IF NOT EXISTS project_chunks (
   id            TEXT PRIMARY KEY,                -- {doc_id}_chunk_{index}
-  document_id   TEXT REFERENCES client_documents(id) ON DELETE CASCADE,
+  document_id   TEXT REFERENCES project_documents(id) ON DELETE CASCADE,
+  project_id    UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   chunk_index   INT NOT NULL,
   contenido     TEXT NOT NULL,
   embedding     VECTOR(1536),                    -- OpenAI text-embedding-3-large
@@ -118,29 +167,21 @@ CREATE TABLE IF NOT EXISTS document_chunks (
   page_start    INT,
   page_end      INT,
   tokens        INT,
-  metadata      JSONB DEFAULT '{}',
-  -- Scoping RAG: 'general' (normativa) o 'project' (docs del proyecto)
-  rag_scope     TEXT DEFAULT 'general'
-    CHECK (rag_scope IN ('general', 'project')),
-  project_id    UUID REFERENCES projects(id) ON DELETE CASCADE
+  metadata      JSONB DEFAULT '{}'
 );
 
--- Índice vectorial IVFFlat (cosine distance)
-CREATE INDEX idx_chunks_embedding ON document_chunks
+CREATE INDEX idx_project_chunks_embedding ON project_chunks
   USING ivfflat (embedding vector_cosine_ops)
   WITH (lists = 100);
 
-CREATE INDEX idx_chunks_document ON document_chunks(document_id);
-CREATE INDEX idx_chunks_type ON document_chunks(chunk_type);
-CREATE INDEX idx_chunks_scope ON document_chunks(rag_scope);
-CREATE INDEX idx_chunks_project ON document_chunks(project_id)
-  WHERE project_id IS NOT NULL;
+CREATE INDEX idx_project_chunks_document ON project_chunks(document_id);
+CREATE INDEX idx_project_chunks_project ON project_chunks(project_id);
+CREATE INDEX idx_project_chunks_type ON project_chunks(chunk_type);
 
 -- ════════════════════════════════════════════════════════════════
--- 5. TABLAS SECUNDARIAS (datos estructurados)
+-- 6. TABLAS SECUNDARIAS (datos estructurados de proyecto)
 -- ════════════════════════════════════════════════════════════════
 
--- ── Inventario de residuos (LER + precios) ─────────────────────
 CREATE TABLE IF NOT EXISTS waste_inventory (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id            UUID REFERENCES projects(id) ON DELETE CASCADE,
@@ -152,7 +193,7 @@ CREATE TABLE IF NOT EXISTS waste_inventory (
   operacion             TEXT,
   gestor_actual         TEXT,
   frecuencia_recogida   TEXT,
-  fuente_doc_id         TEXT REFERENCES client_documents(id),
+  fuente_doc_id         TEXT REFERENCES project_documents(id),
   año                   INT,
   created_at            TIMESTAMPTZ DEFAULT now()
 );
@@ -160,11 +201,10 @@ CREATE TABLE IF NOT EXISTS waste_inventory (
 CREATE INDEX idx_waste_inv_project ON waste_inventory(project_id);
 CREATE INDEX idx_waste_inv_ler ON waste_inventory(codigo_ler);
 
--- ── Líneas de facturas (tracking financiero) ───────────────────
 CREATE TABLE IF NOT EXISTS invoice_lines (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id          UUID REFERENCES projects(id) ON DELETE CASCADE,
-  doc_id              TEXT REFERENCES client_documents(id),
+  doc_id              TEXT REFERENCES project_documents(id),
   fecha               DATE,
   codigo_ler          TEXT,
   descripcion         TEXT,
@@ -178,14 +218,13 @@ CREATE INDEX idx_invoice_lines_project ON invoice_lines(project_id);
 CREATE INDEX idx_invoice_lines_ler ON invoice_lines(codigo_ler);
 CREATE INDEX idx_invoice_lines_fecha ON invoice_lines(fecha);
 
--- ── Alertas de cumplimiento ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS compliance_alerts (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id    UUID REFERENCES projects(id) ON DELETE CASCADE,
   tipo          TEXT NOT NULL,
   descripcion   TEXT NOT NULL,
   severidad     TEXT CHECK (severidad IN ('baja','media','alta','critica')),
-  doc_id        TEXT REFERENCES client_documents(id),
+  doc_id        TEXT REFERENCES project_documents(id),
   estado        TEXT DEFAULT 'pendiente'
     CHECK (estado IN ('pendiente','vista','resuelta','descartada')),
   fecha_limite  DATE,
@@ -197,7 +236,6 @@ CREATE INDEX idx_alerts_project ON compliance_alerts(project_id);
 CREATE INDEX idx_alerts_estado ON compliance_alerts(estado);
 CREATE INDEX idx_alerts_severidad ON compliance_alerts(severidad);
 
--- ── Oportunidades de ahorro ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS savings_opportunities (
   id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id              UUID REFERENCES projects(id) ON DELETE CASCADE,
@@ -217,7 +255,6 @@ CREATE TABLE IF NOT EXISTS savings_opportunities (
 CREATE INDEX idx_savings_project ON savings_opportunities(project_id);
 CREATE INDEX idx_savings_estado ON savings_opportunities(estado);
 
--- ── Gestores de residuos autorizados ─────────────────────────
 CREATE TABLE IF NOT EXISTS waste_managers (
   id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   nombre                    TEXT NOT NULL,
@@ -232,7 +269,6 @@ CREATE TABLE IF NOT EXISTS waste_managers (
   created_at                TIMESTAMPTZ DEFAULT now()
 );
 
--- ── Contratos proyecto ↔ gestor ────────────────────────────────
 CREATE TABLE IF NOT EXISTS contracts (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id          UUID REFERENCES projects(id) ON DELETE CASCADE,
@@ -277,7 +313,6 @@ CREATE TABLE IF NOT EXISTS consultant_gdrive (
   updated_at        TIMESTAMPTZ DEFAULT now()
 );
 
--- ── Google Drive sync log ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS gdrive_sync_log (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   consultant_id     UUID REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -295,14 +330,12 @@ CREATE TABLE IF NOT EXISTS gdrive_sync_log (
 CREATE INDEX idx_sync_log_consultant ON gdrive_sync_log(consultant_id, started_at DESC);
 
 -- ════════════════════════════════════════════════════════════════
--- 6. FUNCIONES RAG
+-- 7. FUNCIONES RAG
 -- ════════════════════════════════════════════════════════════════
 
--- ── Búsqueda con scoping (general vs proyecto) ─────────────────
-CREATE OR REPLACE FUNCTION search_chunks_scoped(
+-- Búsqueda en RAG General (knowledge base)
+CREATE OR REPLACE FUNCTION search_knowledge(
   query_embedding     VECTOR(1536),
-  rag_scope_filter    TEXT,
-  project_id_filter   UUID    DEFAULT NULL,
   doc_type_filter     TEXT    DEFAULT NULL,
   match_threshold     FLOAT   DEFAULT 0.70,
   match_count         INT     DEFAULT 5
@@ -316,42 +349,75 @@ RETURNS TABLE (
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
-  storage_path  TEXT,
-  rag_scope     TEXT
+  storage_path  TEXT
 )
 LANGUAGE SQL STABLE AS $$
   SELECT
-    dc.id                                    AS chunk_id,
-    dc.document_id,
-    dc.contenido,
-    dc.chunk_type,
-    1 - (dc.embedding <=> query_embedding)   AS similarity,
-    cd.titulo                                AS doc_titulo,
-    cd.tipo                                  AS doc_tipo,
-    cd.metadata                              AS doc_metadata,
-    cd.storage_path,
-    dc.rag_scope
-  FROM document_chunks dc
-  JOIN client_documents cd ON dc.document_id = cd.id
+    kc.id            AS chunk_id,
+    kc.document_id,
+    kc.contenido,
+    kc.chunk_type,
+    1 - (kc.embedding <=> query_embedding) AS similarity,
+    kd.titulo        AS doc_titulo,
+    kd.tipo          AS doc_tipo,
+    kd.metadata      AS doc_metadata,
+    kd.storage_path
+  FROM knowledge_chunks kc
+  JOIN knowledge_documents kd ON kc.document_id = kd.id
   WHERE
-    dc.rag_scope = rag_scope_filter
-    AND (
-      rag_scope_filter = 'general'
-      OR (project_id_filter IS NULL OR dc.project_id = project_id_filter)
-    )
-    AND (doc_type_filter IS NULL OR cd.tipo = doc_type_filter)
-    AND 1 - (dc.embedding <=> query_embedding) > match_threshold
-  ORDER BY dc.embedding <=> query_embedding
+    (doc_type_filter IS NULL OR kd.tipo = doc_type_filter)
+    AND 1 - (kc.embedding <=> query_embedding) > match_threshold
+  ORDER BY kc.embedding <=> query_embedding
   LIMIT match_count;
 $$;
 
--- ── Búsqueda combinada (ambos scopes en una llamada) ───────────
-CREATE OR REPLACE FUNCTION search_chunks_combined(
+-- Búsqueda en RAG de Proyecto
+CREATE OR REPLACE FUNCTION search_project(
   query_embedding     VECTOR(1536),
-  project_id_filter   UUID    DEFAULT NULL,
+  p_project_id        UUID,
   doc_type_filter     TEXT    DEFAULT NULL,
   match_threshold     FLOAT   DEFAULT 0.70,
-  match_count_general INT     DEFAULT 5,
+  match_count         INT     DEFAULT 5
+)
+RETURNS TABLE (
+  chunk_id      TEXT,
+  document_id   TEXT,
+  contenido     TEXT,
+  chunk_type    TEXT,
+  similarity    FLOAT,
+  doc_titulo    TEXT,
+  doc_tipo      TEXT,
+  doc_metadata  JSONB,
+  storage_path  TEXT
+)
+LANGUAGE SQL STABLE AS $$
+  SELECT
+    pc.id            AS chunk_id,
+    pc.document_id,
+    pc.contenido,
+    pc.chunk_type,
+    1 - (pc.embedding <=> query_embedding) AS similarity,
+    pd.titulo        AS doc_titulo,
+    pd.tipo          AS doc_tipo,
+    pd.metadata      AS doc_metadata,
+    pd.storage_path
+  FROM project_chunks pc
+  JOIN project_documents pd ON pc.document_id = pd.id
+  WHERE
+    pc.project_id = p_project_id
+    AND (doc_type_filter IS NULL OR pd.tipo = doc_type_filter)
+    AND 1 - (pc.embedding <=> query_embedding) > match_threshold
+  ORDER BY pc.embedding <=> query_embedding
+  LIMIT match_count;
+$$;
+
+-- Búsqueda combinada (ambos RAGs en una llamada)
+CREATE OR REPLACE FUNCTION search_combined(
+  query_embedding     VECTOR(1536),
+  p_project_id        UUID    DEFAULT NULL,
+  doc_type_filter     TEXT    DEFAULT NULL,
+  match_threshold     FLOAT   DEFAULT 0.70,
+  match_count_kb      INT     DEFAULT 5,
   match_count_project INT     DEFAULT 5
 )
 RETURNS TABLE (
@@ -364,130 +430,133 @@ RETURNS TABLE (
   doc_tipo      TEXT,
   doc_metadata  JSONB,
   storage_path  TEXT,
-  rag_scope     TEXT
+  source        TEXT          -- 'knowledge' o 'project'
 )
 LANGUAGE SQL STABLE AS $$
+  -- RAG General
   (
-    SELECT dc.id, dc.document_id, dc.contenido, dc.chunk_type,
-           1 - (dc.embedding <=> query_embedding) AS similarity,
-           cd.titulo, cd.tipo, cd.metadata, cd.storage_path, dc.rag_scope
-    FROM document_chunks dc
-    JOIN client_documents cd ON dc.document_id = cd.id
-    WHERE dc.rag_scope = 'general'
-      AND (doc_type_filter IS NULL OR cd.tipo = doc_type_filter)
-      AND 1 - (dc.embedding <=> query_embedding) > match_threshold
-    ORDER BY dc.embedding <=> query_embedding
-    LIMIT match_count_general
+    SELECT kc.id, kc.document_id, kc.contenido, kc.chunk_type,
+           1 - (kc.embedding <=> query_embedding) AS similarity,
+           kd.titulo, kd.tipo, kd.metadata, kd.storage_path,
+           'knowledge'::TEXT AS source
+    FROM knowledge_chunks kc
+    JOIN knowledge_documents kd ON kc.document_id = kd.id
+    WHERE (doc_type_filter IS NULL OR kd.tipo = doc_type_filter)
+      AND 1 - (kc.embedding <=> query_embedding) > match_threshold
+    ORDER BY kc.embedding <=> query_embedding
+    LIMIT match_count_kb
   )
   UNION ALL
+  -- RAG Proyecto
   (
-    SELECT dc.id, dc.document_id, dc.contenido, dc.chunk_type,
-           1 - (dc.embedding <=> query_embedding) AS similarity,
-           cd.titulo, cd.tipo, cd.metadata, cd.storage_path, dc.rag_scope
-    FROM document_chunks dc
-    JOIN client_documents cd ON dc.document_id = cd.id
-    WHERE dc.rag_scope = 'project'
-      AND (project_id_filter IS NULL OR dc.project_id = project_id_filter)
-      AND (doc_type_filter IS NULL OR cd.tipo = doc_type_filter)
-      AND 1 - (dc.embedding <=> query_embedding) > match_threshold
-    ORDER BY dc.embedding <=> query_embedding
+    SELECT pc.id, pc.document_id, pc.contenido, pc.chunk_type,
+           1 - (pc.embedding <=> query_embedding) AS similarity,
+           pd.titulo, pd.tipo, pd.metadata, pd.storage_path,
+           'project'::TEXT AS source
+    FROM project_chunks pc
+    JOIN project_documents pd ON pc.document_id = pd.id
+    WHERE p_project_id IS NOT NULL
+      AND pc.project_id = p_project_id
+      AND (doc_type_filter IS NULL OR pd.tipo = doc_type_filter)
+      AND 1 - (pc.embedding <=> query_embedding) > match_threshold
+    ORDER BY pc.embedding <=> query_embedding
     LIMIT match_count_project
   )
   ORDER BY similarity DESC;
 $$;
 
 -- ════════════════════════════════════════════════════════════════
--- 7. VISTAS
+-- 8. VISTAS
 -- ════════════════════════════════════════════════════════════════
 
-CREATE OR REPLACE VIEW rag_stats AS
+CREATE OR REPLACE VIEW knowledge_stats AS
 SELECT
-  dc.rag_scope,
-  cd.tipo                               AS doc_type,
-  cd.project_id,
-  COUNT(DISTINCT cd.id)                 AS num_documents,
-  COUNT(dc.id)                          AS num_chunks,
-  AVG(dc.tokens)                        AS avg_tokens_per_chunk,
-  MAX(cd.fecha_ingesta)                 AS last_ingestion
-FROM document_chunks dc
-JOIN client_documents cd ON dc.document_id = cd.id
-WHERE dc.embedding IS NOT NULL
-GROUP BY dc.rag_scope, cd.tipo, cd.project_id;
+  kd.tipo                               AS doc_type,
+  COUNT(DISTINCT kd.id)                 AS num_documents,
+  COUNT(kc.id)                          AS num_chunks,
+  AVG(kc.tokens)                        AS avg_tokens_per_chunk,
+  MAX(kd.fecha_ingesta)                 AS last_ingestion
+FROM knowledge_chunks kc
+JOIN knowledge_documents kd ON kc.document_id = kd.id
+WHERE kc.embedding IS NOT NULL
+GROUP BY kd.tipo;
+
+CREATE OR REPLACE VIEW project_stats AS
+SELECT
+  pd.project_id,
+  pd.tipo                               AS doc_type,
+  COUNT(DISTINCT pd.id)                 AS num_documents,
+  COUNT(pc.id)                          AS num_chunks,
+  AVG(pc.tokens)                        AS avg_tokens_per_chunk,
+  MAX(pd.fecha_ingesta)                 AS last_ingestion
+FROM project_chunks pc
+JOIN project_documents pd ON pc.document_id = pd.id
+WHERE pc.embedding IS NOT NULL
+GROUP BY pd.project_id, pd.tipo;
 
 -- ════════════════════════════════════════════════════════════════
--- 8. ROW LEVEL SECURITY
+-- 9. ROW LEVEL SECURITY
 -- ════════════════════════════════════════════════════════════════
 
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE client_documents ENABLE ROW LEVEL SECURITY;
-ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE knowledge_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE knowledge_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE project_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE project_chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE waste_inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE compliance_alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE savings_opportunities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contracts ENABLE ROW LEVEL SECURITY;
 
--- Cada consultor solo ve sus proyectos
+-- Proyectos: solo el consultor dueño
 CREATE POLICY "consultant_own_projects" ON projects
   FOR ALL USING (consultant_id = auth.uid());
 
--- Documentos: el consultor ve docs de sus proyectos + docs generales (sin project_id)
-CREATE POLICY "user_own_documents" ON client_documents
+-- Knowledge: accesible por cualquier usuario autenticado (lectura)
+CREATE POLICY "authenticated_read_knowledge_docs" ON knowledge_documents
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+CREATE POLICY "authenticated_read_knowledge_chunks" ON knowledge_chunks
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+-- Knowledge: solo service_role puede insertar/modificar (pipeline backend)
+CREATE POLICY "service_write_knowledge_docs" ON knowledge_documents
+  FOR ALL USING (auth.role() = 'service_role');
+
+CREATE POLICY "service_write_knowledge_chunks" ON knowledge_chunks
+  FOR ALL USING (auth.role() = 'service_role');
+
+-- Project docs: solo el consultor dueño del proyecto
+CREATE POLICY "consultant_own_project_docs" ON project_documents
   FOR ALL USING (
-    project_id IS NULL
-    OR project_id IN (
-      SELECT id FROM projects WHERE consultant_id = auth.uid()
-    )
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
--- Chunks: RAG general accesible por todos, proyecto solo por el consultor
-CREATE POLICY "read_scoped_chunks" ON document_chunks
-  FOR SELECT USING (
-    rag_scope = 'general'
-    OR document_id IN (
-      SELECT id FROM client_documents WHERE project_id IN (
-        SELECT id FROM projects WHERE consultant_id = auth.uid()
-      )
-    )
+CREATE POLICY "consultant_own_project_chunks" ON project_chunks
+  FOR ALL USING (
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
-CREATE POLICY "insert_own_chunks" ON document_chunks
-  FOR INSERT WITH CHECK (
-    -- General docs (no project) can be inserted by any authenticated user
-    rag_scope = 'general'
-    OR document_id IN (
-      SELECT id FROM client_documents WHERE project_id IN (
-        SELECT id FROM projects WHERE consultant_id = auth.uid()
-      )
-    )
-  );
-
+-- Tablas secundarias: solo el consultor dueño del proyecto
 CREATE POLICY "user_own_waste_inventory" ON waste_inventory
   FOR ALL USING (
-    project_id IN (
-      SELECT id FROM projects WHERE consultant_id = auth.uid()
-    )
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
 CREATE POLICY "user_own_invoice_lines" ON invoice_lines
   FOR ALL USING (
-    project_id IN (
-      SELECT id FROM projects WHERE consultant_id = auth.uid()
-    )
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
 CREATE POLICY "user_own_alerts" ON compliance_alerts
   FOR ALL USING (
-    project_id IN (
-      SELECT id FROM projects WHERE consultant_id = auth.uid()
-    )
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
 CREATE POLICY "user_own_savings" ON savings_opportunities
   FOR ALL USING (
-    project_id IN (
-      SELECT id FROM projects WHERE consultant_id = auth.uid()
-    )
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
 CREATE POLICY "authenticated_read_managers" ON waste_managers
@@ -495,13 +564,11 @@ CREATE POLICY "authenticated_read_managers" ON waste_managers
 
 CREATE POLICY "user_own_contracts" ON contracts
   FOR ALL USING (
-    project_id IN (
-      SELECT id FROM projects WHERE consultant_id = auth.uid()
-    )
+    project_id IN (SELECT id FROM projects WHERE consultant_id = auth.uid())
   );
 
 -- ════════════════════════════════════════════════════════════════
--- 9. STORAGE POLICIES (bucket "documentos")
+-- 10. STORAGE POLICIES (bucket "documentos")
 -- ════════════════════════════════════════════════════════════════
 
 CREATE POLICY "consultant_upload_documents" ON storage.objects
@@ -509,8 +576,7 @@ CREATE POLICY "consultant_upload_documents" ON storage.objects
     bucket_id = 'documentos'
     AND (
       (storage.foldername(name))[1] = 'general'
-      OR
-      (storage.foldername(name))[1] IN (
+      OR (storage.foldername(name))[1] IN (
         SELECT id::text FROM projects WHERE consultant_id = auth.uid()
       )
     )
@@ -521,8 +587,7 @@ CREATE POLICY "consultant_read_documents" ON storage.objects
     bucket_id = 'documentos'
     AND (
       (storage.foldername(name))[1] = 'general'
-      OR
-      (storage.foldername(name))[1] IN (
+      OR (storage.foldername(name))[1] IN (
         SELECT id::text FROM projects WHERE consultant_id = auth.uid()
       )
     )
@@ -533,15 +598,14 @@ CREATE POLICY "consultant_delete_documents" ON storage.objects
     bucket_id = 'documentos'
     AND (
       (storage.foldername(name))[1] = 'general'
-      OR
-      (storage.foldername(name))[1] IN (
+      OR (storage.foldername(name))[1] IN (
         SELECT id::text FROM projects WHERE consultant_id = auth.uid()
       )
     )
   );
 
 -- ════════════════════════════════════════════════════════════════
--- 10. REALTIME
+-- 11. REALTIME
 -- ════════════════════════════════════════════════════════════════
 
 ALTER PUBLICATION supabase_realtime ADD TABLE pipeline_progress;

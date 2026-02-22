@@ -13,16 +13,28 @@ export type Database = {
         Update: Partial<WasteInventoryItem>;
         Relationships: [];
       };
-      client_documents: {
-        Row: ClientDocument;
-        Insert: ClientDocument;
-        Update: Partial<ClientDocument>;
+      knowledge_documents: {
+        Row: KnowledgeDocument;
+        Insert: KnowledgeDocument;
+        Update: Partial<KnowledgeDocument>;
         Relationships: [];
       };
-      document_chunks: {
-        Row: DocumentChunk;
-        Insert: DocumentChunk;
-        Update: Partial<DocumentChunk>;
+      knowledge_chunks: {
+        Row: KnowledgeChunk;
+        Insert: KnowledgeChunk;
+        Update: Partial<KnowledgeChunk>;
+        Relationships: [];
+      };
+      project_documents: {
+        Row: ProjectDocument;
+        Insert: ProjectDocument;
+        Update: Partial<ProjectDocument>;
+        Relationships: [];
+      };
+      project_chunks: {
+        Row: ProjectChunk;
+        Insert: ProjectChunk;
+        Update: Partial<ProjectChunk>;
         Relationships: [];
       };
       compliance_alerts: {
@@ -125,9 +137,35 @@ export type DocType =
   | "facturas_agregadas"
   | "presupuesto";
 
-export interface ClientDocument {
+/** @deprecated Use KnowledgeDocument or ProjectDocument instead */
+export type ClientDocument = KnowledgeDocument | ProjectDocument;
+
+/** Knowledge base document (RAG General - normativa, BREFs from Google Drive) */
+export interface KnowledgeDocument {
   id: string;
-  project_id: string | null;
+  titulo: string | null;
+  tipo: DocType | null;
+  naturaleza_pdf: "digital" | "scanned" | "hybrid" | "encrypted" | "excel" | null;
+  total_paginas: number | null;
+  total_chunks: number | null;
+  tablas_encontradas: number | null;
+  ocr_aplicado: boolean | null;
+  ocr_confianza_media: number | null;
+  fue_encriptado: boolean | null;
+  storage_path: string | null;
+  advertencias: string[] | null;
+  metadata: Record<string, unknown> | null;
+  estado: "procesando" | "indexado" | "error" | "pendiente" | null;
+  fecha_documento: string | null;
+  fecha_vencimiento: string | null;
+  fecha_ingesta: string | null;
+  drive_file_id: string | null;
+}
+
+/** Project-specific document (RAG Proyecto - facturas, AAI, contracts per project) */
+export interface ProjectDocument {
+  id: string;
+  project_id: string;
   titulo: string | null;
   tipo: DocType | null;
   naturaleza_pdf: "digital" | "scanned" | "hybrid" | "encrypted" | "excel" | null;
@@ -146,7 +184,11 @@ export interface ClientDocument {
   fecha_ingesta: string | null;
 }
 
-export interface DocumentChunk {
+/** @deprecated Use KnowledgeChunk or ProjectChunk instead */
+export type DocumentChunk = KnowledgeChunk | ProjectChunk;
+
+/** Knowledge base chunk (RAG General) */
+export interface KnowledgeChunk {
   id: string;
   document_id: string;
   chunk_index: number;
@@ -156,8 +198,20 @@ export interface DocumentChunk {
   page_start: number | null;
   page_end: number | null;
   tokens: number | null;
-  rag_scope: "general" | "project" | null;
-  project_id: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** Project-specific chunk (RAG Proyecto) */
+export interface ProjectChunk {
+  id: string;
+  document_id: string;
+  chunk_index: number;
+  contenido: string;
+  embedding: number[] | null;
+  chunk_type: "texto" | "tabla" | "seccion" | "clausula" | "excel_sheet" | null;
+  page_start: number | null;
+  page_end: number | null;
+  tokens: number | null;
   metadata: Record<string, unknown> | null;
 }
 

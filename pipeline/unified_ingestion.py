@@ -209,30 +209,22 @@ class UnifiedIngestionService:
         sb = await self.storage._get_supabase()
 
         # Registro del documento
-        # client_id might be "general" (for storage paths) — not a valid UUID
-        import re
-        _uuid_re = re.compile(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-        )
-        db_project_id = project_id if _uuid_re.match(project_id or "") else None
-
         doc_data = {
             "id": result.doc_id,
-            "project_id": db_project_id,
             "titulo": filename,
             "tipo": result.excel_type.value,
             "naturaleza_pdf": "excel",
             "total_paginas": len(result.sheets),
             "total_chunks": len(result.chunks),
             "tablas_encontradas": len(result.sheets),
-            "metadata": {
-                **result.metadata,
-                "rag_scope": scope.value,
-                "project_id": project_id,
-            },
+            "metadata": result.metadata,
             "estado": "indexado",
             "fecha_ingesta": datetime.now(timezone.utc).isoformat(),
         }
+
+        # project_documents requiere project_id; knowledge_documents no lo tiene
+        if scope == RAGScope.PROJECT:
+            doc_data["project_id"] = project_id
 
         # Subir archivo original a Supabase Storage
         from .pdf_pipeline import DocType
@@ -242,12 +234,18 @@ class UnifiedIngestionService:
         )
         doc_data["storage_path"] = storage_path
 
-        upsert_result = await sb.table("client_documents").upsert(doc_data).execute()
+        # Determinar tabla destino según scope
+        doc_table = "knowledge_documents" if scope == RAGScope.GENERAL else "project_documents"
+        upsert_result = await sb.table(doc_table).upsert(doc_data).execute()
         if not upsert_result.data:
-            raise RuntimeError(f"Fallo al guardar documento Excel {result.doc_id} en Supabase")
+            raise RuntimeError(f"Fallo al guardar Excel {result.doc_id} en {doc_table}")
 
         # Guardar chunks con embeddings
-        await self.storage.save_chunks_to_supabase(result.chunks, result.doc_id)
+        is_knowledge = scope == RAGScope.GENERAL
+        await self.storage.save_chunks_to_supabase(
+            result.chunks, result.doc_id,
+            is_knowledge=is_knowledge, project_id=project_id,
+        )
 
         # Poblar tablas estructuradas desde los datos del Excel
         await self._populate_structured_tables(sb, result, project_id)

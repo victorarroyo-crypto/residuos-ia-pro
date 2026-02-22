@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
 
     const sb = admin.client;
 
-    // Text-based search across document_chunks
+    // Text-based search across chunks
     const searchTerms = query
       .toLowerCase()
       .split(/\s+/)
@@ -33,16 +33,18 @@ export async function POST(request: NextRequest) {
     const scope = (body.scope as string) || "general";
     const projectId = body.project_id as string | undefined;
 
+    // Select the appropriate table based on scope
+    const chunksTable = scope === "project" ? "project_chunks" : "knowledge_chunks";
+
     let chunkQuery = sb
-      .from("document_chunks")
+      .from(chunksTable)
       .select("id, document_id, contenido, chunk_type, metadata")
-      .eq("rag_scope", scope)
       .limit(topK * 3);
 
     // For project scope, filter by project ownership
     if (scope === "project" && projectId) {
       const { data: projectDocs } = await sb
-        .from("client_documents")
+        .from("project_documents")
         .select("id")
         .eq("project_id", projectId);
       const docIds = (projectDocs || []).map((d) => d.id);
@@ -85,9 +87,10 @@ export async function POST(request: NextRequest) {
     const topChunks = scored.slice(0, topK);
 
     // Get document titles for sources
+    const docsTable = scope === "project" ? "project_documents" : "knowledge_documents";
     const docIds = Array.from(new Set(topChunks.map((c) => c.document_id)));
     const { data: docs } = await sb
-      .from("client_documents")
+      .from(docsTable)
       .select("id, titulo, tipo")
       .in("id", docIds);
 

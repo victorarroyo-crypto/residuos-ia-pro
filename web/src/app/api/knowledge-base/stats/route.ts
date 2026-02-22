@@ -14,7 +14,7 @@ export async function GET() {
 
   try {
     const { data: docs } = await admin.client
-      .from("client_documents")
+      .from("knowledge_documents")
       .select("tipo, total_paginas, total_chunks");
 
     const documents = docs || [];
