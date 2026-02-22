@@ -158,7 +158,6 @@ export default function ProjectsPage() {
                 <TableHead>Sector</TableHead>
                 <TableHead>Ubicacion</TableHead>
                 <TableHead>Relacion</TableHead>
-                <TableHead className="text-center">Alertas</TableHead>
                 <TableHead className="text-center">Docs</TableHead>
                 <TableHead className="w-[50px]" />
               </TableRow>
@@ -166,7 +165,6 @@ export default function ProjectsPage() {
             <TableBody>
               {filtered.map((project) => {
                 const status = getComplianceStatus(project.id);
-                const alertCount = alerts.filter((a) => a.project_id === project.id).length;
                 const docCount = documents.filter((d) => d.project_id === project.id).length;
                 return (
                   <TableRow key={project.id}>
@@ -202,13 +200,6 @@ export default function ProjectsPage() {
                         <Badge variant="outline" className="capitalize">
                           {project.tipo_relacion}
                         </Badge>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {alertCount > 0 ? (
-                        <Badge variant="danger">{alertCount}</Badge>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}

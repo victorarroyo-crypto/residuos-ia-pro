@@ -135,8 +135,8 @@ export default async function DashboardPage() {
               Alertas urgentes
             </CardTitle>
             {allAlerts.length > 0 && (
-              <Link href="/dashboard/alerts" className="text-xs text-vandarum-teal hover:underline">
-                Ver todas
+              <Link href="/dashboard/projects" className="text-xs text-vandarum-teal hover:underline">
+                Ver proyectos
               </Link>
             )}
           </CardHeader>
