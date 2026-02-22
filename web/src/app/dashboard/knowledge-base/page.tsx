@@ -340,6 +340,62 @@ export default function KnowledgeBasePage() {
     }
   }
 
+  // ─── Batch ingest all non-indexed files in current folder ──
+  async function handleBatchIngestFromDrive() {
+    if (!userId || ingesting) return;
+    const pendingFiles = driveItems.filter((i) => !i.isFolder && !i.indexed);
+    if (pendingFiles.length === 0) return;
+
+    setIngesting("batch");
+    setIngestResult(null);
+
+    let successCount = 0;
+    let errorCount = 0;
+    const total = pendingFiles.length;
+    const folderPath = breadcrumbs.map((b) => b.name).join(" / ");
+
+    for (let idx = 0; idx < pendingFiles.length; idx++) {
+      const item = pendingFiles[idx];
+      // Update progress message
+      setIngestResult({
+        success: true,
+        message: `Indexando ${idx + 1} de ${total}: "${item.name}"...`,
+      });
+
+      try {
+        const res = await fetch("/api/gdrive/ingest-file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            consultant_id: userId,
+            file_id: item.id,
+            file_name: item.name,
+            folder_path: folderPath,
+          }),
+        });
+
+        if (res.ok) {
+          successCount++;
+          setDriveItems((prev) =>
+            prev.map((i) => (i.id === item.id ? { ...i, indexed: true } : i))
+          );
+        } else {
+          errorCount++;
+        }
+      } catch {
+        errorCount++;
+      }
+    }
+
+    setIngesting(null);
+    setIngestResult({
+      success: errorCount === 0,
+      message: `Indexado completado: ${successCount} exitosos${errorCount > 0 ? `, ${errorCount} errores` : ""} de ${total} archivos.`,
+    });
+    setLoadingDocs(true);
+    await Promise.all([loadDocuments(), loadStats()]);
+  }
+
   // ─── Upload handler ───────────────────────────────────────
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -1026,6 +1082,7 @@ export default function KnowledgeBasePage() {
           onNavigateFolder={navigateToFolder}
           onNavigateBreadcrumb={navigateToBreadcrumb}
           onIngest={handleIngestFromDrive}
+          onBatchIngest={handleBatchIngestFromDrive}
         />
       ) : activeTab === "documents" ? (
         <DocumentsTab
@@ -1065,6 +1122,7 @@ function DriveTab({
   onNavigateFolder,
   onNavigateBreadcrumb,
   onIngest,
+  onBatchIngest,
 }: {
   connected: boolean;
   items: DriveItem[];
@@ -1075,6 +1133,7 @@ function DriveTab({
   onNavigateFolder: (id: string, name: string) => void;
   onNavigateBreadcrumb: (index: number) => void;
   onIngest: (item: DriveItem) => void;
+  onBatchIngest: () => void;
 }) {
   if (!connected) {
     return (
@@ -1096,12 +1155,14 @@ function DriveTab({
 
   const folders = items.filter((i) => i.isFolder);
   const files = items.filter((i) => !i.isFolder);
+  const pendingFiles = files.filter((f) => !f.indexed);
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        {/* Breadcrumbs */}
-        <div className="flex items-center gap-1 text-sm flex-wrap">
+        {/* Breadcrumbs + Batch Ingest */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 text-sm flex-wrap">
           {breadcrumbs.map((crumb, idx) => (
             <span key={crumb.id} className="flex items-center gap-1">
               {idx > 0 && (
@@ -1126,6 +1187,25 @@ function DriveTab({
               )}
             </span>
           ))}
+          </div>
+          {/* Batch ingest button */}
+          {pendingFiles.length > 0 && (
+            <Button
+              size="sm"
+              onClick={onBatchIngest}
+              disabled={!!ingesting}
+              className="bg-vandarum-teal hover:bg-vandarum-teal/90 shrink-0"
+            >
+              {ingesting === "batch" ? (
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              ) : (
+                <Download className="h-3 w-3 mr-1" />
+              )}
+              {ingesting === "batch"
+                ? "Indexando..."
+                : `Indexar todos (${pendingFiles.length})`}
+            </Button>
+          )}
         </div>
       </CardHeader>
       <CardContent>
@@ -1186,7 +1266,7 @@ function DriveTab({
                     size="sm"
                     variant="outline"
                     onClick={() => onIngest(file)}
-                    disabled={ingesting === file.id}
+                    disabled={!!ingesting}
                     className="shrink-0"
                   >
                     {ingesting === file.id ? (
