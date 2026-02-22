@@ -122,7 +122,18 @@ export interface WasteInventoryItem {
   created_at: string | null;
 }
 
-export type DocType =
+/** Tipos de documento de knowledge base (alineados con estructura Google Drive) */
+export type KnowledgeDocType =
+  | "legislacion"             // 01_Legislacion_Regulacion
+  | "documentacion_tecnica"   // 02_Documentacion_Tecnica (BREFs, MTD)
+  | "gestores_residuos"       // 03_Gestores_Residuos
+  | "clasificacion_residuos"  // 04_Clasificacion_Residuos (LER)
+  | "gestion_operativa"       // 05_Gestion_Operativa
+  | "referencia"              // 06_Referencia
+  | "desconocido";
+
+/** Tipos de documento de proyecto */
+export type ProjectDocType =
   | "autorizacion_ambiental_integrada"
   | "declaracion_anual_residuos"
   | "contrato_gestor"
@@ -130,12 +141,12 @@ export type DocType =
   | "registro_produccion"
   | "permiso_ambiental"
   | "manual_interno"
-  | "normativa"
   | "costes_anuales"
   | "inventario_ler"
   | "comparativa_gestores"
   | "facturas_agregadas"
-  | "presupuesto";
+  | "presupuesto"
+  | "desconocido";
 
 /** @deprecated Use KnowledgeDocument or ProjectDocument instead */
 export type ClientDocument = KnowledgeDocument | ProjectDocument;
@@ -144,7 +155,7 @@ export type ClientDocument = KnowledgeDocument | ProjectDocument;
 export interface KnowledgeDocument {
   id: string;
   titulo: string | null;
-  tipo: DocType | null;
+  tipo: KnowledgeDocType | null;
   naturaleza_pdf: "digital" | "scanned" | "hybrid" | "encrypted" | "excel" | null;
   total_paginas: number | null;
   total_chunks: number | null;
@@ -167,7 +178,7 @@ export interface ProjectDocument {
   id: string;
   project_id: string;
   titulo: string | null;
-  tipo: DocType | null;
+  tipo: ProjectDocType | null;
   naturaleza_pdf: "digital" | "scanned" | "hybrid" | "encrypted" | "excel" | null;
   total_paginas: number | null;
   total_chunks: number | null;

@@ -249,9 +249,14 @@ class StorageService:
         logger.info(f"{len(chunks)} chunks guardados en {table} para doc {doc_id}")
 
     def _map_knowledge_tipo(self, doc_type: DocType) -> str:
-        """Mapea DocType del pipeline al tipo constraint de knowledge_documents."""
+        """Mapea DocType del pipeline al tipo de knowledge_documents.
+
+        Tipos alineados con estructura Google Drive:
+          legislacion, documentacion_tecnica, gestores_residuos,
+          clasificacion_residuos, gestion_operativa, referencia
+        """
         mapping = {
-            DocType.NORMATIVA: "normativa",
+            DocType.NORMATIVA: "legislacion",
         }
         return mapping.get(doc_type, "desconocido")
 

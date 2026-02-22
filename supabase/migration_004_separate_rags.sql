@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   drive_file_id         TEXT,
 
   CONSTRAINT valid_knowledge_tipo CHECK (tipo IN (
-    'normativa','directiva','bref','reglamento','guia','desconocido'
+    'legislacion','documentacion_tecnica','gestores_residuos',
+    'clasificacion_residuos','gestion_operativa','referencia','desconocido'
   ))
 );
 
@@ -257,7 +258,11 @@ BEGIN
     SELECT
       id, titulo,
       CASE
-        WHEN tipo = ''normativa'' THEN ''normativa''
+        WHEN tipo = ''normativa'' THEN ''legislacion''
+        WHEN tipo = ''directiva'' THEN ''legislacion''
+        WHEN tipo = ''bref'' THEN ''documentacion_tecnica''
+        WHEN tipo = ''reglamento'' THEN ''legislacion''
+        WHEN tipo = ''guia'' THEN ''referencia''
         ELSE ''desconocido''
       END AS tipo,
       naturaleza_pdf, total_paginas, total_chunks,

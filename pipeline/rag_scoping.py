@@ -267,6 +267,10 @@ class DocumentIngestionRouter:
     """
 
     KNOWLEDGE_DOC_TYPES = {
+        # Tipos nuevos (alineados con estructura Google Drive)
+        "legislacion", "documentacion_tecnica", "gestores_residuos",
+        "clasificacion_residuos", "gestion_operativa", "referencia",
+        # Tipos legacy del clasificador (se mapean a los nuevos al guardar)
         "normativa", "bref", "directiva", "reglamento", "guia",
         "guia_tecnica", "benchmark_precios",
         "estadistica_sectorial", "plan_nacional", "plan_autonomico",

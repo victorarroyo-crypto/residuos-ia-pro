@@ -115,12 +115,14 @@ interface SyncStatus {
   recent_syncs: SyncLog[];
 }
 
-const docTypeLabels: Record<string, string> = {
-  normativa: "Normativa",
-  manual_interno: "Manual",
-  autorizacion_ambiental_integrada: "AAI",
+const knowledgeTypeLabels: Record<string, string> = {
+  legislacion: "Legislación",
+  documentacion_tecnica: "Doc. Técnica",
+  gestores_residuos: "Gestores",
+  clasificacion_residuos: "Clasificación",
+  gestion_operativa: "Gestión Operativa",
+  referencia: "Referencia",
   desconocido: "Sin clasificar",
-  permiso_ambiental: "Permiso",
 };
 
 const ACCEPTED_EXTENSIONS =
@@ -1414,7 +1416,7 @@ function DocumentsTab({
                   <TableCell>
                     <Badge variant="outline">
                       {doc.tipo
-                        ? docTypeLabels[doc.tipo] ?? doc.tipo
+                        ? knowledgeTypeLabels[doc.tipo] ?? doc.tipo
                         : "---"}
                     </Badge>
                   </TableCell>

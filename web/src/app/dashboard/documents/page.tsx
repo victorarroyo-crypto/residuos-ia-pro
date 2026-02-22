@@ -22,29 +22,25 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import type { KnowledgeDocument } from "@/types/database";
 
-const docTypeLabels: Record<string, string> = {
-  autorizacion_ambiental_integrada: "AAI",
-  declaracion_anual_residuos: "DARI",
-  contrato_gestor: "Contrato",
-  factura: "Factura",
-  registro_produccion: "Registro",
-  permiso_ambiental: "Permiso",
-  manual_interno: "Manual",
-  normativa: "Normativa",
-  costes_anuales: "Costes",
-  inventario_ler: "Inventario",
-  comparativa_gestores: "Comparativa",
-  facturas_agregadas: "Fact. agregadas",
-  presupuesto: "Presupuesto",
+const knowledgeTypeLabels: Record<string, string> = {
+  legislacion: "Legislación",
+  documentacion_tecnica: "Doc. Técnica",
+  gestores_residuos: "Gestores",
+  clasificacion_residuos: "Clasificación",
+  gestion_operativa: "Gestión Operativa",
+  referencia: "Referencia",
+  desconocido: "Sin clasificar",
 };
 
 type FilterEstado = "todos" | "indexado" | "procesando" | "error" | "pendiente";
 type FilterNaturaleza = "todos" | "digital" | "scanned" | "hybrid" | "excel";
+type FilterTipo = "todos" | "legislacion" | "documentacion_tecnica" | "gestores_residuos" | "clasificacion_residuos" | "gestion_operativa" | "referencia" | "desconocido";
 
 export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [filterNaturaleza, setFilterNaturaleza] = useState<FilterNaturaleza>("todos");
+  const [filterTipo, setFilterTipo] = useState<FilterTipo>("todos");
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -68,7 +64,9 @@ export default function DocumentsPage() {
       filterEstado === "todos" || d.estado === filterEstado;
     const matchNaturaleza =
       filterNaturaleza === "todos" || d.naturaleza_pdf === filterNaturaleza;
-    return matchSearch && matchEstado && matchNaturaleza;
+    const matchTipo =
+      filterTipo === "todos" || d.tipo === filterTipo;
+    return matchSearch && matchEstado && matchNaturaleza && matchTipo;
   });
 
   const indexedCount = documents.filter((d) => d.estado === "indexado").length;
@@ -86,9 +84,9 @@ export default function DocumentsPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Documentos</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Base de Conocimiento</h1>
         <p className="text-muted-foreground">
-          Todos los documentos indexados en la plataforma.
+          Documentos generales indexados desde Google Drive: legislacion, documentacion tecnica, gestores, clasificacion y referencia.
         </p>
       </div>
 
@@ -177,6 +175,20 @@ export default function DocumentsPage() {
                 <option value="pendiente">Pendiente</option>
               </select>
               <select
+                value={filterTipo}
+                onChange={(e) => setFilterTipo(e.target.value as FilterTipo)}
+                className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
+              >
+                <option value="todos">Toda categoria</option>
+                <option value="legislacion">Legislacion</option>
+                <option value="documentacion_tecnica">Doc. Tecnica</option>
+                <option value="gestores_residuos">Gestores</option>
+                <option value="clasificacion_residuos">Clasificacion</option>
+                <option value="gestion_operativa">Gestion Operativa</option>
+                <option value="referencia">Referencia</option>
+                <option value="desconocido">Sin clasificar</option>
+              </select>
+              <select
                 value={filterNaturaleza}
                 onChange={(e) => setFilterNaturaleza(e.target.value as FilterNaturaleza)}
                 className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
@@ -204,7 +216,7 @@ export default function DocumentsPage() {
           {filtered.length === 0 ? (
             <p className="py-8 text-center text-muted-foreground">
               {documents.length === 0
-                ? "No hay documentos. Sube tu primer documento desde la ficha de un cliente."
+                ? "No hay documentos en la base de conocimiento. Sincroniza Google Drive para indexar documentos."
                 : "No se encontraron documentos con esos filtros."}
             </p>
           ) : (
@@ -212,7 +224,7 @@ export default function DocumentsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Titulo</TableHead>
-                  <TableHead>Tipo</TableHead>
+                  <TableHead>Categoria</TableHead>
                   <TableHead>Formato</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Pags</TableHead>
@@ -228,7 +240,7 @@ export default function DocumentsPage() {
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline">
-                          {doc.tipo ? docTypeLabels[doc.tipo] ?? doc.tipo : "—"}
+                          {doc.tipo ? knowledgeTypeLabels[doc.tipo] ?? doc.tipo : "—"}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">

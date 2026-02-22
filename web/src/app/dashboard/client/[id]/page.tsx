@@ -39,7 +39,7 @@ import type {
   SavingsOpportunity,
 } from "@/types/database";
 
-const docTypeLabels: Record<string, string> = {
+const projectDocTypeLabels: Record<string, string> = {
   autorizacion_ambiental_integrada: "AAI",
   declaracion_anual_residuos: "DARI",
   contrato_gestor: "Contrato",
@@ -47,12 +47,12 @@ const docTypeLabels: Record<string, string> = {
   registro_produccion: "Registro",
   permiso_ambiental: "Permiso",
   manual_interno: "Manual",
-  normativa: "Normativa",
   costes_anuales: "Costes",
-  inventario_ler: "Inventario",
+  inventario_ler: "Inventario LER",
   comparativa_gestores: "Comparativa",
   facturas_agregadas: "Fact. agregadas",
   presupuesto: "Presupuesto",
+  desconocido: "Sin clasificar",
 };
 
 const severityColors: Record<string, "danger" | "warning" | "secondary" | "destructive"> = {
@@ -92,6 +92,7 @@ export default function ClientDetailPage({
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
   const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [docTypeFilter, setDocTypeFilter] = useState("todos");
 
   // Edit mode
   const [editing, setEditing] = useState(false);
@@ -602,14 +603,33 @@ export default function ClientDetailPage({
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-lg">
             <FileText className="h-5 w-5 text-vandarum-blue" />
-            Documentos ({documents.length})
+            Documentos del proyecto ({documents.length})
           </CardTitle>
-          <Link href={`/dashboard/client/${id}/upload`}>
-            <Button variant="outline" size="sm">
-              <Upload className="mr-2 h-3 w-3" />
-              Subir
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            <select
+              value={docTypeFilter}
+              onChange={(e) => setDocTypeFilter(e.target.value)}
+              className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
+            >
+              <option value="todos">Todos los tipos</option>
+              <option value="autorizacion_ambiental_integrada">AAI</option>
+              <option value="declaracion_anual_residuos">DARI</option>
+              <option value="contrato_gestor">Contrato</option>
+              <option value="factura">Factura</option>
+              <option value="registro_produccion">Registro</option>
+              <option value="permiso_ambiental">Permiso</option>
+              <option value="costes_anuales">Costes</option>
+              <option value="inventario_ler">Inventario LER</option>
+              <option value="comparativa_gestores">Comparativa</option>
+              <option value="presupuesto">Presupuesto</option>
+            </select>
+            <Link href={`/dashboard/client/${id}/upload`}>
+              <Button variant="outline" size="sm">
+                <Upload className="mr-2 h-3 w-3" />
+                Subir
+              </Button>
+            </Link>
+          </div>
         </CardHeader>
         <CardContent>
           {documents.length === 0 ? (
@@ -630,14 +650,16 @@ export default function ClientDetailPage({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {documents.map((doc) => (
+                {documents
+                  .filter((d) => docTypeFilter === "todos" || d.tipo === docTypeFilter)
+                  .map((doc) => (
                   <TableRow key={doc.id}>
                     <TableCell className="max-w-[250px] truncate font-medium">
                       {doc.titulo}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">
-                        {doc.tipo ? docTypeLabels[doc.tipo] ?? doc.tipo : "\u2014"}
+                        {doc.tipo ? projectDocTypeLabels[doc.tipo] ?? doc.tipo : "\u2014"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -666,7 +688,7 @@ export default function ClientDetailPage({
                       {doc.fecha_documento ?? "\u2014"}
                     </TableCell>
                   </TableRow>
-                ))}
+                  ))}
               </TableBody>
             </Table>
           )}

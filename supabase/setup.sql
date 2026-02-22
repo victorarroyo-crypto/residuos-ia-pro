@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   drive_file_id         TEXT,                    -- enlace a Google Drive
 
   CONSTRAINT valid_knowledge_tipo CHECK (tipo IN (
-    'normativa','directiva','bref','reglamento','guia','desconocido'
+    'legislacion','documentacion_tecnica','gestores_residuos',
+    'clasificacion_residuos','gestion_operativa','referencia','desconocido'
   ))
 );
 
