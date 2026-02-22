@@ -147,6 +147,29 @@ function SettingsContent() {
     }
   }
 
+  async function handleSetupFolders() {
+    setGdriveLoading(true);
+    setGdriveError(null);
+    try {
+      const res = await fetch("/api/gdrive/setup-folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ consultant_id: userId }),
+      });
+      if (res.ok) {
+        setGdriveSuccess(true);
+        setTimeout(() => setGdriveSuccess(false), 5000);
+        fetchGdriveStatus(userId);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setGdriveError(data.error || "Error al crear estructura de carpetas.");
+      }
+    } catch (e) {
+      setGdriveError(`Error de red: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    setGdriveLoading(false);
+  }
+
   async function handleDisconnectGdrive() {
     if (!confirm("Se desconectara Google Drive. Los archivos en Drive no se eliminaran.")) {
       return;
@@ -286,7 +309,7 @@ function SettingsContent() {
                   </Button>
                 </div>
 
-                {gdriveStatus.root_folder_id && (
+                {gdriveStatus.root_folder_id ? (
                   <a
                     href={`https://drive.google.com/drive/folders/${gdriveStatus.root_folder_id}`}
                     target="_blank"
@@ -297,6 +320,24 @@ function SettingsContent() {
                     Abrir carpeta en Google Drive
                     <ExternalLink className="h-3 w-3" />
                   </a>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-sm text-amber-600">
+                      Conectado pero falta crear la estructura de carpetas en Drive.
+                    </p>
+                    <Button
+                      onClick={handleSetupFolders}
+                      disabled={gdriveLoading}
+                      variant="outline"
+                    >
+                      {gdriveLoading ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <FolderOpen className="mr-2 h-4 w-4" />
+                      )}
+                      Crear estructura de carpetas
+                    </Button>
+                  </div>
                 )}
 
                 <div className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
