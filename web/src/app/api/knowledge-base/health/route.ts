@@ -26,12 +26,12 @@ export async function GET() {
   try {
     // 1. Documents by status
     const { data: docs, error: docsErr } = await sb
-      .from("client_documents")
-      .select("id, titulo, tipo, estado, total_chunks, fecha_ingesta, drive_file_id, project_id");
+      .from("knowledge_documents")
+      .select("id, titulo, tipo, estado, total_chunks, fecha_ingesta, drive_file_id");
 
     if (docsErr) {
       return NextResponse.json(
-        { ok: false, error: `client_documents: ${docsErr.message}`, supabase_connected: true },
+        { ok: false, error: `knowledge_documents: ${docsErr.message}`, supabase_connected: true },
         { status: 500 }
       );
     }
@@ -47,18 +47,18 @@ export async function GET() {
 
     // 2. Chunks & embeddings
     const { count: totalChunks, error: chunksErr } = await sb
-      .from("document_chunks")
+      .from("knowledge_chunks")
       .select("id", { count: "exact", head: true });
 
     if (chunksErr) {
       return NextResponse.json(
-        { ok: false, error: `document_chunks: ${chunksErr.message}`, supabase_connected: true },
+        { ok: false, error: `knowledge_chunks: ${chunksErr.message}`, supabase_connected: true },
         { status: 500 }
       );
     }
 
     const { count: chunksWithEmbedding, error: embErr } = await sb
-      .from("document_chunks")
+      .from("knowledge_chunks")
       .select("id", { count: "exact", head: true })
       .not("embedding", "is", null);
 
@@ -88,7 +88,6 @@ export async function GET() {
         total_chunks: d.total_chunks,
         fecha_ingesta: d.fecha_ingesta,
         drive_file_id: d.drive_file_id,
-        project_id: d.project_id,
       }));
 
     // 4. Check drive_file_id column exists (if docs have it, migration was applied)
@@ -119,7 +118,7 @@ export async function GET() {
 
     if (documents.length === 0) {
       diagParts.push(
-        "No hay documentos en client_documents. La ingesta nunca se ha completado con exito."
+        "No hay documentos en knowledge_documents. La ingesta nunca se ha completado con exito."
       );
     } else {
       diagParts.push(`${documents.length} documento(s) encontrado(s).`);
@@ -132,7 +131,7 @@ export async function GET() {
 
     if (chunksTotal === 0) {
       diagParts.push(
-        "No hay chunks en document_chunks. Los documentos se registraron pero no se particionaron."
+        "No hay chunks en knowledge_chunks. Los documentos se registraron pero no se particionaron."
       );
     } else {
       diagParts.push(`${chunksTotal} chunk(s) encontrado(s).`);

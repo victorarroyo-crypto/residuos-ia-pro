@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get("search");
 
     let query = admin.client
-      .from("client_documents")
+      .from("knowledge_documents")
       .select(
         "id, titulo, tipo, naturaleza_pdf, total_paginas, total_chunks, tablas_encontradas, metadata, estado, fecha_documento, fecha_ingesta"
       )

@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
-import type { Project, ComplianceAlert, ClientDocument } from "@/types/database";
+import type { Project, ComplianceAlert, ProjectDocument } from "@/types/database";
 
 function ComplianceDot({ status }: { status: "ok" | "warning" | "danger" }) {
   const colors = {
@@ -47,7 +47,7 @@ export default function ClientsPage() {
   const [filterRelacion, setFilterRelacion] = useState<FilterRelacion>("todos");
   const [clients, setClients] = useState<Project[]>([]);
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
-  const [documents, setDocuments] = useState<ClientDocument[]>([]);
+  const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -55,11 +55,11 @@ export default function ClientsPage() {
     Promise.all([
       supabase.from("projects").select("*").order("nombre"),
       supabase.from("compliance_alerts").select("*").eq("estado", "pendiente"),
-      supabase.from("client_documents").select("id, project_id"),
+      supabase.from("project_documents").select("id, project_id"),
     ]).then(([clientsRes, alertsRes, docsRes]) => {
       setClients(clientsRes.data ?? []);
       setAlerts(alertsRes.data ?? []);
-      setDocuments(docsRes.data as ClientDocument[] ?? []);
+      setDocuments(docsRes.data as ProjectDocument[] ?? []);
       setLoading(false);
     });
   }, []);

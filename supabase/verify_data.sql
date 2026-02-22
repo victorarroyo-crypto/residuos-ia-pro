@@ -9,8 +9,6 @@
 -- ════════════════════════════════════════════════════════════════
 -- PASO 1: Existen las tablas necesarias?
 -- ════════════════════════════════════════════════════════════════
--- Si alguna fila dice "NO EXISTE", necesitas ejecutar setup.sql
--- y las migraciones correspondientes.
 
 SELECT 'TABLAS REQUERIDAS' AS diagnostico;
 
@@ -19,16 +17,20 @@ SELECT table_name,
 FROM information_schema.tables
 WHERE table_schema = 'public'
   AND table_name IN (
-    'clients', 'projects', 'client_documents', 'document_chunks',
+    'projects',
+    'knowledge_documents', 'knowledge_chunks',
+    'project_documents', 'project_chunks',
     'waste_inventory', 'invoice_lines', 'compliance_alerts',
     'savings_opportunities', 'waste_managers', 'contracts',
     'pipeline_progress', 'consultant_gdrive', 'gdrive_sync_log'
   )
 ORDER BY table_name;
 
--- Tablas que FALTAN (si aparece algo aqui, ejecuta setup.sql + migraciones)
+-- Tablas que FALTAN
 SELECT unnest(ARRAY[
-  'clients', 'projects', 'client_documents', 'document_chunks',
+  'projects',
+  'knowledge_documents', 'knowledge_chunks',
+  'project_documents', 'project_chunks',
   'waste_inventory', 'invoice_lines', 'compliance_alerts',
   'savings_opportunities', 'waste_managers', 'contracts',
   'pipeline_progress', 'consultant_gdrive', 'gdrive_sync_log'
@@ -39,11 +41,20 @@ SELECT table_name, '❌ FALTA - ejecuta setup.sql'
 FROM information_schema.tables
 WHERE table_schema = 'public'
   AND table_name IN (
-    'clients', 'projects', 'client_documents', 'document_chunks',
+    'projects',
+    'knowledge_documents', 'knowledge_chunks',
+    'project_documents', 'project_chunks',
     'waste_inventory', 'invoice_lines', 'compliance_alerts',
     'savings_opportunities', 'waste_managers', 'contracts',
     'pipeline_progress', 'consultant_gdrive', 'gdrive_sync_log'
   );
+
+-- Tablas VIEJAS que deberían haberse eliminado
+SELECT 'TABLAS OBSOLETAS (deberían no existir)' AS diagnostico;
+SELECT table_name, '⚠️ TABLA OBSOLETA - ejecuta migration_004' AS estado
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN ('clients', 'client_documents', 'document_chunks');
 
 -- ════════════════════════════════════════════════════════════════
 -- PASO 2: Extension pgvector instalada?
@@ -66,50 +77,44 @@ FROM storage.buckets
 WHERE id = 'documentos';
 
 -- ════════════════════════════════════════════════════════════════
--- PASO 4: Columna drive_file_id existe? (migracion 002)
+-- PASO 4: RAG General (knowledge base)
 -- ════════════════════════════════════════════════════════════════
-SELECT 'MIGRACION 002 (drive_file_id)' AS diagnostico;
-
-SELECT column_name, data_type,
-       '✅ Migracion 002 aplicada' AS estado
-FROM information_schema.columns
-WHERE table_name = 'client_documents'
-  AND column_name = 'drive_file_id';
-
--- ════════════════════════════════════════════════════════════════
--- PASO 5: Hay documentos indexados?
--- ════════════════════════════════════════════════════════════════
-SELECT 'DOCUMENTOS' AS diagnostico;
+SELECT 'RAG GENERAL (Knowledge Base)' AS diagnostico;
 
 SELECT count(*) AS total_documentos,
        count(CASE WHEN estado = 'indexado' THEN 1 END) AS indexados,
-       count(CASE WHEN estado = 'error' THEN 1 END) AS con_error,
-       count(CASE WHEN estado = 'procesando' THEN 1 END) AS procesando
-FROM client_documents;
-
--- ════════════════════════════════════════════════════════════════
--- PASO 6: Hay chunks con embeddings? (CORAZON DEL RAG)
--- ════════════════════════════════════════════════════════════════
-SELECT 'CHUNKS Y EMBEDDINGS (RAG)' AS diagnostico;
+       count(CASE WHEN estado = 'error' THEN 1 END) AS con_error
+FROM knowledge_documents;
 
 SELECT count(*) AS total_chunks,
        count(embedding) AS con_embedding,
        count(*) - count(embedding) AS sin_embedding
-FROM document_chunks;
+FROM knowledge_chunks;
 
--- ════════════════════════════════════════════════════════════════
--- PASO 7: Ultimos documentos ingresados
--- ════════════════════════════════════════════════════════════════
-SELECT 'ULTIMOS DOCUMENTOS' AS diagnostico;
-
+-- Ultimos documentos de knowledge
 SELECT id, titulo, tipo, estado, total_chunks,
        fecha_ingesta, drive_file_id
-FROM client_documents
+FROM knowledge_documents
 ORDER BY fecha_ingesta DESC NULLS LAST
 LIMIT 10;
 
 -- ════════════════════════════════════════════════════════════════
--- PASO 8: Historial de sincronizaciones Google Drive
+-- PASO 5: RAG Proyecto (project docs)
+-- ════════════════════════════════════════════════════════════════
+SELECT 'RAG PROYECTO (Project Docs)' AS diagnostico;
+
+SELECT count(*) AS total_documentos,
+       count(CASE WHEN estado = 'indexado' THEN 1 END) AS indexados,
+       count(CASE WHEN estado = 'error' THEN 1 END) AS con_error
+FROM project_documents;
+
+SELECT count(*) AS total_chunks,
+       count(embedding) AS con_embedding,
+       count(*) - count(embedding) AS sin_embedding
+FROM project_chunks;
+
+-- ════════════════════════════════════════════════════════════════
+-- PASO 6: Historial de sincronizaciones Google Drive
 -- ════════════════════════════════════════════════════════════════
 SELECT 'SYNC LOG (Google Drive)' AS diagnostico;
 
@@ -120,12 +125,7 @@ FROM gdrive_sync_log
 ORDER BY started_at DESC
 LIMIT 5;
 
--- ════════════════════════════════════════════════════════════════
--- PASO 8b: REPARAR syncs atascados (>30 min en "running")
--- ════════════════════════════════════════════════════════════════
--- Descomenta las lineas UPDATE si quieres forzar la reparacion.
--- Por defecto solo muestra los syncs atascados.
-
+-- Syncs atascados (>30 min en running)
 SELECT 'SYNCS ATASCADOS (>30 min en running)' AS diagnostico;
 
 SELECT id, consultant_id, started_at,
@@ -135,16 +135,8 @@ FROM gdrive_sync_log
 WHERE status = 'running'
   AND started_at < now() - INTERVAL '30 minutes';
 
--- DESCOMENTA para reparar:
--- UPDATE gdrive_sync_log
--- SET status = 'error',
---     completed_at = now(),
---     error_message = 'Reparado manualmente: sync expirado tras >30 min sin respuesta.'
--- WHERE status = 'running'
---   AND started_at < now() - INTERVAL '30 minutes';
-
 -- ════════════════════════════════════════════════════════════════
--- PASO 9: Funciones RAG existen?
+-- PASO 7: Funciones RAG existen?
 -- ════════════════════════════════════════════════════════════════
 SELECT 'FUNCIONES RAG' AS diagnostico;
 
@@ -152,19 +144,10 @@ SELECT routine_name AS funcion,
        '✅ Existe' AS estado
 FROM information_schema.routines
 WHERE routine_schema = 'public'
-  AND routine_name IN ('search_chunks', 'search_chunks_scoped', 'search_chunks_combined');
+  AND routine_name IN ('search_knowledge', 'search_project', 'search_combined');
 
 -- ════════════════════════════════════════════════════════════════
--- PASO 10: Pipeline progress (la sincronizacion dejo rastro?)
--- ════════════════════════════════════════════════════════════════
-SELECT 'PIPELINE PROGRESS' AS diagnostico;
-
-SELECT * FROM pipeline_progress
-ORDER BY updated_at DESC NULLS LAST
-LIMIT 10;
-
--- ════════════════════════════════════════════════════════════════
--- PASO 11: Google Drive conectado?
+-- PASO 8: Google Drive conectado?
 -- ════════════════════════════════════════════════════════════════
 SELECT 'GOOGLE DRIVE CONNECTION' AS diagnostico;
 

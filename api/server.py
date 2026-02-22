@@ -249,10 +249,10 @@ async def list_knowledge_base(
 
     sb = await rag_service._get_supabase()
 
-    query = sb.table("client_documents").select(
+    query = sb.table("knowledge_documents").select(
         "id, titulo, tipo, naturaleza_pdf, total_paginas, total_chunks, "
         "tablas_encontradas, metadata, estado, fecha_documento, fecha_ingesta"
-    ).is_("project_id", "null")
+    )
 
     if doc_type:
         query = query.eq("tipo", doc_type)
@@ -279,9 +279,8 @@ async def knowledge_base_stats():
 
     # Total de documentos generales
     docs_result = await (
-        sb.table("client_documents")
+        sb.table("knowledge_documents")
         .select("id, tipo, total_chunks, total_paginas")
-        .is_("project_id", "null")
         .execute()
     )
     docs = docs_result.data or []
@@ -314,8 +313,8 @@ async def delete_knowledge_base_document(doc_id: str):
 
     # Verificar que el documento existe y es general
     doc_result = await (
-        sb.table("client_documents")
-        .select("id, project_id, storage_path")
+        sb.table("knowledge_documents")
+        .select("id, storage_path")
         .eq("id", doc_id)
         .execute()
     )
@@ -324,16 +323,11 @@ async def delete_knowledge_base_document(doc_id: str):
         raise HTTPException(status_code=404, detail="Documento no encontrado")
 
     doc = doc_result.data[0]
-    if doc.get("project_id") is not None:
-        raise HTTPException(
-            status_code=403,
-            detail="Solo se pueden eliminar documentos de la base general"
-        )
 
-    # Eliminar chunks
-    await sb.table("document_chunks").delete().eq("document_id", doc_id).execute()
+    # Eliminar chunks (CASCADE debería hacerlo, pero por seguridad)
+    await sb.table("knowledge_chunks").delete().eq("document_id", doc_id).execute()
     # Eliminar documento
-    await sb.table("client_documents").delete().eq("id", doc_id).execute()
+    await sb.table("knowledge_documents").delete().eq("id", doc_id).execute()
 
     # Eliminar archivo de Storage si existe
     if doc.get("storage_path"):
@@ -655,7 +649,7 @@ async def gdrive_browse(
         for i in range(0, len(file_ids), 50):
             batch = file_ids[i : i + 50]
             indexed_result = await (
-                sb.table("client_documents")
+                sb.table("knowledge_documents")
                 .select("drive_file_id")
                 .in_("drive_file_id", batch)
                 .execute()
@@ -694,7 +688,7 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
 
     # Check if already indexed
     existing = await (
-        sb.table("client_documents")
+        sb.table("knowledge_documents")
         .select("id")
         .eq("drive_file_id", request.file_id)
         .execute()
@@ -735,7 +729,7 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
         doc_id = result.supabase_doc_id or result.doc_id
         if doc_id:
             await (
-                sb.table("client_documents")
+                sb.table("knowledge_documents")
                 .update({"drive_file_id": request.file_id})
                 .eq("id", doc_id)
                 .execute()
@@ -914,7 +908,7 @@ async def _run_sync_job(
         for i in range(0, len(all_drive_ids), 50):
             batch = all_drive_ids[i:i + 50]
             result = await (
-                sb.table("client_documents")
+                sb.table("knowledge_documents")
                 .select("drive_file_id")
                 .in_("drive_file_id", batch)
                 .execute()
@@ -981,7 +975,7 @@ async def _run_sync_job(
                 doc_id = result.supabase_doc_id or result.doc_id
                 if doc_id:
                     await (
-                        sb.table("client_documents")
+                        sb.table("knowledge_documents")
                         .update({"drive_file_id": file_info["id"]})
                         .eq("id", doc_id)
                         .execute()

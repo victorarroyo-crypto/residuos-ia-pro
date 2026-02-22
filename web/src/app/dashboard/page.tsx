@@ -31,7 +31,7 @@ export default async function DashboardPage() {
     { data: savings },
   ] = await Promise.all([
     supabase.from("projects").select("*").order("nombre"),
-    supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
+    supabase.from("knowledge_documents").select("*").order("fecha_ingesta", { ascending: false }),
     supabase.from("compliance_alerts").select("*").order("severidad"),
     supabase.from("savings_opportunities").select("*"),
   ]);
@@ -197,9 +197,7 @@ export default async function DashboardPage() {
               </p>
             ) : (
               <div className="space-y-3">
-                {recentDocs.map((doc) => {
-                  const client = allClients.find((c) => c.id === doc.project_id);
-                  return (
+                {recentDocs.map((doc) => (
                     <div
                       key={doc.id}
                       className="flex items-center gap-3 rounded-md border p-3"
@@ -207,7 +205,6 @@ export default async function DashboardPage() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{doc.titulo}</p>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          {client && <span>{client.nombre}</span>}
                           {doc.tipo && (
                             <Badge variant="outline" className="text-xs">
                               {doc.tipo}
@@ -227,8 +224,7 @@ export default async function DashboardPage() {
                         {doc.estado}
                       </Badge>
                     </div>
-                  );
-                })}
+                ))}
               </div>
             )}
           </CardContent>

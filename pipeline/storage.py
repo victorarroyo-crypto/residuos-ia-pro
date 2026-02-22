@@ -7,7 +7,9 @@ en Supabase Storage con estructura organizada por proyecto y tipo de documento.
 Storage:  documentos/{project_id}/{tipo_doc}/{filename}
           documentos/general/Normativa/{filename}
 
-Supabase: client_documents + document_chunks (con embeddings pgvector)
+Supabase: Dos RAGs separados:
+  knowledge_documents + knowledge_chunks  (normativa, BREFs, directivas)
+  project_documents   + project_chunks    (docs de proyecto)
 """
 
 import logging
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Bucket de Supabase Storage
 STORAGE_BUCKET = "documentos"
 
-# Subcarpetas por tipo de documento (misma organización que antes tenía Drive)
+# Subcarpetas por tipo de documento
 DOC_TYPE_FOLDERS = {
     DocType.AAI:         "AAI_Autorizaciones",
     DocType.DARI:        "DARI_Declaraciones",
@@ -36,6 +38,13 @@ DOC_TYPE_FOLDERS = {
     DocType.MANUAL:      "Manuales",
     DocType.DESCONOCIDO: "_Sin_Clasificar",
 }
+
+# Tipos de documento que van al RAG general (knowledge)
+KNOWLEDGE_DOC_TYPES = {DocType.NORMATIVA}
+
+_uuid_re = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
 
 
 class StorageService:
@@ -63,14 +72,9 @@ class StorageService:
     def _build_storage_path(
         self, filename: str, project_id: str, doc_type: DocType
     ) -> str:
-        """
-        Construye el path dentro del bucket:
-          {project_id}/{tipo_doc}/{filename}
-          general/Normativa/{filename}
-        """
         folder = DOC_TYPE_FOLDERS.get(doc_type, "_Sin_Clasificar")
 
-        if doc_type == DocType.NORMATIVA:
+        if doc_type in KNOWLEDGE_DOC_TYPES:
             return f"general/{folder}/{filename}"
 
         return f"{project_id}/{folder}/{filename}"
@@ -82,14 +86,9 @@ class StorageService:
         project_id: str,
         doc_type: DocType,
     ) -> str:
-        """
-        Sube el archivo original a Supabase Storage.
-        Retorna el storage_path para guardarlo en client_documents.
-        """
         sb = await self._get_supabase()
         storage_path = self._build_storage_path(filename, project_id, doc_type)
 
-        # Detectar mimetype básico
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         mime_map = {
             "pdf": "application/pdf",
@@ -113,7 +112,6 @@ class StorageService:
         return storage_path
 
     async def get_download_url(self, storage_path: str, expires_in: int = 3600) -> str:
-        """Genera una URL firmada temporal para descargar el documento original."""
         sb = await self._get_supabase()
         result = await sb.storage.from_(STORAGE_BUCKET).create_signed_url(
             storage_path, expires_in
@@ -121,25 +119,65 @@ class StorageService:
         return result["signedURL"]
 
     async def delete_file(self, storage_path: str):
-        """Elimina un archivo del Storage."""
         sb = await self._get_supabase()
         await sb.storage.from_(STORAGE_BUCKET).remove([storage_path])
         logger.info(f"Archivo eliminado de Storage: {storage_path}")
+
+    # ──────────────────────────────────────────────────
+    # HELPERS: ¿es knowledge o project?
+    # ──────────────────────────────────────────────────
+
+    def _is_knowledge(self, doc: ProcessedDocument) -> bool:
+        return doc.doc_type in KNOWLEDGE_DOC_TYPES
 
     # ──────────────────────────────────────────────────
     # SUPABASE POSTGRESQL (metadatos + chunks)
     # ──────────────────────────────────────────────────
 
     async def save_to_supabase(self, doc: ProcessedDocument) -> str:
-        """Guarda el documento procesado en la tabla client_documents."""
+        """Guarda el documento en knowledge_documents o project_documents."""
         sb = await self._get_supabase()
 
-        # project_id may be "general" (used for storage paths) — not a valid UUID.
-        # Only store it in the DB when it's an actual UUID.
-        _uuid_re = re.compile(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-        )
+        if self._is_knowledge(doc):
+            return await self._save_knowledge_doc(sb, doc)
+        else:
+            return await self._save_project_doc(sb, doc)
+
+    async def _save_knowledge_doc(self, sb: AsyncClient, doc: ProcessedDocument) -> str:
+        """Guarda en knowledge_documents (RAG General)."""
+        data = {
+            "id": doc.doc_id,
+            "titulo": doc.original_filename,
+            "tipo": self._map_knowledge_tipo(doc.doc_type),
+            "naturaleza_pdf": doc.nature.value,
+            "total_paginas": doc.total_pages,
+            "total_chunks": len(doc.chunks),
+            "tablas_encontradas": doc.tables_found,
+            "ocr_aplicado": doc.ocr_applied,
+            "ocr_confianza_media": doc.ocr_avg_confidence,
+            "fue_encriptado": doc.was_encrypted,
+            "storage_path": doc.storage_path,
+            "advertencias": doc.extraction_warnings,
+            "metadata": doc.metadata,
+            "estado": "indexado",
+            "fecha_ingesta": datetime.utcnow().isoformat(),
+            "fecha_documento": doc.metadata.get("fecha_concesion")
+                or doc.metadata.get("fecha_inicio"),
+        }
+
+        result = await sb.table("knowledge_documents").upsert(data).execute()
+        if not result.data:
+            raise RuntimeError(f"Fallo al guardar knowledge_documents {doc.doc_id}")
+        logger.info(f"Knowledge doc guardado: {doc.doc_id}")
+        return doc.doc_id
+
+    async def _save_project_doc(self, sb: AsyncClient, doc: ProcessedDocument) -> str:
+        """Guarda en project_documents (RAG Proyecto)."""
         db_project_id = doc.client_id if _uuid_re.match(doc.client_id or "") else None
+        if not db_project_id:
+            raise RuntimeError(
+                f"project_documents requiere project_id válido, recibido: {doc.client_id}"
+            )
 
         data = {
             "id": doc.doc_id,
@@ -164,27 +202,30 @@ class StorageService:
             "fecha_vencimiento": doc.metadata.get("fecha_vencimiento"),
         }
 
-        result = await sb.table("client_documents").upsert(data).execute()
+        result = await sb.table("project_documents").upsert(data).execute()
         if not result.data:
-            logger.error(f"Upsert client_documents devolvió vacío para {doc.doc_id}")
-            raise RuntimeError(f"Fallo al guardar documento {doc.doc_id} en Supabase")
-        logger.info(f"Documento guardado en Supabase: {doc.doc_id}")
+            raise RuntimeError(f"Fallo al guardar project_documents {doc.doc_id}")
+        logger.info(f"Project doc guardado: {doc.doc_id}")
 
         await self._save_structured_metadata(sb, doc)
-
         return doc.doc_id
 
     async def save_chunks_to_supabase(
-        self, chunks: list[DocumentChunk], doc_id: str
+        self, chunks: list[DocumentChunk], doc_id: str, is_knowledge: bool = False,
+        project_id: str = None,
     ):
-        """Guarda todos los chunks con sus embeddings en document_chunks."""
+        """Guarda chunks en knowledge_chunks o project_chunks."""
         sb = await self._get_supabase()
+        table = "knowledge_chunks" if is_knowledge else "project_chunks"
 
         batch_size = 100
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
-            data = [
-                {
+            data = []
+            for chunk in batch:
+                if chunk.embedding is None:
+                    continue
+                row = {
                     "id": chunk.chunk_id,
                     "document_id": doc_id,
                     "chunk_index": chunk.chunk_index,
@@ -195,28 +236,34 @@ class StorageService:
                     "page_end": chunk.page_end,
                     "tokens": len(chunk.content.split()),
                     "metadata": chunk.metadata,
-                    "rag_scope": chunk.metadata.get("rag_scope", "project"),
-                    "project_id": chunk.metadata.get("project_id"),
                 }
-                for chunk in batch
-                if chunk.embedding is not None
-            ]
-            if data:
-                result = await sb.table("document_chunks").upsert(data).execute()
-                if not result.data:
-                    logger.error(f"Upsert document_chunks devolvió vacío para batch {i} de doc {doc_id}")
-                    raise RuntimeError(f"Fallo al guardar chunks (batch {i}) para doc {doc_id}")
+                if not is_knowledge:
+                    row["project_id"] = project_id
+                data.append(row)
 
-        logger.info(f"{len(chunks)} chunks guardados en Supabase para doc {doc_id}")
+            if data:
+                result = await sb.table(table).upsert(data).execute()
+                if not result.data:
+                    raise RuntimeError(f"Fallo chunks (batch {i}) para doc {doc_id} en {table}")
+
+        logger.info(f"{len(chunks)} chunks guardados en {table} para doc {doc_id}")
+
+    def _map_knowledge_tipo(self, doc_type: DocType) -> str:
+        """Mapea DocType del pipeline al tipo de knowledge_documents.
+
+        Tipos alineados con estructura Google Drive:
+          legislacion, documentacion_tecnica, gestores_residuos,
+          clasificacion_residuos, gestion_operativa, referencia
+        """
+        mapping = {
+            DocType.NORMATIVA: "legislacion",
+        }
+        return mapping.get(doc_type, "desconocido")
 
     async def _save_structured_metadata(self, sb: AsyncClient, doc: ProcessedDocument):
-        """
-        Pobla tablas estructuradas con los metadatos extraídos.
-        Esto es lo que permite el análisis automático sin releer los PDFs.
-        """
+        """Pobla tablas estructuradas con metadatos extraídos de docs de proyecto."""
         meta = doc.metadata
 
-        # Contratos → tabla contracts
         if doc.doc_type == DocType.CONTRATO and "servicios_contratados" in meta:
             for servicio in meta.get("servicios_contratados", []):
                 if servicio.get("codigo_ler"):
@@ -229,7 +276,6 @@ class StorageService:
                         "fuente_doc_id": doc.doc_id,
                     }).execute()
 
-        # Facturas → tabla invoice_lines (para tracking de costes)
         if doc.doc_type == DocType.FACTURA and "lineas_servicio" in meta:
             for linea in meta.get("lineas_servicio", []):
                 await sb.table("invoice_lines").upsert({
@@ -243,7 +289,6 @@ class StorageService:
                     "importe_eur": linea.get("importe_eur"),
                 }).execute()
 
-        # Registro → alertas de almacenamiento excedido
         if doc.doc_type == DocType.REGISTRO:
             alertas = meta.get("alertas_almacenamiento", [])
             for alerta in alertas:
