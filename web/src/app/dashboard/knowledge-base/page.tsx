@@ -627,9 +627,24 @@ export default function KnowledgeBasePage() {
         const status: SyncStatus = await res.json();
         setSyncStatus(status);
 
-        const isStillRunning = status.recent_syncs.some(
+        const runningSyncLog = status.recent_syncs.find(
           (s) => s.status === "running"
         );
+        const isStillRunning = !!runningSyncLog;
+
+        // Show live progress while syncing
+        if (isStillRunning && runningSyncLog) {
+          const { total_files_found, files_ingested, files_skipped, files_failed } = runningSyncLog;
+          const processed = files_ingested + files_skipped + files_failed;
+          const total = total_files_found || 0;
+          const progressMsg = total > 0
+            ? `Procesando... ${processed} de ${total} archivos (${files_ingested} nuevos, ${files_skipped} ya indexados${files_failed ? `, ${files_failed} errores` : ""})`
+            : "Buscando archivos en Google Drive...";
+          setSyncResult({
+            success: true,
+            message: progressMsg,
+          });
+        }
 
         if (!isStillRunning || polls >= MAX_POLLS) {
           clearInterval(interval);
@@ -786,6 +801,24 @@ export default function KnowledgeBasePage() {
               )}
               <span className="font-medium">{syncResult.message}</span>
             </div>
+            {/* Progress bar while syncing */}
+            {syncing && syncStatus?.recent_syncs?.find((s) => s.status === "running") && (() => {
+              const run = syncStatus.recent_syncs.find((s) => s.status === "running")!;
+              const processed = run.files_ingested + run.files_skipped + run.files_failed;
+              const total = run.total_files_found || 0;
+              const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+              return total > 0 ? (
+                <div className="mt-2 ml-6">
+                  <div className="w-full bg-green-200 rounded-full h-2">
+                    <div
+                      className="bg-green-600 h-2 rounded-full transition-all duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-green-700 mt-1">{pct}% completado</p>
+                </div>
+              ) : null;
+            })()}
             {syncResult.details && syncResult.details.length > 0 && (
               <div className="mt-2 space-y-0.5 text-xs ml-6">
                 {syncResult.details.slice(0, 10).map((d, i) => (
