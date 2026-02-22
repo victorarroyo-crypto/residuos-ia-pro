@@ -462,7 +462,7 @@ LANGUAGE SQL STABLE AS $$
     ORDER BY pc.embedding <=> query_embedding
     LIMIT match_count_project
   )
-  ORDER BY similarity DESC;
+  ORDER BY 5 DESC;
 $$;
 
 -- ════════════════════════════════════════════════════════════════
