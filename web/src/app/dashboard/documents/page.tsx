@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
-import type { ClientDocument, Client } from "@/types/database";
+import type { ClientDocument, Project } from "@/types/database";
 
 const docTypeLabels: Record<string, string> = {
   autorizacion_ambiental_integrada: "AAI",
@@ -49,7 +49,7 @@ export default function DocumentsPage() {
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [filterNaturaleza, setFilterNaturaleza] = useState<FilterNaturaleza>("todos");
   const [documents, setDocuments] = useState<ClientDocument[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -59,7 +59,7 @@ export default function DocumentsPage() {
       supabase.from("projects").select("id, nombre"),
     ]).then(([docsRes, clientsRes]) => {
       setDocuments(docsRes.data ?? []);
-      setClients(clientsRes.data as Client[] ?? []);
+      setClients(clientsRes.data as Project[] ?? []);
       setLoading(false);
     });
   }, []);

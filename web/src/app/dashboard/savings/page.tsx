@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/client";
-import type { SavingsOpportunity, Client } from "@/types/database";
+import type { SavingsOpportunity, Project } from "@/types/database";
 
 const estadoColors: Record<string, "secondary" | "default" | "success" | "outline"> = {
   detectada: "secondary",
@@ -34,7 +34,7 @@ export default function SavingsPage() {
   const [filterTipo, setFilterTipo] = useState<FilterTipo>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,7 +44,7 @@ export default function SavingsPage() {
       supabase.from("projects").select("id, nombre"),
     ]).then(([savingsRes, clientsRes]) => {
       setSavings(savingsRes.data ?? []);
-      setClients(clientsRes.data as Client[] ?? []);
+      setClients(clientsRes.data as Project[] ?? []);
       setLoading(false);
     });
   }, []);

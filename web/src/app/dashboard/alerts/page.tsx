@@ -46,7 +46,7 @@ export default function AlertsPage() {
   const [filterSeveridad, setFilterSeveridad] = useState<FilterSeveridad>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -56,7 +56,7 @@ export default function AlertsPage() {
       supabase.from("projects").select("id, nombre"),
     ]);
     setAlerts(alertsRes.data ?? []);
-    setClients(clientsRes.data as Client[] ?? []);
+    setClients(clientsRes.data as Project[] ?? []);
     setLoading(false);
   }, []);
 

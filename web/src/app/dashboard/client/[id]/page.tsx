@@ -95,7 +95,7 @@ export default function ClientDetailPage({
 
   // Edit mode
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState<Partial<Client>>({});
+  const [editForm, setEditForm] = useState<Partial<Project>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -168,7 +168,7 @@ export default function ClientDetailPage({
       setSaveError(error.message);
       return;
     }
-    setClient({ ...client, ...editForm } as Client);
+    setClient({ ...client, ...editForm } as Project);
     setEditing(false);
   }
 
@@ -362,7 +362,7 @@ export default function ClientDetailPage({
               <label className="text-sm font-medium">Tipo de relacion</label>
               <select
                 value={editForm.tipo_relacion ?? "retainer"}
-                onChange={(e) => setEditForm({ ...editForm, tipo_relacion: e.target.value as Client["tipo_relacion"] })}
+                onChange={(e) => setEditForm({ ...editForm, tipo_relacion: e.target.value as Project["tipo_relacion"] })}
                 className={inputClass}
               >
                 <option value="retainer">Retainer (seguimiento continuo)</option>

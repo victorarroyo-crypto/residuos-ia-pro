@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { createClient } from "@/lib/supabase/client";
-import type { PipelineProgress, Client } from "@/types/database";
+import type { PipelineProgress, Project } from "@/types/database";
 
 const ACCEPTED_TYPES = [
   "application/pdf",
@@ -47,7 +47,7 @@ export default function UploadPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [client, setClient] = useState<Client | null>(null);
+  const [client, setClient] = useState<Project | null>(null);
   const [files, setFiles] = useState<FileUploadState[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(true);
