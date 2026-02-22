@@ -56,7 +56,7 @@ export default function UploadPage({
   useEffect(() => {
     const supabase = createClient();
     supabase
-      .from("clients")
+      .from("projects")
       .select("*")
       .eq("id", id)
       .single()
@@ -182,7 +182,7 @@ export default function UploadPage({
       // Send to API
       const formData = new FormData();
       formData.append("file", fileState.file);
-      formData.append("client_id", id);
+      formData.append("project_id", id);
 
       try {
         // Phase 2: Processing

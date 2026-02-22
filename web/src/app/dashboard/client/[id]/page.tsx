@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
 import type {
-  Client,
+  Project,
   WasteInventoryItem,
   ClientDocument,
   ComplianceAlert,
@@ -86,7 +86,7 @@ export default function ClientDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [client, setClient] = useState<Client | null>(null);
+  const [client, setClient] = useState<Project | null>(null);
   const [inventory, setInventory] = useState<WasteInventoryItem[]>([]);
   const [documents, setDocuments] = useState<ClientDocument[]>([]);
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
@@ -102,11 +102,11 @@ export default function ClientDetailPage({
   const fetchData = useCallback(async () => {
     const supabase = createClient();
     const [clientRes, inventoryRes, docsRes, alertsRes, savingsRes] = await Promise.all([
-      supabase.from("clients").select("*").eq("id", id).single(),
-      supabase.from("waste_inventory").select("*").eq("client_id", id),
-      supabase.from("client_documents").select("*").eq("client_id", id).order("fecha_ingesta", { ascending: false }),
-      supabase.from("compliance_alerts").select("*").eq("client_id", id),
-      supabase.from("savings_opportunities").select("*").eq("client_id", id),
+      supabase.from("projects").select("*").eq("id", id).single(),
+      supabase.from("waste_inventory").select("*").eq("project_id", id),
+      supabase.from("client_documents").select("*").eq("project_id", id).order("fecha_ingesta", { ascending: false }),
+      supabase.from("compliance_alerts").select("*").eq("project_id", id),
+      supabase.from("savings_opportunities").select("*").eq("project_id", id),
     ]);
     setClient(clientRes.data);
     setInventory(inventoryRes.data ?? []);
@@ -146,7 +146,7 @@ export default function ClientDetailPage({
     setSaveError(null);
     const supabase = createClient();
     const { error } = await supabase
-      .from("clients")
+      .from("projects")
       .update({
         nombre: editForm.nombre,
         cif: editForm.cif || null,

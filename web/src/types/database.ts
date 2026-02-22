@@ -1,12 +1,6 @@
 export type Database = {
   public: {
     Tables: {
-      clients: {
-        Row: Client;
-        Insert: Omit<Client, "id">;
-        Update: Partial<Client>;
-        Relationships: [];
-      };
       projects: {
         Row: Project;
         Insert: Omit<Project, "id">;
@@ -77,7 +71,10 @@ export type Database = {
   };
 };
 
-export interface Client {
+/** @deprecated Use Project instead - clients table merged into projects */
+export type Client = Project;
+
+export interface Project {
   id: string;
   consultant_id: string | null;
   nombre: string;
@@ -97,22 +94,9 @@ export interface Client {
   updated_at: string | null;
 }
 
-export interface Project {
-  id: string;
-  client_id: string;
-  consultant_id: string | null;
-  nombre: string;
-  descripcion: string | null;
-  tipo: "diagnostico_inicial" | "retainer_anual" | "auditoria" | "optimizacion_puntual";
-  estado: "activo" | "completado" | "pausado";
-  fecha_inicio: string | null;
-  fecha_fin: string | null;
-  created_at: string | null;
-}
-
 export interface WasteInventoryItem {
   id: string;
-  client_id: string;
+  project_id: string;
   codigo_ler: string;
   descripcion: string | null;
   peligroso: boolean;
@@ -143,7 +127,7 @@ export type DocType =
 
 export interface ClientDocument {
   id: string;
-  client_id: string | null;
+  project_id: string | null;
   titulo: string | null;
   tipo: DocType | null;
   naturaleza_pdf: "digital" | "scanned" | "hybrid" | "encrypted" | "excel" | null;
@@ -179,7 +163,7 @@ export interface DocumentChunk {
 
 export interface ComplianceAlert {
   id: string;
-  client_id: string;
+  project_id: string;
   tipo: string;
   descripcion: string;
   severidad: "baja" | "media" | "alta" | "critica";
@@ -201,7 +185,7 @@ export interface PipelineProgress {
 
 export interface SavingsOpportunity {
   id: string;
-  client_id: string;
+  project_id: string;
   waste_id: string | null;
   tipo: string;
   descripcion: string;
@@ -230,7 +214,7 @@ export interface WasteManager {
 
 export interface Contract {
   id: string;
-  client_id: string;
+  project_id: string;
   manager_id: string | null;
   fecha_inicio: string | null;
   fecha_vencimiento: string | null;

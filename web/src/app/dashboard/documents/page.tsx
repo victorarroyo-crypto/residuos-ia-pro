@@ -56,7 +56,7 @@ export default function DocumentsPage() {
     const supabase = createClient();
     Promise.all([
       supabase.from("client_documents").select("*").order("fecha_ingesta", { ascending: false }),
-      supabase.from("clients").select("id, nombre"),
+      supabase.from("projects").select("id, nombre"),
     ]).then(([docsRes, clientsRes]) => {
       setDocuments(docsRes.data ?? []);
       setClients(clientsRes.data as Client[] ?? []);
@@ -65,7 +65,7 @@ export default function DocumentsPage() {
   }, []);
 
   const filtered = documents.filter((d) => {
-    const client = clients.find((c) => c.id === d.client_id);
+    const client = clients.find((c) => c.id === d.project_id);
     const matchSearch =
       search === "" ||
       d.titulo?.toLowerCase().includes(search.toLowerCase()) ||
@@ -230,7 +230,7 @@ export default function DocumentsPage() {
               </TableHeader>
               <TableBody>
                 {filtered.map((doc) => {
-                  const client = clients.find((c) => c.id === doc.client_id);
+                  const client = clients.find((c) => c.id === doc.project_id);
                   return (
                     <TableRow key={doc.id}>
                       <TableCell className="max-w-[250px] truncate font-medium">

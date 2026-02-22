@@ -41,7 +41,7 @@ export default function SavingsPage() {
     const supabase = createClient();
     Promise.all([
       supabase.from("savings_opportunities").select("*"),
-      supabase.from("clients").select("id, nombre"),
+      supabase.from("projects").select("id, nombre"),
     ]).then(([savingsRes, clientsRes]) => {
       setSavings(savingsRes.data ?? []);
       setClients(clientsRes.data as Client[] ?? []);
@@ -52,7 +52,7 @@ export default function SavingsPage() {
   const tipos = Array.from(new Set(savings.map((s) => s.tipo)));
 
   const filtered = savings.filter((s) => {
-    const client = clients.find((c) => c.id === s.client_id);
+    const client = clients.find((c) => c.id === s.project_id);
     const matchSearch =
       search === "" ||
       s.descripcion.toLowerCase().includes(search.toLowerCase()) ||
@@ -211,7 +211,7 @@ export default function SavingsPage() {
           ) : (
             <div className="space-y-4">
               {filtered.map((opp) => {
-                const client = clients.find((c) => c.id === opp.client_id);
+                const client = clients.find((c) => c.id === opp.project_id);
                 return (
                   <div
                     key={opp.id}

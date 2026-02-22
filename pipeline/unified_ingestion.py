@@ -10,7 +10,6 @@ Uso desde la UI (Lovable/Next.js):
   {
     "file": <bytes>,
     "filename": "aai_empresa.pdf",
-    "client_id": "uuid",
     "project_id": "uuid",
     "rag_scope": "project",   // opcional, se detecta automáticamente
     "password": "1234"        // opcional, solo para PDFs encriptados
@@ -94,7 +93,6 @@ class UnifiedIngestionService:
         self,
         file_bytes: bytes,
         filename: str,
-        client_id: Optional[str] = None,
         project_id: Optional[str] = None,
         rag_scope: Optional[str] = None,
         password: Optional[str] = None,
@@ -114,20 +112,20 @@ class UnifiedIngestionService:
                 error=f"Formato no soportado: .{ext}. Formatos válidos: PDF, Excel, CSV",
             )
 
-        logger.info(f"Ingesta: {filename} ({file_type}) | cliente={client_id} | proyecto={project_id}")
+        logger.info(f"Ingesta: {filename} ({file_type}) | proyecto={project_id}")
 
         try:
             if file_type == "pdf":
                 return await self._ingest_pdf(
-                    file_bytes, filename, client_id, project_id, rag_scope, password
+                    file_bytes, filename, project_id, rag_scope, password
                 )
             elif file_type == "text":
                 return await self._ingest_text(
-                    file_bytes, filename, client_id, project_id, rag_scope
+                    file_bytes, filename, project_id, rag_scope
                 )
             else:
                 return await self._ingest_excel(
-                    file_bytes, filename, client_id, project_id, rag_scope
+                    file_bytes, filename, project_id, rag_scope
                 )
         except Exception as e:
             logger.exception(f"Error en ingesta de {filename}: {e}")
@@ -143,14 +141,13 @@ class UnifiedIngestionService:
         self,
         file_bytes: bytes,
         filename: str,
-        client_id: Optional[str],
         project_id: Optional[str],
         rag_scope_str: Optional[str],
         password: Optional[str],
     ) -> IngestionResult:
         result = await self.pdf_pipeline.process(
             pdf_bytes=file_bytes,
-            client_id=client_id or "general",
+            client_id=project_id or "general",
             filename=filename,
             password=password,
         )
@@ -159,7 +156,6 @@ class UnifiedIngestionService:
         explicit_scope = RAGScope(rag_scope_str) if rag_scope_str else None
         scope = self.router.route(
             doc_type=result.doc_type.value,
-            client_id=client_id,
             project_id=project_id,
             explicit_scope=explicit_scope,
         )
@@ -184,7 +180,6 @@ class UnifiedIngestionService:
         self,
         file_bytes: bytes,
         filename: str,
-        client_id: Optional[str],
         project_id: Optional[str],
         rag_scope_str: Optional[str],
     ) -> IngestionResult:
@@ -192,15 +187,14 @@ class UnifiedIngestionService:
         # Determinar scope antes de procesar
         explicit_scope = RAGScope(rag_scope_str) if rag_scope_str else None
         scope = self.router.route(
-            doc_type="costes_anuales",   # valor provisional, se refinará
-            client_id=client_id,
+            doc_type="costes_anuales",
             project_id=project_id,
             explicit_scope=explicit_scope,
         )
 
         result = await self.excel_processor.process(
             excel_bytes=file_bytes,
-            client_id=client_id or "general",
+            client_id=project_id or "general",
             filename=filename,
             project_id=project_id,
             rag_scope=scope.value,
@@ -220,11 +214,11 @@ class UnifiedIngestionService:
         _uuid_re = re.compile(
             r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
         )
-        db_client_id = client_id if _uuid_re.match(client_id or "") else None
+        db_project_id = project_id if _uuid_re.match(project_id or "") else None
 
         doc_data = {
             "id": result.doc_id,
-            "client_id": db_client_id,
+            "project_id": db_project_id,
             "titulo": filename,
             "tipo": result.excel_type.value,
             "naturaleza_pdf": "excel",
@@ -243,7 +237,7 @@ class UnifiedIngestionService:
         # Subir archivo original a Supabase Storage
         from .pdf_pipeline import DocType
         storage_path = await self.storage.upload_file(
-            file_bytes, filename, client_id or "general",
+            file_bytes, filename, project_id or "general",
             DocType.DESCONOCIDO,
         )
         doc_data["storage_path"] = storage_path
@@ -256,7 +250,7 @@ class UnifiedIngestionService:
         await self.storage.save_chunks_to_supabase(result.chunks, result.doc_id)
 
         # Poblar tablas estructuradas desde los datos del Excel
-        await self._populate_structured_tables(sb, result, client_id, project_id)
+        await self._populate_structured_tables(sb, result, project_id)
 
         return IngestionResult(
             success=True,
@@ -275,7 +269,6 @@ class UnifiedIngestionService:
         self,
         file_bytes: bytes,
         filename: str,
-        client_id: Optional[str],
         project_id: Optional[str],
         rag_scope_str: Optional[str],
     ) -> IngestionResult:
@@ -283,7 +276,6 @@ class UnifiedIngestionService:
         explicit_scope = RAGScope(rag_scope_str) if rag_scope_str else None
         scope = self.router.route(
             doc_type="normativa",
-            client_id=client_id,
             project_id=project_id,
             explicit_scope=explicit_scope,
         )
@@ -291,7 +283,7 @@ class UnifiedIngestionService:
         result = await self.text_processor.process(
             file_bytes=file_bytes,
             filename=filename,
-            client_id=client_id or "general",
+            client_id=project_id or "general",
             project_id=project_id,
             rag_scope=scope.value,
         )
@@ -316,7 +308,7 @@ class UnifiedIngestionService:
             if project_id:
                 chunk.metadata["project_id"] = project_id
 
-    async def _populate_structured_tables(self, sb, result, client_id, project_id):
+    async def _populate_structured_tables(self, sb, result, project_id):
         """
         Desde los datos estructurados del Excel, pobla tablas de Supabase
         para que los agentes puedan hacer análisis sin releer el documento.
@@ -330,7 +322,7 @@ class UnifiedIngestionService:
 
                 # Poblar waste_inventory con datos de coste reales
                 inventory_data = {
-                    "client_id": client_id,
+                    "project_id": project_id,
                     "codigo_ler": row.get("codigo_ler"),
                     "descripcion": row.get("descripcion"),
                     "cantidad_anual_ton": row.get("cantidad_ton"),
@@ -347,7 +339,7 @@ class UnifiedIngestionService:
                 # Si hay importe total, también a invoice_lines para tracking financiero
                 if row.get("importe_eur"):
                     await sb.table("invoice_lines").upsert({
-                        "client_id": client_id,
+                        "project_id": project_id,
                         "doc_id": result.doc_id,
                         "codigo_ler": row.get("codigo_ler"),
                         "descripcion": row.get("descripcion"),

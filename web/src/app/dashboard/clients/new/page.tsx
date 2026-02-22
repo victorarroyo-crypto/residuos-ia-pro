@@ -23,7 +23,7 @@ export default function NewClientPage() {
 
     const { data: { user } } = await supabase.auth.getUser();
 
-    const { error } = await supabase.from("clients").insert({
+    const { error } = await supabase.from("projects").insert({
       nombre: form.get("nombre") as string,
       cif: (form.get("cif") as string) || null,
       cnae: (form.get("cnae") as string) || null,

@@ -27,7 +27,7 @@ export async function GET() {
     // 1. Documents by status
     const { data: docs, error: docsErr } = await sb
       .from("client_documents")
-      .select("id, titulo, tipo, estado, total_chunks, fecha_ingesta, drive_file_id, client_id");
+      .select("id, titulo, tipo, estado, total_chunks, fecha_ingesta, drive_file_id, project_id");
 
     if (docsErr) {
       return NextResponse.json(
@@ -88,7 +88,7 @@ export async function GET() {
         total_chunks: d.total_chunks,
         fecha_ingesta: d.fecha_ingesta,
         drive_file_id: d.drive_file_id,
-        client_id: d.client_id,
+        project_id: d.project_id,
       }));
 
     // 4. Check drive_file_id column exists (if docs have it, migration was applied)
