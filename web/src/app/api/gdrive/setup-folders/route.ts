@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 
 const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
 
-export const maxDuration = 120;
+export const maxDuration = 30;
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 115_000);
+    const timeout = setTimeout(() => controller.abort(), 25_000);
 
     try {
       const response = await fetch(`${PIPELINE_URL}/api/gdrive/setup-folders`, {
