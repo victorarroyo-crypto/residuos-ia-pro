@@ -148,7 +148,7 @@ function SettingsContent() {
     }
   }
 
-  function handleFolderPicked(folderId: string, _folderName: string) {
+  function handleFolderPicked(folderId: string) {
     setGdriveLoading(true);
     setGdriveError(null);
 
