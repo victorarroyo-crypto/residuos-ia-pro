@@ -160,6 +160,7 @@ BEGIN
 END;
 $$;
 
+DROP POLICY IF EXISTS "consultant_own_projects" ON projects;
 DROP POLICY IF EXISTS "user_own_documents" ON client_documents;
 DROP POLICY IF EXISTS "read_scoped_chunks" ON document_chunks;
 DROP POLICY IF EXISTS "insert_own_chunks" ON document_chunks;
