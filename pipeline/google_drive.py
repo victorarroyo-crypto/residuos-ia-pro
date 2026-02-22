@@ -313,15 +313,20 @@ class GoogleDriveService:
     # FULL STRUCTURE SETUP
     # ──────────────────────────────────────────────────
 
-    def setup_full_structure(self) -> dict:
+    def setup_full_structure(self, root_folder_id: Optional[str] = None) -> dict:
         """
         Create the complete RAG_Residuos_Industriales folder structure.
+
+        Args:
+            root_folder_id: If provided (e.g. from Picker), use this folder
+                            as root instead of creating/searching for one.
+
         Returns a dict with key folder IDs for navigation.
         """
         self._created_count = 0
         logger.info("Creando estructura completa de carpetas en Google Drive...")
 
-        root_id = self.get_or_create_folder(ROOT_FOLDER_NAME)
+        root_id = root_folder_id or self.get_or_create_folder(ROOT_FOLDER_NAME)
 
         # Preload existing folder tree to avoid ~1800 individual API lookups
         self._preload_folder_tree(root_id)

@@ -421,14 +421,59 @@ async def gdrive_exchange(request: GDriveExchangeRequest):
     }
 
 
+@app.get("/api/gdrive/picker-token")
+async def gdrive_picker_token(consultant_id: str = Query(...)):
+    """Return a fresh access token for the Google Picker on the frontend."""
+    if not _gdrive_configured():
+        raise HTTPException(status_code=501, detail="Google Drive no configurado.")
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    result = await (
+        sb.table("consultant_gdrive")
+        .select("access_token, refresh_token")
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Google Drive no conectado.")
+
+    data = result.data[0]
+
+    from pipeline.google_drive import GoogleDriveService
+
+    gd = GoogleDriveService(
+        access_token=data["access_token"],
+        refresh_token=data["refresh_token"],
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+    )
+    # The credentials may have been refreshed during construction
+    fresh_token = gd.refreshed_token
+
+    # Persist refreshed token if it changed
+    if fresh_token != data["access_token"]:
+        await (
+            sb.table("consultant_gdrive")
+            .update({"access_token": fresh_token})
+            .eq("consultant_id", consultant_id)
+            .execute()
+        )
+
+    return {"access_token": fresh_token, "client_id": _gdrive_client_id}
+
+
 class GDriveSetupFoldersRequest(BaseModel):
     consultant_id: str
+    root_folder_id: Optional[str] = None  # If provided, use as root (from Picker)
 
 
 @app.post("/api/gdrive/setup-folders")
 async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
     """
     Create Drive folder structure using tokens already saved in DB.
+    If root_folder_id is provided (from Picker), use it as root.
     Runs in background and returns immediately. Poll /api/gdrive/status
     to check when root_folder_id is set.
     """
@@ -451,8 +496,8 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
 
     data = result.data[0]
 
-    # Skip if folder structure already exists
-    if data.get("root_folder_id"):
+    # Skip if folder structure already exists (unless user is re-picking a folder)
+    if data.get("root_folder_id") and not request.root_folder_id:
         return {"status": "done", "root_folder_id": data["root_folder_id"], "already_exists": True}
 
     from pipeline.google_drive import GoogleDriveService
@@ -464,13 +509,23 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
         client_secret=_gdrive_client_secret,
     )
 
+    # If user picked a root folder via Picker, save it immediately
+    if request.root_folder_id:
+        await (
+            sb.table("consultant_gdrive")
+            .update({"root_folder_id": request.root_folder_id})
+            .eq("consultant_id", request.consultant_id)
+            .execute()
+        )
+
     # Fire-and-forget: run folder creation in background
     asyncio.create_task(
-        _run_setup_folders(request.consultant_id, gd, sb)
+        _run_setup_folders(request.consultant_id, gd, sb, request.root_folder_id)
     )
 
     return {
         "status": "running",
+        "root_folder_id": request.root_folder_id,
         "message": "Creando estructura de carpetas en segundo plano. Esto puede tardar 1-2 minutos.",
     }
 
@@ -479,10 +534,11 @@ async def _run_setup_folders(
     consultant_id: str,
     gd: "GoogleDriveService",  # noqa: F821
     sb: "AsyncClient",  # noqa: F821
+    root_folder_id: Optional[str] = None,
 ) -> None:
     """Background task that creates the full folder structure in Google Drive."""
     try:
-        folders = await asyncio.to_thread(gd.setup_full_structure)
+        folders = await asyncio.to_thread(gd.setup_full_structure, root_folder_id)
 
         await sb.table("consultant_gdrive").update({
             "root_folder_id": folders["root_folder_id"],
