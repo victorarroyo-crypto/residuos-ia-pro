@@ -287,11 +287,23 @@ class AdvisorMessage(BaseModel):
     content: str
 
 
+class FileAttachment(BaseModel):
+    name: str
+    type: str  # "image", "document", or "binary"
+    content: str  # base64 for images/binaries, extracted text for documents
+    mime_type: Optional[str] = None  # e.g., "image/png", "application/pdf"
+    size: int = 0
+
+
 class AdvisorRequest(BaseModel):
     query: str
     conversation_history: list[AdvisorMessage] = []
     project_id: Optional[str] = None
-    file_content: Optional[str] = None  # Texto extraído de un fichero subido
+    # Multi-file support (up to 6)
+    files: Optional[list[FileAttachment]] = None
+    urls: Optional[list[str]] = None
+    # Legacy single-file support (backward compatibility)
+    file_content: Optional[str] = None
     file_name: Optional[str] = None
 
 
@@ -301,16 +313,188 @@ class AdvisorResponse(BaseModel):
     rag_context_used: bool
 
 
+# ─── Server-side file text extraction ─────────────────────────────
+
+def _extract_pdf_text(file_bytes: bytes) -> str:
+    """Extract text + tables from a PDF. Tries pdfplumber first, falls back to pdfminer."""
+    import io
+
+    # Try pdfplumber (best quality: text + tables)
+    try:
+        import pdfplumber
+
+        parts: list[str] = []
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for i, page in enumerate(pdf.pages[:50], 1):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    parts.append(f"--- Pagina {i} ---\n{page_text}")
+
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table:
+                        continue
+                    rows = []
+                    for row in table:
+                        cells = [str(cell or "").strip() for cell in row]
+                        rows.append(" | ".join(cells))
+                    if rows:
+                        parts.append(f"[Tabla pagina {i}]\n" + "\n".join(rows))
+
+        if parts:
+            return "\n\n".join(parts)
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("pdfplumber failed for PDF: %s, trying fallback", e)
+
+    # Fallback: pdfminer (text only, no tables)
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = pdfminer_extract(io.BytesIO(file_bytes), maxpages=50)
+        if text and text.strip():
+            return text.strip()
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("pdfminer fallback also failed: %s", e)
+
+    return "[PDF: no se pudo extraer texto. El archivo puede estar escaneado o protegido.]"
+
+
+def _extract_excel_text(file_bytes: bytes, filename: str) -> str:
+    """Extract text from Excel/CSV using pandas + openpyxl."""
+    import pandas as pd
+    import io
+
+    parts: list[str] = []
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    try:
+        if ext == "csv":
+            # Auto-detect separator
+            sample = file_bytes[:4096].decode("utf-8", errors="replace")
+            sep = ";" if sample.count(";") > sample.count(",") else ","
+            df = pd.read_csv(io.BytesIO(file_bytes), sep=sep, on_bad_lines="skip")
+            parts.append(f"--- CSV ({len(df)} filas x {len(df.columns)} columnas) ---")
+            parts.append(df.to_markdown(index=False))
+        else:
+            xl = pd.ExcelFile(io.BytesIO(file_bytes))
+            for sheet_name in xl.sheet_names[:10]:  # Max 10 sheets
+                df = pd.read_excel(xl, sheet_name=sheet_name)
+                if df.empty:
+                    continue
+                parts.append(
+                    f"--- Hoja: {sheet_name} ({len(df)} filas x {len(df.columns)} columnas) ---"
+                )
+                # Limit rows for very large sheets
+                if len(df) > 200:
+                    parts.append(df.head(200).to_markdown(index=False))
+                    parts.append(f"... ({len(df) - 200} filas mas omitidas)")
+                else:
+                    parts.append(df.to_markdown(index=False))
+    except Exception as e:
+        parts.append(f"[Error extrayendo Excel/CSV: {e}]")
+
+    return "\n\n".join(parts) if parts else "[Archivo Excel/CSV sin datos]"
+
+
+def _extract_docx_text(file_bytes: bytes) -> str:
+    """Extract text from Word DOCX using python-docx."""
+    import io
+
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(file_bytes))
+
+        parts: list[str] = []
+
+        # Extract paragraphs
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+
+        # Extract tables
+        for t_idx, table in enumerate(doc.tables):
+            rows = []
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                rows.append(" | ".join(cells))
+            if rows:
+                parts.append(f"\n[Tabla {t_idx + 1}]\n" + "\n".join(rows))
+
+        return "\n".join(parts) if parts else "[Documento Word sin contenido]"
+    except Exception as e:
+        return f"[Error extrayendo Word: {e}]"
+
+
+def _extract_binary_text(file_bytes: bytes, filename: str) -> str:
+    """Route binary file to the appropriate text extractor."""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if ext == "pdf":
+        return _extract_pdf_text(file_bytes)
+    elif ext in ("xlsx", "xls", "xlsm"):
+        return _extract_excel_text(file_bytes, filename)
+    elif ext == "csv":
+        return _extract_excel_text(file_bytes, filename)
+    elif ext in ("docx", "doc"):
+        return _extract_docx_text(file_bytes)
+    else:
+        # Fallback: try reading as text
+        try:
+            return file_bytes.decode("utf-8", errors="replace")[:15000]
+        except Exception:
+            return f"[Formato no soportado: .{ext}]"
+
+
+# ─── URL content fetching ─────────────────────────────────────────
+
+async def _fetch_url_content(url: str) -> str:
+    """Fetch text content from a URL for advisor context."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "ResidusIA-Advisor/1.0",
+                "Accept": "text/html,text/plain,application/json,*/*",
+            })
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "")
+            text = resp.text
+
+            # Strip HTML tags for a rough text extraction
+            if "html" in content_type:
+                import re
+                # Remove script/style blocks
+                text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', text, flags=re.DOTALL | re.IGNORECASE)
+                # Remove HTML tags
+                text = re.sub(r'<[^>]+>', ' ', text)
+                # Collapse whitespace
+                text = re.sub(r'\s+', ' ', text).strip()
+
+            return text[:15000]
+    except Exception as e:
+        return f"[Error al obtener URL {url}: {e}]"
+
+
+# ─── Advisor endpoint ─────────────────────────────────────────────
+
 @app.post("/api/advisor", response_model=AdvisorResponse)
 async def advisor_query(request: AdvisorRequest):
     """
     Asesor IA experto en gestión de residuos industriales.
     Usa RAG + razonamiento avanzado de Claude para responder consultas complejas.
+    Soporta hasta 6 archivos adjuntos (PDF, Excel, Word, imágenes) y URLs.
+    Extrae texto real de archivos binarios server-side.
     """
     if rag_service is None or _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     from anthropic import AsyncAnthropic
+    import base64
 
     try:
         # 1. Buscar contexto en el RAG (knowledge + project si hay project_id)
@@ -323,40 +507,121 @@ async def advisor_query(request: AdvisorRequest):
             project_id=request.project_id,
             scopes=scopes,
             top_k_per_scope=8,
-            similarity_threshold=0.60,  # Umbral más bajo para capturar más contexto
+            similarity_threshold=0.60,
         )
 
         has_rag_context = bool(rag_response.results)
 
-        # 2. Construir el mensaje del usuario con todo el contexto disponible
-        user_parts = []
+        # 2. Normalize files: merge legacy single-file into files list
+        files = list(request.files or [])
+        if not files and request.file_content:
+            files.append(FileAttachment(
+                name=request.file_name or "archivo",
+                type="document",
+                content=request.file_content[:15000],
+            ))
 
-        # Contexto RAG
+        # Enforce max 6 files
+        files = files[:6]
+
+        # 3. Process binary files: decode base64 → extract real text
+        processed_docs: list[tuple[str, str]] = []  # (name, extracted_text)
+        image_files: list[FileAttachment] = []
+
+        for f in files:
+            if f.type == "image" and f.mime_type:
+                image_files.append(f)
+            elif f.type == "binary":
+                # Decode base64 and extract text server-side
+                try:
+                    file_bytes = base64.b64decode(f.content)
+                    extracted = await asyncio.to_thread(
+                        _extract_binary_text, file_bytes, f.name
+                    )
+                    processed_docs.append((f.name, extracted[:15000]))
+                    logger.info(
+                        "Advisor: extracted %d chars from %s (%s)",
+                        len(extracted), f.name, f.type,
+                    )
+                except Exception as e:
+                    processed_docs.append(
+                        (f.name, f"[Error procesando {f.name}: {e}]")
+                    )
+                    logger.warning("Advisor: failed to extract %s: %s", f.name, e)
+            else:
+                # type == "document" → already has text content
+                processed_docs.append((f.name, f.content[:15000]))
+
+        # 4. Fetch URL content in parallel
+        url_contents: list[tuple[str, str]] = []
+        if request.urls:
+            urls_to_fetch = request.urls[:6 - len(files)]
+            tasks = [_fetch_url_content(u) for u in urls_to_fetch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for url, result in zip(urls_to_fetch, results):
+                if isinstance(result, Exception):
+                    url_contents.append((url, f"[Error al obtener URL: {result}]"))
+                else:
+                    url_contents.append((url, result))
+
+        # 5. Build user message content blocks (multimodal)
+        user_content_blocks: list[dict] = []
+        text_parts: list[str] = []
+
+        # RAG context
         if has_rag_context:
-            user_parts.append(
+            text_parts.append(
                 "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
                 f"{rag_response.context_text}\n"
             )
 
-        # Fichero adjunto
-        if request.file_content:
-            label = f" ({request.file_name})" if request.file_name else ""
-            user_parts.append(
-                f"DOCUMENTO ADJUNTO{label}:\n"
-                f"{request.file_content[:15000]}\n"  # Limitar a 15k chars
+        # Extracted document text (from all file types)
+        for i, (name, text) in enumerate(processed_docs, 1):
+            text_parts.append(
+                f"DOCUMENTO ADJUNTO {i} ({name}):\n{text}\n"
             )
 
-        user_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+        # URL contents
+        for i, (url, content) in enumerate(url_contents, 1):
+            text_parts.append(
+                f"CONTENIDO DE URL {i} ({url}):\n{content}\n"
+            )
 
-        user_message = "\n---\n".join(user_parts)
+        # Image analysis instruction
+        if image_files:
+            text_parts.append(
+                f"Se han adjuntado {len(image_files)} imagen(es). "
+                "Analiza cada imagen en detalle: identifica residuos, codigos, "
+                "etiquetas, valores de analisis quimicos, fichas de seguridad, "
+                "o cualquier informacion relevante para la gestion de residuos.\n"
+            )
 
-        # 3. Construir historial de conversación
+        text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+
+        # Build multimodal content: images first, then text
+        if image_files:
+            for img in image_files:
+                user_content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.mime_type,
+                        "data": img.content,
+                    },
+                })
+
+        user_content_blocks.append({
+            "type": "text",
+            "text": "\n---\n".join(text_parts),
+        })
+
+        # 6. Build conversation history
         messages = []
-        for msg in request.conversation_history[-10:]:  # Últimos 10 mensajes
+        for msg in request.conversation_history[-10:]:
             messages.append({"role": msg.role, "content": msg.content})
-        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "user", "content": user_content_blocks})
 
-        # 4. Llamar a Claude con extended thinking
+        # 7. Call Claude with extended thinking
         claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
 
         response = await claude.messages.create(
@@ -370,14 +635,14 @@ async def advisor_query(request: AdvisorRequest):
             messages=messages,
         )
 
-        # Extraer respuesta (puede incluir thinking blocks)
+        # Extract response (may include thinking blocks)
         answer = ""
         for block in response.content:
             if block.type == "text":
                 answer = block.text
                 break
 
-        # 5. Preparar fuentes
+        # 8. Prepare sources
         sources = [
             {
                 "document_id": r.document_id,

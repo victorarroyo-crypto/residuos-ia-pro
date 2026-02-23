@@ -11,12 +11,28 @@ import {
   Sparkles,
   AlertTriangle,
   Trash2,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  FileSpreadsheet,
+  File,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-// ─── Types ──────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────
+
+const MAX_FILES = 6;
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB per file
+const MAX_TEXT_PER_FILE = 15000; // chars
+
+const ACCEPTED_EXTENSIONS =
+  ".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif";
+
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"];
+const TEXT_TYPES = ["text/plain", "text/csv", "application/json", "text/xml", "application/xml"];
+
+// ─── Types ──────────────────────────────────────────────────────
 
 interface Source {
   document_id: string;
@@ -31,42 +47,94 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
-  fileName?: string;
+  fileNames?: string[];
   ragUsed?: boolean;
 }
 
-// ─── Text extraction from files ─────────────────────────────────────
-
-async function extractTextFromFile(file: File): Promise<string> {
-  // For text-based files, read directly
-  const textTypes = [
-    "text/plain",
-    "text/csv",
-    "application/json",
-    "text/xml",
-    "application/xml",
-  ];
-
-  if (textTypes.some((t) => file.type.includes(t)) || file.name.endsWith(".csv") || file.name.endsWith(".txt")) {
-    return await file.text();
-  }
-
-  // For PDFs and other binary files, we can't extract client-side easily.
-  // We'll send the raw text representation or indicate it needs server processing.
-  // For now, attempt to read as text (works for some formats).
-  try {
-    const text = await file.text();
-    // If it looks like binary garbage, indicate we need server-side processing
-    if (text.includes("\x00") || text.includes("�")) {
-      return `[Archivo: ${file.name} (${(file.size / 1024).toFixed(1)} KB) - Formato binario. El archivo ha sido adjuntado pero su contenido requiere procesamiento especial. Describe su contenido en tu pregunta para obtener mejor ayuda.]`;
-    }
-    return text;
-  } catch {
-    return `[Archivo: ${file.name} - No se pudo leer el contenido]`;
-  }
+interface FileAttachment {
+  name: string;
+  type: "image" | "document" | "binary";
+  content: string; // base64 for images/binaries, extracted text for documents
+  mime_type?: string; // for images
+  size: number;
 }
 
-// ─── Suggested questions ────────────────────────────────────────────
+// ─── File processing helpers ────────────────────────────────────
+
+function isImageFile(file: File): boolean {
+  return IMAGE_TYPES.some((t) => file.type === t) ||
+    /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(file.name);
+}
+
+function isTextFile(file: File): boolean {
+  return TEXT_TYPES.some((t) => file.type.includes(t)) ||
+    /\.(csv|txt|json|xml)$/i.test(file.name);
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Remove data URL prefix (e.g., "data:image/png;base64,")
+      const base64 = result.split(",")[1] || result;
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function processFile(file: File): Promise<FileAttachment> {
+  // Images → base64 for Claude Vision
+  if (isImageFile(file)) {
+    const base64 = await fileToBase64(file);
+    const mime = file.type || "image/png";
+    return {
+      name: file.name,
+      type: "image",
+      content: base64,
+      mime_type: mime,
+      size: file.size,
+    };
+  }
+
+  // Text files → read directly
+  if (isTextFile(file)) {
+    const text = await file.text();
+    return {
+      name: file.name,
+      type: "document",
+      content: text.slice(0, MAX_TEXT_PER_FILE),
+      size: file.size,
+    };
+  }
+
+  // Binary files (PDF, DOCX, XLSX, etc.) → send as base64 for server-side extraction
+  const base64 = await fileToBase64(file);
+  return {
+    name: file.name,
+    type: "binary",
+    content: base64,
+    mime_type: file.type || "application/octet-stream",
+    size: file.size,
+  };
+}
+
+function getFileIcon(fileName: string) {
+  if (/\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(fileName)) return ImageIcon;
+  if (/\.(xlsx?|csv)$/i.test(fileName)) return FileSpreadsheet;
+  if (/\.(pdf)$/i.test(fileName)) return FileText;
+  return File;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ─── Suggested questions ────────────────────────────────────────
 
 const SUGGESTED_QUESTIONS = [
   {
@@ -99,7 +167,7 @@ const SUGGESTED_QUESTIONS = [
   },
 ];
 
-// ─── Markdown renderer ──────────────────────────────────────────────
+// ─── Markdown renderer ──────────────────────────────────────────
 
 function renderMarkdown(text: string): string {
   return text
@@ -116,14 +184,17 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, "<br/>");
 }
 
-// ─── Component ──────────────────────────────────────────────────────
+// ─── Component ──────────────────────────────────────────────────
 
 export default function AdvisorPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [urlInput, setUrlInput] = useState("");
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urls, setUrls] = useState<string[]>([]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -139,17 +210,24 @@ export default function AdvisorPage() {
     inputRef.current?.focus();
   }, []);
 
+  const totalAttachments = attachedFiles.length + urls.length;
+
   const sendMessage = useCallback(async () => {
     const query = input.trim();
     if (!query || loading) return;
 
     setError(null);
 
-    // Build user message
+    // Collect file names for display
+    const fileNames = [
+      ...attachedFiles.map((f) => f.name),
+      ...urls.map((u) => u),
+    ];
+
     const userMsg: ChatMessage = {
       role: "user",
       content: query,
-      fileName: attachedFile?.name,
+      fileNames: fileNames.length > 0 ? fileNames : undefined,
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -157,14 +235,19 @@ export default function AdvisorPage() {
     setLoading(true);
 
     try {
-      // Extract file content if attached
-      let fileContent: string | undefined;
-      let fileName: string | undefined;
-      if (attachedFile) {
-        fileContent = await extractTextFromFile(attachedFile);
-        fileName = attachedFile.name;
-        setAttachedFile(null);
+      // Process all attached files
+      const processedFiles: FileAttachment[] = [];
+      for (const file of attachedFiles) {
+        const processed = await processFile(file);
+        processedFiles.push(processed);
       }
+
+      // Clear attachments
+      const currentUrls = [...urls];
+      setAttachedFiles([]);
+      setUrls([]);
+      setShowUrlInput(false);
+      setUrlInput("");
 
       // Build conversation history (without the current message)
       const conversationHistory = messages.map((m) => ({
@@ -178,8 +261,8 @@ export default function AdvisorPage() {
         body: JSON.stringify({
           query,
           conversation_history: conversationHistory,
-          file_content: fileContent,
-          file_name: fileName,
+          files: processedFiles.length > 0 ? processedFiles : undefined,
+          urls: currentUrls.length > 0 ? currentUrls : undefined,
         }),
       });
 
@@ -204,21 +287,80 @@ export default function AdvisorPage() {
     } finally {
       setLoading(false);
     }
-  }, [input, loading, attachedFile, messages]);
+  }, [input, loading, attachedFiles, urls, messages]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) {
-      setAttachedFile(file);
+    const selectedFiles = Array.from(e.target.files || []);
+    if (selectedFiles.length === 0) return;
+
+    const remaining = MAX_FILES - totalAttachments;
+    if (remaining <= 0) {
+      setError(`Maximo ${MAX_FILES} archivos adjuntos.`);
+      e.target.value = "";
+      return;
     }
-    // Reset input so same file can be selected again
+
+    const filesToAdd = selectedFiles.slice(0, remaining);
+    const rejected: string[] = [];
+
+    const validFiles = filesToAdd.filter((f) => {
+      if (f.size > MAX_FILE_SIZE) {
+        rejected.push(`${f.name} (excede ${formatFileSize(MAX_FILE_SIZE)})`);
+        return false;
+      }
+      return true;
+    });
+
+    if (rejected.length > 0) {
+      setError(`Archivos rechazados: ${rejected.join(", ")}`);
+    }
+
+    if (selectedFiles.length > remaining) {
+      setError(`Solo se pueden adjuntar ${MAX_FILES} archivos. Se añadieron los primeros ${remaining}.`);
+    }
+
+    setAttachedFiles((prev) => [...prev, ...validFiles]);
     e.target.value = "";
+  }
+
+  function removeFile(index: number) {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function addUrl() {
+    const url = urlInput.trim();
+    if (!url) return;
+
+    // Basic URL validation
+    try {
+      new URL(url.startsWith("http") ? url : `https://${url}`);
+    } catch {
+      setError("URL no valida. Incluye http:// o https://");
+      return;
+    }
+
+    if (totalAttachments >= MAX_FILES) {
+      setError(`Maximo ${MAX_FILES} adjuntos (archivos + URLs).`);
+      return;
+    }
+
+    const normalizedUrl = url.startsWith("http") ? url : `https://${url}`;
+    setUrls((prev) => [...prev, normalizedUrl]);
+    setUrlInput("");
+    setShowUrlInput(false);
+  }
+
+  function removeUrl(index: number) {
+    setUrls((prev) => prev.filter((_, i) => i !== index));
   }
 
   function clearConversation() {
     setMessages([]);
     setError(null);
-    setAttachedFile(null);
+    setAttachedFiles([]);
+    setUrls([]);
+    setShowUrlInput(false);
+    setUrlInput("");
   }
 
   function selectSuggestion(question: string) {
@@ -236,7 +378,7 @@ export default function AdvisorPage() {
             Asesor IA
           </h1>
           <p className="text-muted-foreground">
-            Experto en gestion de residuos industriales. Pregunta sobre clasificacion, normativa, desclasificacion, LER, propiedades HP y mas.
+            Experto en gestion de residuos industriales. Adjunta hasta {MAX_FILES} archivos (PDF, Excel, Word, fotos) o URLs.
           </p>
         </div>
         {messages.length > 0 && (
@@ -259,8 +401,9 @@ export default function AdvisorPage() {
               </p>
               <p className="text-sm text-muted-foreground mb-8 max-w-md text-center">
                 Soy un asesor experto en gestion de residuos industriales.
-                Puedo analizar documentos, clasificar residuos, resolver dudas normativas
-                y proponer estrategias de optimizacion.
+                Puedo analizar documentos, fotos, hojas de calculo, clasificar residuos,
+                resolver dudas normativas y proponer estrategias de optimizacion.
+                Adjunta hasta {MAX_FILES} archivos o URLs por consulta.
               </p>
 
               <div className="grid gap-4 sm:grid-cols-2 max-w-2xl w-full">
@@ -297,11 +440,15 @@ export default function AdvisorPage() {
                     : "bg-muted"
                 }`}
               >
-                {/* File attachment indicator */}
-                {msg.fileName && (
-                  <div className="flex items-center gap-2 mb-2 text-xs opacity-80">
-                    <Paperclip className="h-3 w-3" />
-                    <span>{msg.fileName}</span>
+                {/* File attachments indicator */}
+                {msg.fileNames && msg.fileNames.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mb-2 text-xs opacity-80">
+                    <Paperclip className="h-3 w-3 shrink-0" />
+                    {msg.fileNames.map((name, j) => (
+                      <span key={j} className="bg-white/15 rounded px-1.5 py-0.5">
+                        {name.length > 30 ? name.slice(0, 27) + "..." : name}
+                      </span>
+                    ))}
                   </div>
                 )}
 
@@ -385,42 +532,119 @@ export default function AdvisorPage() {
 
         {/* Input area */}
         <div className="border-t p-4">
-          {/* Attached file indicator */}
-          {attachedFile && (
-            <div className="flex items-center gap-2 mb-2 text-sm text-muted-foreground bg-muted rounded-md px-3 py-1.5">
-              <Paperclip className="h-3.5 w-3.5" />
-              <span className="truncate flex-1">{attachedFile.name}</span>
-              <span className="text-xs shrink-0">
-                ({(attachedFile.size / 1024).toFixed(1)} KB)
-              </span>
-              <button
-                onClick={() => setAttachedFile(null)}
-                className="text-muted-foreground hover:text-foreground"
+          {/* Attached files list */}
+          {(attachedFiles.length > 0 || urls.length > 0) && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {attachedFiles.map((file, i) => {
+                const Icon = getFileIcon(file.name);
+                return (
+                  <div
+                    key={`file-${i}`}
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground bg-muted rounded-md px-2.5 py-1.5"
+                  >
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate max-w-[150px]">{file.name}</span>
+                    <span className="text-xs shrink-0 opacity-60">
+                      {formatFileSize(file.size)}
+                    </span>
+                    <button
+                      onClick={() => removeFile(i)}
+                      className="text-muted-foreground hover:text-foreground ml-0.5"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
+              {urls.map((url, i) => (
+                <div
+                  key={`url-${i}`}
+                  className="flex items-center gap-1.5 text-sm text-muted-foreground bg-muted rounded-md px-2.5 py-1.5"
+                >
+                  <LinkIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate max-w-[200px]">{url}</span>
+                  <button
+                    onClick={() => removeUrl(i)}
+                    className="text-muted-foreground hover:text-foreground ml-0.5"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <div className="text-xs text-muted-foreground self-center opacity-60">
+                {totalAttachments}/{MAX_FILES}
+              </div>
+            </div>
+          )}
+
+          {/* URL input row */}
+          {showUrlInput && (
+            <div className="flex gap-2 mb-2">
+              <input
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addUrl();
+                  }
+                  if (e.key === "Escape") {
+                    setShowUrlInput(false);
+                    setUrlInput("");
+                  }
+                }}
+                placeholder="https://ejemplo.com/pagina"
+                className="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
+                autoFocus
+              />
+              <Button size="sm" variant="outline" onClick={addUrl}>
+                Añadir
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setShowUrlInput(false);
+                  setUrlInput("");
+                }}
               >
-                <X className="h-3.5 w-3.5" />
-              </button>
+                <X className="h-4 w-4" />
+              </Button>
             </div>
           )}
 
           <div className="flex gap-2">
-            {/* Hidden file input */}
+            {/* Hidden file input (multiple) */}
             <input
               ref={fileInputRef}
               type="file"
               className="hidden"
-              accept=".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx"
+              accept={ACCEPTED_EXTENSIONS}
+              multiple
               onChange={handleFileSelect}
             />
 
-            {/* Attach button */}
+            {/* Attach file button */}
             <Button
               variant="outline"
               size="icon"
               onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
-              title="Adjuntar documento (analisis, ficha seguridad, etc.)"
+              disabled={loading || totalAttachments >= MAX_FILES}
+              title={`Adjuntar archivos (${totalAttachments}/${MAX_FILES})`}
             >
               <Paperclip className="h-4 w-4" />
+            </Button>
+
+            {/* Attach URL button */}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setShowUrlInput(!showUrlInput)}
+              disabled={loading || totalAttachments >= MAX_FILES}
+              title="Adjuntar URL de pagina web"
+            >
+              <LinkIcon className="h-4 w-4" />
             </Button>
 
             {/* Text input */}
