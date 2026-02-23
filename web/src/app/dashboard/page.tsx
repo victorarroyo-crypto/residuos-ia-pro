@@ -134,11 +134,6 @@ export default async function DashboardPage() {
               <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
               Alertas urgentes
             </CardTitle>
-            {allAlerts.length > 0 && (
-              <Link href="/dashboard/alerts" className="text-xs text-vandarum-teal hover:underline">
-                Ver todas
-              </Link>
-            )}
           </CardHeader>
           <CardContent>
             {allAlerts.length === 0 ? (
@@ -252,18 +247,6 @@ export default async function DashboardPage() {
               <Button variant="outline">
                 <BookOpen className="mr-2 h-4 w-4" />
                 Base de conocimiento
-              </Button>
-            </Link>
-            <Link href="/dashboard/alerts">
-              <Button variant="outline">
-                <AlertTriangle className="mr-2 h-4 w-4" />
-                Alertas
-              </Button>
-            </Link>
-            <Link href="/dashboard/savings">
-              <Button variant="outline">
-                <TrendingDown className="mr-2 h-4 w-4" />
-                Ahorros
               </Button>
             </Link>
           </div>
