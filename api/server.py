@@ -235,6 +235,42 @@ async def rag_query(request: RAGQueryRequest):
 
 
 # ═══════════════════════════════════════════════════════════════
+# ANALISIS MULTI-AGENTE - LangGraph
+# ═══════════════════════════════════════════════════════════════
+
+class AnalyzeRequest(BaseModel):
+    project_id: str
+    agents: Optional[list[str]] = None  # None = all agents
+
+
+@app.post("/api/analyze")
+async def analyze_project(request: AnalyzeRequest):
+    """
+    Lanza el analisis multi-agente (LangGraph) para un proyecto.
+    El consultor elige que agentes ejecutar via el campo 'agents'.
+    Optimizador y Redactor siempre se ejecutan con los hallazgos disponibles.
+    """
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.agents import run_project_analysis
+
+    try:
+        result = await run_project_analysis(
+            project_id=request.project_id,
+            supabase_url=_config.supabase_url,
+            supabase_key=_config.supabase_service_key,
+            anthropic_api_key=_config.anthropic_api_key,
+            openai_api_key=_config.openai_api_key,
+            agents=request.agents,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error en analisis del proyecto {request.project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE - Gestión de documentos normativos generales
 # ═══════════════════════════════════════════════════════════════
 
