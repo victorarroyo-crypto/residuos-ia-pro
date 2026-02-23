@@ -15,7 +15,9 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("residusia")
+logger.setLevel(logging.INFO)
 
 # Ensure the project root is in the Python path (works locally and in Docker)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +30,10 @@ from pipeline import UnifiedIngestionService, PipelineConfigImpl, RAGScopingServ
 service: UnifiedIngestionService | None = None
 rag_service: RAGScopingService | None = None
 _config: PipelineConfigImpl | None = None
+
+# Strong references to background tasks so GC doesn't kill them.
+# See: https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+_background_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
@@ -1157,9 +1163,11 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
         )
 
     # Fire-and-forget: run folder creation in background
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_setup_folders(request.consultant_id, gd, sb, request.root_folder_id)
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     return {
         "status": "running",
@@ -1488,7 +1496,9 @@ async def gdrive_sync(request: GDriveSyncRequest):
         except Exception as e:
             logger.error("Sync %s: background task CRASHED: %s", sync_id, e, exc_info=True)
 
-    asyncio.create_task(_safe_sync_wrapper())
+    task = asyncio.create_task(_safe_sync_wrapper())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     # Return immediately
     return {
