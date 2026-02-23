@@ -36,6 +36,7 @@ const estadoIcons: Record<string, React.ReactNode> = {
   pendiente: <Clock className="h-4 w-4 text-vandarum-orange" />,
   vista: <ShieldAlert className="h-4 w-4 text-vandarum-blue" />,
   resuelta: <CheckCircle2 className="h-4 w-4 text-vandarum-green" />,
+  descartada: <AlertTriangle className="h-4 w-4 text-muted-foreground" />,
 };
 
 type FilterSeveridad = "todos" | "critica" | "alta" | "media" | "baja";
@@ -46,7 +47,7 @@ export default function AlertsPage() {
   const [filterSeveridad, setFilterSeveridad] = useState<FilterSeveridad>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
-  const [clients, setClients] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -56,7 +57,7 @@ export default function AlertsPage() {
       supabase.from("projects").select("id, nombre"),
     ]);
     setAlerts(alertsRes.data ?? []);
-    setClients(clientsRes.data as Project[] ?? []);
+    setProjects(clientsRes.data as Project[] ?? []);
     setLoading(false);
   }, []);
 
@@ -74,11 +75,11 @@ export default function AlertsPage() {
 
   const filtered = alerts
     .filter((a) => {
-      const client = clients.find((c) => c.id === a.project_id);
+      const proj = projects.find((p) => p.id === a.project_id);
       const matchSearch =
         search === "" ||
         a.descripcion.toLowerCase().includes(search.toLowerCase()) ||
-        client?.nombre.toLowerCase().includes(search.toLowerCase()) ||
+        proj?.nombre.toLowerCase().includes(search.toLowerCase()) ||
         a.tipo.toLowerCase().includes(search.toLowerCase());
       const matchSeveridad =
         filterSeveridad === "todos" || a.severidad === filterSeveridad;
@@ -155,7 +156,7 @@ export default function AlertsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar por descripcion, cliente o tipo..."
+                placeholder="Buscar por descripcion, proyecto o tipo..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
@@ -208,7 +209,7 @@ export default function AlertsPage() {
           ) : (
             <div className="space-y-3">
               {filtered.map((alert) => {
-                const client = clients.find((c) => c.id === alert.project_id);
+                const proj = projects.find((p) => p.id === alert.project_id);
                 return (
                   <div
                     key={alert.id}
@@ -222,12 +223,12 @@ export default function AlertsPage() {
                     <div className="flex-1 space-y-1">
                       <p className="text-sm font-medium">{alert.descripcion}</p>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        {client && (
+                        {proj && (
                           <Link
-                            href={`/dashboard/projects/${client.id}`}
+                            href={`/dashboard/projects/${proj.id}`}
                             className="hover:underline"
                           >
-                            {client.nombre}
+                            {proj.nombre}
                           </Link>
                         )}
                         <Badge variant="outline" className="text-xs">
@@ -255,8 +256,8 @@ export default function AlertsPage() {
                           Resolver
                         </Button>
                       )}
-                      {client && (
-                        <Link href={`/dashboard/projects/${client.id}`}>
+                      {proj && (
+                        <Link href={`/dashboard/projects/${proj.id}`}>
                           <Button variant="ghost" size="sm">
                             <ArrowRight className="h-4 w-4" />
                           </Button>

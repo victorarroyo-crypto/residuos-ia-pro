@@ -34,7 +34,7 @@ export default function SavingsPage() {
   const [filterTipo, setFilterTipo] = useState<FilterTipo>("todos");
   const [filterEstado, setFilterEstado] = useState<FilterEstado>("todos");
   const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
-  const [clients, setClients] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,7 +44,7 @@ export default function SavingsPage() {
       supabase.from("projects").select("id, nombre"),
     ]).then(([savingsRes, clientsRes]) => {
       setSavings(savingsRes.data ?? []);
-      setClients(clientsRes.data as Project[] ?? []);
+      setProjects(clientsRes.data as Project[] ?? []);
       setLoading(false);
     });
   }, []);
@@ -52,11 +52,11 @@ export default function SavingsPage() {
   const tipos = Array.from(new Set(savings.map((s) => s.tipo)));
 
   const filtered = savings.filter((s) => {
-    const client = clients.find((c) => c.id === s.project_id);
+    const proj = projects.find((p) => p.id === s.project_id);
     const matchSearch =
       search === "" ||
       s.descripcion.toLowerCase().includes(search.toLowerCase()) ||
-      client?.nombre.toLowerCase().includes(search.toLowerCase());
+      proj?.nombre.toLowerCase().includes(search.toLowerCase());
     const matchTipo = filterTipo === "todos" || s.tipo === filterTipo;
     const matchEstado = filterEstado === "todos" || s.estado === filterEstado;
     return matchSearch && matchTipo && matchEstado;
@@ -156,7 +156,7 @@ export default function SavingsPage() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 type="text"
-                placeholder="Buscar por descripcion o cliente..."
+                placeholder="Buscar por descripcion o proyecto..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full rounded-md border bg-background py-2 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
@@ -211,7 +211,7 @@ export default function SavingsPage() {
           ) : (
             <div className="space-y-4">
               {filtered.map((opp) => {
-                const client = clients.find((c) => c.id === opp.project_id);
+                const proj = projects.find((p) => p.id === opp.project_id);
                 return (
                   <div
                     key={opp.id}
@@ -231,12 +231,12 @@ export default function SavingsPage() {
                       </div>
                       <p className="text-sm">{opp.descripcion}</p>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                        {client && (
+                        {proj && (
                           <Link
-                            href={`/dashboard/projects/${client.id}`}
+                            href={`/dashboard/projects/${proj.id}`}
                             className="hover:underline"
                           >
-                            {client.nombre}
+                            {proj.nombre}
                           </Link>
                         )}
                         {opp.norma_aplicable && (
@@ -258,8 +258,8 @@ export default function SavingsPage() {
                           Payback: {opp.payback_meses} meses
                         </p>
                       )}
-                      {client && (
-                        <Link href={`/dashboard/projects/${client.id}`}>
+                      {proj && (
+                        <Link href={`/dashboard/projects/${proj.id}`}>
                           <Button variant="ghost" size="sm">
                             <ArrowRight className="h-4 w-4" />
                           </Button>
