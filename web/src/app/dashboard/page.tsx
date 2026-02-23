@@ -134,11 +134,6 @@ export default async function DashboardPage() {
               <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
               Alertas urgentes
             </CardTitle>
-            {allAlerts.length > 0 && (
-              <Link href="/dashboard/alerts" className="text-xs text-vandarum-teal hover:underline">
-                Ver todas
-              </Link>
-            )}
           </CardHeader>
           <CardContent>
             {allAlerts.length === 0 ? (
