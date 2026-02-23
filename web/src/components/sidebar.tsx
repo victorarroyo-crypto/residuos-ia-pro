@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   FolderKanban,
   BookOpen,
+  Sparkles,
   Settings,
   Leaf,
   LogOut,
@@ -19,6 +20,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/projects", label: "Proyectos", icon: FolderKanban },
   { href: "/dashboard/knowledge-base", label: "Base de Conocimiento", icon: BookOpen },
+  { href: "/dashboard/advisor", label: "Asesor IA", icon: Sparkles },
   { href: "/dashboard/settings", label: "Ajustes", icon: Settings },
 ];
 
