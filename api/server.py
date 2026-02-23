@@ -279,6 +279,15 @@ Ante consultas complejas, sigue estos pasos internamente antes de responder:
 4. Estructura tu respuesta de forma clara y accionable
 5. Cita siempre las fuentes normativas específicas (artículo, anexo, ley)
 
+## BÚSQUEDA WEB
+Tienes acceso a búsqueda web. Úsala cuando:
+- La pregunta requiere datos actualizados (precios, normativa reciente, novedades legislativas)
+- No tienes suficiente contexto del RAG ni de los documentos adjuntos
+- El usuario pregunta sobre algo específico que requiere verificación (ej: un gestor concreto, una planta de tratamiento, un BOE reciente)
+- Necesitas confirmar concentraciones límite, umbrales o valores técnicos actuales
+NO uses búsqueda web para preguntas generales que puedes responder con tu conocimiento experto.
+Cuando uses resultados web, indica la fuente.
+
 Responde siempre en español."""
 
 
@@ -480,39 +489,188 @@ async def _fetch_url_content(url: str) -> str:
         return f"[Error al obtener URL {url}: {e}]"
 
 
-# ─── Advisor endpoint ─────────────────────────────────────────────
+# ─── Advisor core logic (shared by JSON and FormData endpoints) ───
 
-@app.post("/api/advisor", response_model=AdvisorResponse)
-async def advisor_query(request: AdvisorRequest):
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif"}
+
+
+async def _run_advisor(
+    query: str,
+    conversation_history: list[dict],
+    project_id: Optional[str],
+    processed_docs: list[tuple[str, str]],
+    image_blocks: list[dict],
+    url_list: list[str],
+) -> dict:
     """
-    Asesor IA experto en gestión de residuos industriales.
-    Usa RAG + razonamiento avanzado de Claude para responder consultas complejas.
-    Soporta hasta 6 archivos adjuntos (PDF, Excel, Word, imágenes) y URLs.
-    Extrae texto real de archivos binarios server-side.
+    Core advisor logic: RAG search → build prompt → Claude with thinking.
+    Returns {"answer": str, "sources": list, "rag_context_used": bool}.
     """
     if rag_service is None or _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     from anthropic import AsyncAnthropic
+
+    # 1. RAG search
+    scopes = [RAGScope.GENERAL]
+    if project_id:
+        scopes.append(RAGScope.PROJECT)
+
+    rag_response = await rag_service.search(
+        query=query,
+        project_id=project_id,
+        scopes=scopes,
+        top_k_per_scope=8,
+        similarity_threshold=0.60,
+    )
+    has_rag_context = bool(rag_response.results)
+
+    # 2. Fetch URLs in parallel
+    url_contents: list[tuple[str, str]] = []
+    if url_list:
+        tasks = [_fetch_url_content(u) for u in url_list[:6]]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for url, result in zip(url_list, results):
+            if isinstance(result, Exception):
+                url_contents.append((url, f"[Error al obtener URL: {result}]"))
+            else:
+                url_contents.append((url, result))
+
+    # 3. Build text context
+    text_parts: list[str] = []
+
+    if has_rag_context:
+        text_parts.append(
+            "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
+            f"{rag_response.context_text}\n"
+        )
+
+    for i, (name, text) in enumerate(processed_docs, 1):
+        text_parts.append(f"DOCUMENTO ADJUNTO {i} ({name}):\n{text}\n")
+
+    for i, (url, content) in enumerate(url_contents, 1):
+        text_parts.append(f"CONTENIDO DE URL {i} ({url}):\n{content}\n")
+
+    if image_blocks:
+        text_parts.append(
+            f"Se han adjuntado {len(image_blocks)} imagen(es). "
+            "Analiza cada imagen en detalle: identifica residuos, codigos, "
+            "etiquetas, valores de analisis quimicos, fichas de seguridad, "
+            "o cualquier informacion relevante para la gestion de residuos.\n"
+        )
+
+    text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{query}")
+
+    # 4. Build multimodal content blocks
+    user_content_blocks: list[dict] = []
+    for img in image_blocks:
+        user_content_blocks.append(img)
+    user_content_blocks.append({
+        "type": "text",
+        "text": "\n---\n".join(text_parts),
+    })
+
+    # 5. Build messages
+    messages = []
+    for msg in conversation_history[-10:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_content_blocks})
+
+    # 6. Call Claude with extended thinking + web search
+    claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+
+    # Web search tool: Claude decides when to search the web.
+    # Anthropic executes the search server-side (uses Brave Search).
+    # Cost: ~$0.01 per search. Max 3 searches per query.
+    web_search_tool = {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 3,
+    }
+
+    response = await claude.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=16000,
+        thinking={
+            "type": "enabled",
+            "budget_tokens": 10000,
+        },
+        tools=[web_search_tool],
+        system=ADVISOR_SYSTEM_PROMPT,
+        messages=messages,
+    )
+
+    # Parse response: extract answer text and web search results
+    answer = ""
+    web_sources: list[dict] = []
+
+    for block in response.content:
+        if block.type == "text":
+            answer = block.text  # Last text block is the final answer
+        elif block.type == "web_search_tool_result":
+            # Extract web search results for source display
+            for item in getattr(block, "content", []):
+                if getattr(item, "type", None) == "web_search_result":
+                    web_sources.append({
+                        "title": getattr(item, "title", ""),
+                        "url": getattr(item, "url", ""),
+                        "scope": "web",
+                    })
+
+    # 7. Combine RAG sources + web sources
+    sources = [
+        {
+            "document_id": r.document_id,
+            "title": r.doc_title,
+            "doc_type": r.doc_type,
+            "similarity": round(r.similarity, 3),
+            "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
+            "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
+        }
+        for r in rag_response.results
+    ]
+
+    # Add web sources (deduplicated by URL)
+    seen_urls: set[str] = set()
+    for ws in web_sources:
+        if ws["url"] and ws["url"] not in seen_urls:
+            seen_urls.add(ws["url"])
+            sources.append({
+                "document_id": ws["url"],
+                "title": ws["title"],
+                "doc_type": "web",
+                "similarity": 0,
+                "scope": "web",
+                "excerpt": ws["url"],
+            })
+
+    web_search_used = len(web_sources) > 0
+    logger.info(
+        "Advisor: RAG=%s, web_search=%s (%d results), docs=%d, images=%d",
+        has_rag_context, web_search_used, len(web_sources),
+        len(processed_docs), len(image_blocks),
+    )
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "rag_context_used": has_rag_context,
+        "web_search_used": web_search_used,
+    }
+
+
+# ─── Advisor endpoint: JSON (text-only, through Vercel proxy) ────
+
+@app.post("/api/advisor")
+async def advisor_query(request: AdvisorRequest):
+    """
+    Asesor IA - JSON endpoint (for text-only queries through Vercel proxy).
+    For file uploads, use POST /api/advisor/chat with FormData.
+    """
     import base64
 
     try:
-        # 1. Buscar contexto en el RAG (knowledge + project si hay project_id)
-        scopes = [RAGScope.GENERAL]
-        if request.project_id:
-            scopes.append(RAGScope.PROJECT)
-
-        rag_response = await rag_service.search(
-            query=request.query,
-            project_id=request.project_id,
-            scopes=scopes,
-            top_k_per_scope=8,
-            similarity_threshold=0.60,
-        )
-
-        has_rag_context = bool(rag_response.results)
-
-        # 2. Normalize files: merge legacy single-file into files list
+        # Normalize files
         files = list(request.files or [])
         if not files and request.file_content:
             files.append(FileAttachment(
@@ -521,148 +679,143 @@ async def advisor_query(request: AdvisorRequest):
                 content=request.file_content[:15000],
             ))
 
-        # Enforce max 6 files
-        files = files[:6]
+        processed_docs: list[tuple[str, str]] = []
+        image_blocks: list[dict] = []
 
-        # 3. Process binary files: decode base64 → extract real text
-        processed_docs: list[tuple[str, str]] = []  # (name, extracted_text)
-        image_files: list[FileAttachment] = []
-
-        for f in files:
+        for f in files[:6]:
             if f.type == "image" and f.mime_type:
-                image_files.append(f)
+                image_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": f.mime_type,
+                        "data": f.content,
+                    },
+                })
             elif f.type == "binary":
-                # Decode base64 and extract text server-side
                 try:
                     file_bytes = base64.b64decode(f.content)
                     extracted = await asyncio.to_thread(
                         _extract_binary_text, file_bytes, f.name
                     )
                     processed_docs.append((f.name, extracted[:15000]))
-                    logger.info(
-                        "Advisor: extracted %d chars from %s (%s)",
-                        len(extracted), f.name, f.type,
-                    )
                 except Exception as e:
-                    processed_docs.append(
-                        (f.name, f"[Error procesando {f.name}: {e}]")
-                    )
-                    logger.warning("Advisor: failed to extract %s: %s", f.name, e)
+                    processed_docs.append((f.name, f"[Error procesando {f.name}: {e}]"))
             else:
-                # type == "document" → already has text content
                 processed_docs.append((f.name, f.content[:15000]))
 
-        # 4. Fetch URL content in parallel
-        url_contents: list[tuple[str, str]] = []
-        if request.urls:
-            urls_to_fetch = request.urls[:6 - len(files)]
-            tasks = [_fetch_url_content(u) for u in urls_to_fetch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for url, result in zip(urls_to_fetch, results):
-                if isinstance(result, Exception):
-                    url_contents.append((url, f"[Error al obtener URL: {result}]"))
-                else:
-                    url_contents.append((url, result))
+        history = [{"role": m.role, "content": m.content} for m in request.conversation_history]
 
-        # 5. Build user message content blocks (multimodal)
-        user_content_blocks: list[dict] = []
-        text_parts: list[str] = []
+        result = await _run_advisor(
+            query=request.query,
+            conversation_history=history,
+            project_id=request.project_id,
+            processed_docs=processed_docs,
+            image_blocks=image_blocks,
+            url_list=request.urls or [],
+        )
+        return result
 
-        # RAG context
-        if has_rag_context:
-            text_parts.append(
-                "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
-                f"{rag_response.context_text}\n"
-            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en advisor (JSON): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # Extracted document text (from all file types)
-        for i, (name, text) in enumerate(processed_docs, 1):
-            text_parts.append(
-                f"DOCUMENTO ADJUNTO {i} ({name}):\n{text}\n"
-            )
 
-        # URL contents
-        for i, (url, content) in enumerate(url_contents, 1):
-            text_parts.append(
-                f"CONTENIDO DE URL {i} ({url}):\n{content}\n"
-            )
+# ─── Advisor endpoint: FormData (file uploads, direct from browser) ──
 
-        # Image analysis instruction
-        if image_files:
-            text_parts.append(
-                f"Se han adjuntado {len(image_files)} imagen(es). "
-                "Analiza cada imagen en detalle: identifica residuos, codigos, "
-                "etiquetas, valores de analisis quimicos, fichas de seguridad, "
-                "o cualquier informacion relevante para la gestion de residuos.\n"
-            )
+@app.post("/api/advisor/chat")
+async def advisor_chat(
+    query: str = Form(...),
+    conversation_history: str = Form(default="[]"),
+    project_id: Optional[str] = Form(default=None),
+    urls: str = Form(default="[]"),
+    files: list[UploadFile] = File(default=[]),
+):
+    """
+    Asesor IA - FormData endpoint for file uploads.
+    Frontend calls this directly (bypassing Vercel's 4.5MB payload limit).
+    Accepts real file uploads via multipart/form-data.
+    """
+    import base64 as b64
+    import json
 
-        text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+    try:
+        # Parse JSON fields
+        try:
+            history = json.loads(conversation_history)
+        except (json.JSONDecodeError, TypeError):
+            history = []
 
-        # Build multimodal content: images first, then text
-        if image_files:
-            for img in image_files:
-                user_content_blocks.append({
+        try:
+            url_list = json.loads(urls)
+        except (json.JSONDecodeError, TypeError):
+            url_list = []
+
+        # Process uploaded files
+        processed_docs: list[tuple[str, str]] = []
+        image_blocks: list[dict] = []
+
+        for upload in files[:6]:
+            if not upload.filename:
+                continue
+
+            file_bytes = await upload.read()
+            if len(file_bytes) == 0:
+                continue
+            if len(file_bytes) > 20 * 1024 * 1024:  # 20MB per file
+                processed_docs.append(
+                    (upload.filename, f"[Archivo demasiado grande: {upload.filename}]")
+                )
+                continue
+
+            ext = upload.filename.rsplit(".", 1)[-1].lower() if "." in upload.filename else ""
+
+            if ext in IMAGE_EXTENSIONS:
+                # Images → base64 for Claude Vision
+                encoded = b64.b64encode(file_bytes).decode("ascii")
+                mime = upload.content_type or f"image/{ext}"
+                image_blocks.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": img.mime_type,
-                        "data": img.content,
+                        "media_type": mime,
+                        "data": encoded,
                     },
                 })
+                logger.info("Advisor: image %s (%s, %d KB)", upload.filename, mime, len(file_bytes) // 1024)
+            else:
+                # Documents → extract text server-side
+                try:
+                    extracted = await asyncio.to_thread(
+                        _extract_binary_text, file_bytes, upload.filename
+                    )
+                    processed_docs.append((upload.filename, extracted[:15000]))
+                    logger.info(
+                        "Advisor: extracted %d chars from %s",
+                        len(extracted), upload.filename,
+                    )
+                except Exception as e:
+                    processed_docs.append(
+                        (upload.filename, f"[Error procesando {upload.filename}: {e}]")
+                    )
+                    logger.warning("Advisor: extraction failed for %s: %s", upload.filename, e)
 
-        user_content_blocks.append({
-            "type": "text",
-            "text": "\n---\n".join(text_parts),
-        })
-
-        # 6. Build conversation history
-        messages = []
-        for msg in request.conversation_history[-10:]:
-            messages.append({"role": msg.role, "content": msg.content})
-        messages.append({"role": "user", "content": user_content_blocks})
-
-        # 7. Call Claude with extended thinking
-        claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
-
-        response = await claude.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=16000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 10000,
-            },
-            system=ADVISOR_SYSTEM_PROMPT,
-            messages=messages,
+        result = await _run_advisor(
+            query=query,
+            conversation_history=history,
+            project_id=project_id,
+            processed_docs=processed_docs,
+            image_blocks=image_blocks,
+            url_list=url_list,
         )
+        return result
 
-        # Extract response (may include thinking blocks)
-        answer = ""
-        for block in response.content:
-            if block.type == "text":
-                answer = block.text
-                break
-
-        # 8. Prepare sources
-        sources = [
-            {
-                "document_id": r.document_id,
-                "title": r.doc_title,
-                "doc_type": r.doc_type,
-                "similarity": round(r.similarity, 3),
-                "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
-                "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
-            }
-            for r in rag_response.results
-        ]
-
-        return AdvisorResponse(
-            answer=answer,
-            sources=sources,
-            rag_context_used=has_rag_context,
-        )
-
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error en advisor: {e}")
+        logger.error(f"Error en advisor (FormData): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

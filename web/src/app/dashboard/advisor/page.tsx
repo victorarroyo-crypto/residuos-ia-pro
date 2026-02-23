@@ -15,6 +15,7 @@ import {
   Link as LinkIcon,
   FileSpreadsheet,
   File,
+  Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,13 +25,12 @@ import { Badge } from "@/components/ui/badge";
 
 const MAX_FILES = 6;
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB per file
-const MAX_TEXT_PER_FILE = 15000; // chars
 
 const ACCEPTED_EXTENSIONS =
   ".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif";
 
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"];
-const TEXT_TYPES = ["text/plain", "text/csv", "application/json", "text/xml", "application/xml"];
+// Pipeline API URL for direct file uploads (bypasses Vercel 4.5MB limit)
+const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_API_URL || "";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -49,77 +49,10 @@ interface ChatMessage {
   sources?: Source[];
   fileNames?: string[];
   ragUsed?: boolean;
+  webSearchUsed?: boolean;
 }
 
-interface FileAttachment {
-  name: string;
-  type: "image" | "document" | "binary";
-  content: string; // base64 for images/binaries, extracted text for documents
-  mime_type?: string; // for images
-  size: number;
-}
-
-// ─── File processing helpers ────────────────────────────────────
-
-function isImageFile(file: File): boolean {
-  return IMAGE_TYPES.some((t) => file.type === t) ||
-    /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(file.name);
-}
-
-function isTextFile(file: File): boolean {
-  return TEXT_TYPES.some((t) => file.type.includes(t)) ||
-    /\.(csv|txt|json|xml)$/i.test(file.name);
-}
-
-async function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Remove data URL prefix (e.g., "data:image/png;base64,")
-      const base64 = result.split(",")[1] || result;
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-async function processFile(file: File): Promise<FileAttachment> {
-  // Images → base64 for Claude Vision
-  if (isImageFile(file)) {
-    const base64 = await fileToBase64(file);
-    const mime = file.type || "image/png";
-    return {
-      name: file.name,
-      type: "image",
-      content: base64,
-      mime_type: mime,
-      size: file.size,
-    };
-  }
-
-  // Text files → read directly
-  if (isTextFile(file)) {
-    const text = await file.text();
-    return {
-      name: file.name,
-      type: "document",
-      content: text.slice(0, MAX_TEXT_PER_FILE),
-      size: file.size,
-    };
-  }
-
-  // Binary files (PDF, DOCX, XLSX, etc.) → send as base64 for server-side extraction
-  const base64 = await fileToBase64(file);
-  return {
-    name: file.name,
-    type: "binary",
-    content: base64,
-    mime_type: file.type || "application/octet-stream",
-    size: file.size,
-  };
-}
+// ─── Helpers ────────────────────────────────────────────────────
 
 function getFileIcon(fileName: string) {
   if (/\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(fileName)) return ImageIcon;
@@ -200,17 +133,16 @@ export default function AdvisorPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Focus input on mount
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   const totalAttachments = attachedFiles.length + urls.length;
+  const hasFiles = attachedFiles.length > 0;
 
   const sendMessage = useCallback(async () => {
     const query = input.trim();
@@ -218,7 +150,6 @@ export default function AdvisorPage() {
 
     setError(null);
 
-    // Collect file names for display
     const fileNames = [
       ...attachedFiles.map((f) => f.name),
       ...urls.map((u) => u),
@@ -234,41 +165,60 @@ export default function AdvisorPage() {
     setInput("");
     setLoading(true);
 
+    // Capture current state before clearing
+    const currentFiles = [...attachedFiles];
+    const currentUrls = [...urls];
+    const hasFileAttachments = currentFiles.length > 0;
+
+    setAttachedFiles([]);
+    setUrls([]);
+    setShowUrlInput(false);
+    setUrlInput("");
+
     try {
-      // Process all attached files
-      const processedFiles: FileAttachment[] = [];
-      for (const file of attachedFiles) {
-        const processed = await processFile(file);
-        processedFiles.push(processed);
-      }
-
-      // Clear attachments
-      const currentUrls = [...urls];
-      setAttachedFiles([]);
-      setUrls([]);
-      setShowUrlInput(false);
-      setUrlInput("");
-
-      // Build conversation history (without the current message)
       const conversationHistory = messages.map((m) => ({
         role: m.role,
         content: m.content,
       }));
 
-      const res = await fetch("/api/advisor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query,
-          conversation_history: conversationHistory,
-          files: processedFiles.length > 0 ? processedFiles : undefined,
-          urls: currentUrls.length > 0 ? currentUrls : undefined,
-        }),
-      });
+      let res: Response;
+
+      if (hasFileAttachments && PIPELINE_URL) {
+        // ── FormData: send files directly to Python backend ──
+        // Bypasses Vercel's 4.5MB serverless function payload limit.
+        const formData = new FormData();
+        formData.append("query", query);
+        formData.append("conversation_history", JSON.stringify(conversationHistory));
+        if (currentUrls.length > 0) {
+          formData.append("urls", JSON.stringify(currentUrls));
+        }
+        for (const file of currentFiles) {
+          formData.append("files", file);
+        }
+
+        res = await fetch(`${PIPELINE_URL}/api/advisor/chat`, {
+          method: "POST",
+          body: formData,
+          // No Content-Type header - browser sets it with boundary for multipart
+        });
+      } else {
+        // ── JSON: text-only queries through Vercel proxy ──
+        res = await fetch("/api/advisor", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            conversation_history: conversationHistory,
+            urls: currentUrls.length > 0 ? currentUrls : undefined,
+          }),
+        });
+      }
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: "Error desconocido" }));
-        throw new Error(errData.error || `Error ${res.status}`);
+        const errData = await res.json().catch(() => null);
+        const errMsg =
+          errData?.error || errData?.detail || `Error ${res.status}`;
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -278,20 +228,45 @@ export default function AdvisorPage() {
         content: data.answer,
         sources: data.sources,
         ragUsed: data.rag_context_used,
+        webSearchUsed: data.web_search_used,
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      setError(detail);
+
+      // Provide helpful error messages
+      if (hasFileAttachments && !PIPELINE_URL) {
+        setError(
+          "Para subir archivos necesitas configurar NEXT_PUBLIC_PIPELINE_API_URL en las variables de entorno. " +
+            "Sin ella, solo se pueden hacer consultas de texto."
+        );
+      } else if (detail.includes("Failed to fetch") || detail.includes("NetworkError")) {
+        setError(
+          hasFileAttachments
+            ? `No se pudo conectar con el servidor de procesamiento (${PIPELINE_URL}). Verifica que esta corriendo.`
+            : "Error de red. Verifica tu conexion."
+        );
+      } else {
+        setError(detail);
+      }
     } finally {
       setLoading(false);
     }
-  }, [input, loading, attachedFiles, urls, messages]);
+  }, [input, loading, attachedFiles, urls, messages, hasFiles]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
+
+    // Check if pipeline URL is configured for file support
+    if (!PIPELINE_URL) {
+      setError(
+        "Subida de archivos no disponible: falta NEXT_PUBLIC_PIPELINE_API_URL en la configuracion."
+      );
+      e.target.value = "";
+      return;
+    }
 
     const remaining = MAX_FILES - totalAttachments;
     if (remaining <= 0) {
@@ -316,7 +291,9 @@ export default function AdvisorPage() {
     }
 
     if (selectedFiles.length > remaining) {
-      setError(`Solo se pueden adjuntar ${MAX_FILES} archivos. Se añadieron los primeros ${remaining}.`);
+      setError(
+        `Solo se pueden adjuntar ${MAX_FILES} archivos. Se anadieron los primeros ${remaining}.`
+      );
     }
 
     setAttachedFiles((prev) => [...prev, ...validFiles]);
@@ -331,7 +308,6 @@ export default function AdvisorPage() {
     const url = urlInput.trim();
     if (!url) return;
 
-    // Basic URL validation
     try {
       new URL(url.startsWith("http") ? url : `https://${url}`);
     } catch {
@@ -378,7 +354,8 @@ export default function AdvisorPage() {
             Asesor IA
           </h1>
           <p className="text-muted-foreground">
-            Experto en gestion de residuos industriales. Adjunta hasta {MAX_FILES} archivos (PDF, Excel, Word, fotos) o URLs.
+            Experto en gestion de residuos industriales. Adjunta hasta{" "}
+            {MAX_FILES} archivos (PDF, Excel, Word, fotos) o URLs.
           </p>
         </div>
         {messages.length > 0 && (
@@ -396,14 +373,13 @@ export default function AdvisorPage() {
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full">
               <Sparkles className="h-16 w-16 text-vandarum-teal/20 mb-6" />
-              <p className="text-lg font-medium mb-2">
-                Como puedo ayudarte?
-              </p>
+              <p className="text-lg font-medium mb-2">Como puedo ayudarte?</p>
               <p className="text-sm text-muted-foreground mb-8 max-w-md text-center">
-                Soy un asesor experto en gestion de residuos industriales.
-                Puedo analizar documentos, fotos, hojas de calculo, clasificar residuos,
-                resolver dudas normativas y proponer estrategias de optimizacion.
-                Adjunta hasta {MAX_FILES} archivos o URLs por consulta.
+                Soy un asesor experto en gestion de residuos industriales. Puedo
+                analizar documentos, fotos, hojas de calculo, clasificar
+                residuos, resolver dudas normativas y proponer estrategias de
+                optimizacion. Adjunta hasta {MAX_FILES} archivos o URLs por
+                consulta.
               </p>
 
               <div className="grid gap-4 sm:grid-cols-2 max-w-2xl w-full">
@@ -445,7 +421,10 @@ export default function AdvisorPage() {
                   <div className="flex flex-wrap items-center gap-2 mb-2 text-xs opacity-80">
                     <Paperclip className="h-3 w-3 shrink-0" />
                     {msg.fileNames.map((name, j) => (
-                      <span key={j} className="bg-white/15 rounded px-1.5 py-0.5">
+                      <span
+                        key={j}
+                        className="bg-white/15 rounded px-1.5 py-0.5"
+                      >
                         {name.length > 30 ? name.slice(0, 27) + "..." : name}
                       </span>
                     ))}
@@ -461,7 +440,9 @@ export default function AdvisorPage() {
                     }}
                   />
                 ) : (
-                  <div className="text-sm whitespace-pre-wrap">{msg.content}</div>
+                  <div className="text-sm whitespace-pre-wrap">
+                    {msg.content}
+                  </div>
                 )}
 
                 {/* Sources */}
@@ -472,36 +453,67 @@ export default function AdvisorPage() {
                       Fuentes consultadas:
                     </p>
                     <div className="space-y-1">
-                      {msg.sources.map((src, j) => (
-                        <div
-                          key={j}
-                          className="flex items-center gap-2 text-xs opacity-70"
-                        >
-                          <FileText className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{src.title}</span>
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] py-0 shrink-0"
+                      {msg.sources.map((src, j) =>
+                        src.scope === "web" ? (
+                          <a
+                            key={j}
+                            href={src.excerpt}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-xs opacity-70 hover:opacity-100 transition-opacity"
                           >
-                            {Math.round(src.similarity * 100)}%
-                          </Badge>
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] py-0 shrink-0"
+                            <Globe className="h-3 w-3 shrink-0 text-blue-500" />
+                            <span className="truncate underline">
+                              {src.title || src.excerpt}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] py-0 shrink-0 border-blue-300 text-blue-600"
+                            >
+                              Web
+                            </Badge>
+                          </a>
+                        ) : (
+                          <div
+                            key={j}
+                            className="flex items-center gap-2 text-xs opacity-70"
                           >
-                            {src.scope === "general" ? "KB" : "Proyecto"}
-                          </Badge>
-                        </div>
-                      ))}
+                            <FileText className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{src.title}</span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] py-0 shrink-0"
+                            >
+                              {Math.round(src.similarity * 100)}%
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] py-0 shrink-0"
+                            >
+                              {src.scope === "general" ? "KB" : "Proyecto"}
+                            </Badge>
+                          </div>
+                        )
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* RAG indicator */}
-                {msg.role === "assistant" && msg.ragUsed === false && (
-                  <div className="mt-2 flex items-center gap-1.5 text-xs opacity-60">
-                    <AlertTriangle className="h-3 w-3" />
-                    Respuesta basada en conocimiento experto (sin documentos RAG)
+                {/* Context indicators */}
+                {msg.role === "assistant" && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs opacity-60">
+                    {msg.ragUsed === false && !msg.webSearchUsed && (
+                      <span className="flex items-center gap-1">
+                        <AlertTriangle className="h-3 w-3" />
+                        Respuesta basada en conocimiento experto
+                      </span>
+                    )}
+                    {msg.webSearchUsed && (
+                      <span className="flex items-center gap-1 text-blue-500">
+                        <Globe className="h-3 w-3" />
+                        Busqueda web utilizada
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -513,7 +525,11 @@ export default function AdvisorPage() {
             <div className="flex justify-start">
               <div className="bg-muted rounded-lg px-4 py-3 text-sm flex items-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
-                <span>Analizando y razonando...</span>
+                <span>
+                  {hasFiles
+                    ? "Extrayendo contenido y analizando..."
+                    : "Analizando y razonando..."}
+                </span>
               </div>
             </div>
           )}
@@ -599,7 +615,7 @@ export default function AdvisorPage() {
                 autoFocus
               />
               <Button size="sm" variant="outline" onClick={addUrl}>
-                Añadir
+                Anadir
               </Button>
               <Button
                 size="sm"
