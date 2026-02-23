@@ -1594,9 +1594,12 @@ async def _run_sync_job(
                     await _update_sync_progress(files_skipped=skipped)
                     continue
 
-                result = await service.ingest(
-                    file_bytes=file_bytes,
-                    filename=filename,
+                result = await asyncio.wait_for(
+                    service.ingest(
+                        file_bytes=file_bytes,
+                        filename=filename,
+                    ),
+                    timeout=300,  # 5 min max per file
                 )
 
                 if not result.success:
@@ -1633,6 +1636,16 @@ async def _run_sync_job(
                 # Update progress after each successful ingestion
                 await _update_sync_progress(files_ingested=ingested)
 
+            except (asyncio.TimeoutError, TimeoutError):
+                failed += 1
+                details.append({
+                    "file": file_info["name"],
+                    "path": file_info.get("path", ""),
+                    "status": "error",
+                    "error": "Timeout: file took >5 min to process, skipped",
+                })
+                logger.warning("Sync %s: TIMEOUT processing %s (>5 min), skipping", sync_id, file_info["name"])
+                await _update_sync_progress(files_failed=failed)
             except Exception as e:
                 failed += 1
                 details.append({
