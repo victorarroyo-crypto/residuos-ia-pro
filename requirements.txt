@@ -9,7 +9,7 @@ pikepdf==9.0.0              # manejo de PDFs encriptados/protegidos
 Pillow==10.4.0              # manipulación de imágenes para preprocesamiento OCR
 
 # IA
-anthropic==0.34.0           # Claude para clasificación y extracción de metadatos
+anthropic>=0.49.0           # Claude con extended thinking para el Asesor IA
 openai==1.45.0              # embeddings text-embedding-3-large
 langchain-core==0.3.23      # tipos base compartidos con LangGraph
 langgraph==0.2.76           # orquestación multi-agente

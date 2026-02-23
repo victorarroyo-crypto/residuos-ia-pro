@@ -271,6 +271,14 @@ ADVISOR_SYSTEM_PROMPT = """Eres un asesor experto senior en gestión de residuos
 - MTD/BAT (Mejores Técnicas Disponibles)
 - Economía circular y simbiosis industrial
 
+## MÉTODO DE RAZONAMIENTO
+Ante consultas complejas, sigue estos pasos internamente antes de responder:
+1. Identifica qué tipo de consulta es (clasificación, normativa, gestión, análisis, etc.)
+2. Recopila los datos relevantes del contexto y tu conocimiento
+3. Aplica la legislación y criterios técnicos correspondientes
+4. Estructura tu respuesta de forma clara y accionable
+5. Cita siempre las fuentes normativas específicas (artículo, anexo, ley)
+
 Responde siempre en español."""
 
 
@@ -348,7 +356,7 @@ async def advisor_query(request: AdvisorRequest):
             messages.append({"role": msg.role, "content": msg.content})
         messages.append({"role": "user", "content": user_message})
 
-        # 4. Llamar a Claude con razonamiento extendido
+        # 4. Llamar a Claude con extended thinking
         claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
 
         response = await claude.messages.create(
@@ -362,7 +370,7 @@ async def advisor_query(request: AdvisorRequest):
             messages=messages,
         )
 
-        # Extraer respuesta (puede tener thinking blocks)
+        # Extraer respuesta (puede incluir thinking blocks)
         answer = ""
         for block in response.content:
             if block.type == "text":
