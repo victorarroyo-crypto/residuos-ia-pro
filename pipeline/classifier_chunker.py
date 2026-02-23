@@ -153,7 +153,7 @@ Primeras páginas del documento:
 Responde ÚNICAMENTE con el tipo exacto de la lista, sin explicación."""
 
         response = await self.claude.messages.create(
-            model="claude-3-5-haiku-20241022",  # modelo rápido para clasificación
+            model="claude-haiku-4-5-20251001",  # modelo rápido para clasificación
             max_tokens=50,
             messages=[{"role": "user", "content": prompt}],
         )

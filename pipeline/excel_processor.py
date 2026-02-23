@@ -18,7 +18,9 @@ El reto del Excel vs PDF:
 """
 
 import io
+import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -29,6 +31,26 @@ import pandas as pd
 from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_for_json(obj):
+    """Convierte tipos numpy/pandas a tipos nativos Python para JSON válido."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if hasattr(obj, 'item'):  # numpy scalar (int64, float64, etc.)
+        val = obj.item()
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return None
+        return val
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.decode('utf-8', errors='replace')
+    return obj
 
 
 # ─────────────────────────────────────────────
@@ -141,7 +163,7 @@ class ExcelProcessor:
         all_ler_codes = list(set(c for a in analyses for c in a.ler_codes))
         total_eur = sum(a.total_eur or 0 for a in analyses)
 
-        metadata = {
+        metadata = _sanitize_for_json({
             "filename": filename,
             "excel_type": dominant_type.value,
             "rag_scope": rag_scope,
@@ -151,7 +173,7 @@ class ExcelProcessor:
             "ler_codes_found": all_ler_codes,
             "total_eur_detected": total_eur if total_eur > 0 else None,
             "structured_data": {a.sheet_name: a.structured_data for a in analyses},
-        }
+        })
 
         return ProcessedExcel(
             doc_id=doc_id,
@@ -341,7 +363,7 @@ class ExcelProcessor:
         self, df: pd.DataFrame, excel_type: ExcelType, ler_codes: list
     ) -> dict:
         """Extrae datos tabulares en formato estructurado para Supabase."""
-        data = {"rows": df.fillna("").to_dict(orient="records")}
+        data = {"rows": _sanitize_for_json(df.fillna("").to_dict(orient="records"))}
 
         if excel_type == ExcelType.COSTES_ANUALES:
             # Intentar mapear columnas estándar
@@ -466,7 +488,7 @@ Sé preciso con los números. No inventes datos que no estén en la tabla."""
 
         try:
             response = await self.claude.messages.create(
-                model="claude-3-5-haiku-20241022",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}],
             )
