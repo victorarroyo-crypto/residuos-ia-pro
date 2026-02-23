@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
 import { ArrowLeft, Upload, FileUp, CheckCircle2, XCircle, Loader2, File } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -44,9 +44,9 @@ interface FileUploadState {
 export default function UploadPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id: string };
 }) {
-  const { id } = use(params);
+  const { id } = params;
   const [project, setProject] = useState<Project | null>(null);
   const [files, setFiles] = useState<FileUploadState[]>([]);
   const [isDragging, setIsDragging] = useState(false);
