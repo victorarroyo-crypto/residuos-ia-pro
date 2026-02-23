@@ -235,6 +235,165 @@ async def rag_query(request: RAGQueryRequest):
 
 
 # ═══════════════════════════════════════════════════════════════
+# ASESOR IA - Consultor experto en gestión de residuos
+# ═══════════════════════════════════════════════════════════════
+
+ADVISOR_SYSTEM_PROMPT = """Eres un asesor experto senior en gestión de residuos industriales en España, con más de 20 años de experiencia.
+
+## TU PERFIL PROFESIONAL
+- Dominas la legislación española y europea de residuos: Ley 7/2022, RD 553/2020, Directiva 2008/98/CE, Reglamento CLP, ADR
+- Conoces en profundidad los códigos LER (Lista Europea de Residuos) y su clasificación
+- Experto en las 15 propiedades de peligrosidad HP1-HP15 según Reglamento (UE) 1357/2014
+- Conoces los BREFs (Best Available Techniques Reference Documents) de todos los sectores industriales
+- Dominas estrategias de desclasificación, valorización y minimización de residuos
+- Experiencia con autorizaciones ambientales integradas (AAI), DARI, y registro de producción
+- Conoces los precios de mercado de gestión de residuos por tipo y zona
+
+## CÓMO DEBES RESPONDER
+1. **Sé concreto y técnico.** Da códigos LER exactos, artículos de ley, concentraciones límite, propiedades HP.
+2. **Cuando analices un residuo:** identifica código LER, propiedades HP aplicables, sustancias que lo hacen peligroso (con concentraciones límite), y opciones de gestión.
+3. **Cuando te pregunten sobre desclasificación:** explica qué propiedades HP hay que eliminar, qué tratamientos existen, y qué análisis se necesitan para demostrar la desclasificación.
+4. **Cita normativa** siempre que sea relevante (artículo, ley, anexo).
+5. **Si tienes contexto del RAG**, úsalo como fuente principal pero complementa con tu conocimiento experto.
+6. **Si NO tienes contexto del RAG**, responde con tu conocimiento experto y deja claro que no has encontrado documentos específicos en la base de conocimiento.
+7. **Estructura tus respuestas** con encabezados, listas y negrita para facilitar la lectura.
+8. **Si el usuario sube un análisis químico**, interpreta los valores, identifica sustancias peligrosas, determina códigos LER y propiedades HP.
+
+## ÁREAS DE EXPERTISE
+- Clasificación de residuos (LER, espejo, peligrosidad)
+- Propiedades HP: HP1 Explosivo, HP2 Comburente, HP3 Inflamable, HP4 Irritante, HP5 Tóxico específico, HP6 Toxicidad aguda, HP7 Carcinógeno, HP8 Corrosivo, HP9 Infeccioso, HP10 Tóxico para reproducción, HP11 Mutagénico, HP12 Gases tóxicos, HP13 Sensibilizante, HP14 Ecotóxico, HP15 Residuo capaz de presentar peligrosidad diferida
+- Estrategias de desclasificación y valorización
+- Obligaciones legales del productor/poseedor
+- Contratos con gestores autorizados
+- DARI y registro cronológico
+- Almacenamiento temporal (límites, condiciones)
+- Transporte de mercancías peligrosas (ADR)
+- MTD/BAT (Mejores Técnicas Disponibles)
+- Economía circular y simbiosis industrial
+
+Responde siempre en español."""
+
+
+class AdvisorMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class AdvisorRequest(BaseModel):
+    query: str
+    conversation_history: list[AdvisorMessage] = []
+    project_id: Optional[str] = None
+    file_content: Optional[str] = None  # Texto extraído de un fichero subido
+    file_name: Optional[str] = None
+
+
+class AdvisorResponse(BaseModel):
+    answer: str
+    sources: list[dict]
+    rag_context_used: bool
+
+
+@app.post("/api/advisor", response_model=AdvisorResponse)
+async def advisor_query(request: AdvisorRequest):
+    """
+    Asesor IA experto en gestión de residuos industriales.
+    Usa RAG + razonamiento avanzado de Claude para responder consultas complejas.
+    """
+    if rag_service is None or _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from anthropic import AsyncAnthropic
+
+    try:
+        # 1. Buscar contexto en el RAG (knowledge + project si hay project_id)
+        scopes = [RAGScope.GENERAL]
+        if request.project_id:
+            scopes.append(RAGScope.PROJECT)
+
+        rag_response = await rag_service.search(
+            query=request.query,
+            project_id=request.project_id,
+            scopes=scopes,
+            top_k_per_scope=8,
+            similarity_threshold=0.60,  # Umbral más bajo para capturar más contexto
+        )
+
+        has_rag_context = bool(rag_response.results)
+
+        # 2. Construir el mensaje del usuario con todo el contexto disponible
+        user_parts = []
+
+        # Contexto RAG
+        if has_rag_context:
+            user_parts.append(
+                "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
+                f"{rag_response.context_text}\n"
+            )
+
+        # Fichero adjunto
+        if request.file_content:
+            label = f" ({request.file_name})" if request.file_name else ""
+            user_parts.append(
+                f"DOCUMENTO ADJUNTO{label}:\n"
+                f"{request.file_content[:15000]}\n"  # Limitar a 15k chars
+            )
+
+        user_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+
+        user_message = "\n---\n".join(user_parts)
+
+        # 3. Construir historial de conversación
+        messages = []
+        for msg in request.conversation_history[-10:]:  # Últimos 10 mensajes
+            messages.append({"role": msg.role, "content": msg.content})
+        messages.append({"role": "user", "content": user_message})
+
+        # 4. Llamar a Claude con razonamiento extendido
+        claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+
+        response = await claude.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=16000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
+            system=ADVISOR_SYSTEM_PROMPT,
+            messages=messages,
+        )
+
+        # Extraer respuesta (puede tener thinking blocks)
+        answer = ""
+        for block in response.content:
+            if block.type == "text":
+                answer = block.text
+                break
+
+        # 5. Preparar fuentes
+        sources = [
+            {
+                "document_id": r.document_id,
+                "title": r.doc_title,
+                "doc_type": r.doc_type,
+                "similarity": round(r.similarity, 3),
+                "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
+                "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
+            }
+            for r in rag_response.results
+        ]
+
+        return AdvisorResponse(
+            answer=answer,
+            sources=sources,
+            rag_context_used=has_rag_context,
+        )
+
+    except Exception as e:
+        logger.error(f"Error en advisor: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════
 # ANALISIS MULTI-AGENTE - LangGraph
 # ═══════════════════════════════════════════════════════════════
 
