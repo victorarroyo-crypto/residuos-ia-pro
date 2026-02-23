@@ -15,6 +15,7 @@ import {
   Link as LinkIcon,
   FileSpreadsheet,
   File,
+  Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -48,6 +49,7 @@ interface ChatMessage {
   sources?: Source[];
   fileNames?: string[];
   ragUsed?: boolean;
+  webSearchUsed?: boolean;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -226,6 +228,7 @@ export default function AdvisorPage() {
         content: data.answer,
         sources: data.sources,
         ragUsed: data.rag_context_used,
+        webSearchUsed: data.web_search_used,
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
@@ -450,36 +453,67 @@ export default function AdvisorPage() {
                       Fuentes consultadas:
                     </p>
                     <div className="space-y-1">
-                      {msg.sources.map((src, j) => (
-                        <div
-                          key={j}
-                          className="flex items-center gap-2 text-xs opacity-70"
-                        >
-                          <FileText className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{src.title}</span>
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] py-0 shrink-0"
+                      {msg.sources.map((src, j) =>
+                        src.scope === "web" ? (
+                          <a
+                            key={j}
+                            href={src.excerpt}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 text-xs opacity-70 hover:opacity-100 transition-opacity"
                           >
-                            {Math.round(src.similarity * 100)}%
-                          </Badge>
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] py-0 shrink-0"
+                            <Globe className="h-3 w-3 shrink-0 text-blue-500" />
+                            <span className="truncate underline">
+                              {src.title || src.excerpt}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] py-0 shrink-0 border-blue-300 text-blue-600"
+                            >
+                              Web
+                            </Badge>
+                          </a>
+                        ) : (
+                          <div
+                            key={j}
+                            className="flex items-center gap-2 text-xs opacity-70"
                           >
-                            {src.scope === "general" ? "KB" : "Proyecto"}
-                          </Badge>
-                        </div>
-                      ))}
+                            <FileText className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{src.title}</span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] py-0 shrink-0"
+                            >
+                              {Math.round(src.similarity * 100)}%
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] py-0 shrink-0"
+                            >
+                              {src.scope === "general" ? "KB" : "Proyecto"}
+                            </Badge>
+                          </div>
+                        )
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* RAG indicator */}
-                {msg.role === "assistant" && msg.ragUsed === false && (
-                  <div className="mt-2 flex items-center gap-1.5 text-xs opacity-60">
-                    <AlertTriangle className="h-3 w-3" />
-                    Respuesta basada en conocimiento experto (sin documentos RAG)
+                {/* Context indicators */}
+                {msg.role === "assistant" && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs opacity-60">
+                    {msg.ragUsed === false && !msg.webSearchUsed && (
+                      <span className="flex items-center gap-1">
+                        <AlertTriangle className="h-3 w-3" />
+                        Respuesta basada en conocimiento experto
+                      </span>
+                    )}
+                    {msg.webSearchUsed && (
+                      <span className="flex items-center gap-1 text-blue-500">
+                        <Globe className="h-3 w-3" />
+                        Busqueda web utilizada
+                      </span>
+                    )}
                   </div>
                 )}
               </div>

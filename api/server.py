@@ -279,6 +279,15 @@ Ante consultas complejas, sigue estos pasos internamente antes de responder:
 4. Estructura tu respuesta de forma clara y accionable
 5. Cita siempre las fuentes normativas específicas (artículo, anexo, ley)
 
+## BÚSQUEDA WEB
+Tienes acceso a búsqueda web. Úsala cuando:
+- La pregunta requiere datos actualizados (precios, normativa reciente, novedades legislativas)
+- No tienes suficiente contexto del RAG ni de los documentos adjuntos
+- El usuario pregunta sobre algo específico que requiere verificación (ej: un gestor concreto, una planta de tratamiento, un BOE reciente)
+- Necesitas confirmar concentraciones límite, umbrales o valores técnicos actuales
+NO uses búsqueda web para preguntas generales que puedes responder con tu conocimiento experto.
+Cuando uses resultados web, indica la fuente.
+
 Responde siempre en español."""
 
 
@@ -567,8 +576,17 @@ async def _run_advisor(
         messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_content_blocks})
 
-    # 6. Call Claude with extended thinking
+    # 6. Call Claude with extended thinking + web search
     claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+
+    # Web search tool: Claude decides when to search the web.
+    # Anthropic executes the search server-side (uses Brave Search).
+    # Cost: ~$0.01 per search. Max 3 searches per query.
+    web_search_tool = {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 3,
+    }
 
     response = await claude.messages.create(
         model="claude-sonnet-4-20250514",
@@ -577,17 +595,29 @@ async def _run_advisor(
             "type": "enabled",
             "budget_tokens": 10000,
         },
+        tools=[web_search_tool],
         system=ADVISOR_SYSTEM_PROMPT,
         messages=messages,
     )
 
+    # Parse response: extract answer text and web search results
     answer = ""
+    web_sources: list[dict] = []
+
     for block in response.content:
         if block.type == "text":
-            answer = block.text
-            break
+            answer = block.text  # Last text block is the final answer
+        elif block.type == "web_search_tool_result":
+            # Extract web search results for source display
+            for item in getattr(block, "content", []):
+                if getattr(item, "type", None) == "web_search_result":
+                    web_sources.append({
+                        "title": getattr(item, "title", ""),
+                        "url": getattr(item, "url", ""),
+                        "scope": "web",
+                    })
 
-    # 7. Sources
+    # 7. Combine RAG sources + web sources
     sources = [
         {
             "document_id": r.document_id,
@@ -600,10 +630,32 @@ async def _run_advisor(
         for r in rag_response.results
     ]
 
+    # Add web sources (deduplicated by URL)
+    seen_urls: set[str] = set()
+    for ws in web_sources:
+        if ws["url"] and ws["url"] not in seen_urls:
+            seen_urls.add(ws["url"])
+            sources.append({
+                "document_id": ws["url"],
+                "title": ws["title"],
+                "doc_type": "web",
+                "similarity": 0,
+                "scope": "web",
+                "excerpt": ws["url"],
+            })
+
+    web_search_used = len(web_sources) > 0
+    logger.info(
+        "Advisor: RAG=%s, web_search=%s (%d results), docs=%d, images=%d",
+        has_rag_context, web_search_used, len(web_sources),
+        len(processed_docs), len(image_blocks),
+    )
+
     return {
         "answer": answer,
         "sources": sources,
         "rag_context_used": has_rag_context,
+        "web_search_used": web_search_used,
     }
 
 
