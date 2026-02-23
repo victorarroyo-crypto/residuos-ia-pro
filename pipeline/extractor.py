@@ -159,55 +159,71 @@ class ContentExtractorImpl(ContentExtractor):
     async def _extract_scanned(
         self, pdf_bytes: bytes
     ) -> tuple[list[PageContent], float]:
-        """Convierte páginas a imagen y aplica OCR."""
-        images = pdf2image.convert_from_bytes(
-            pdf_bytes,
-            dpi=300,                    # resolución óptima para OCR
-            fmt="PNG",
-            thread_count=4,
-        )
+        """Convierte páginas a imagen y aplica OCR (página a página para evitar OOM)."""
+        # Contar páginas sin cargar imágenes
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+
+        MAX_OCR_PAGES = 100
+        pages_to_process = min(total_pages, MAX_OCR_PAGES)
+        if total_pages > MAX_OCR_PAGES:
+            logger.warning(
+                f"Scanned PDF: {total_pages} páginas, "
+                f"limitando OCR a {MAX_OCR_PAGES} para evitar OOM"
+            )
 
         pages = []
         confidences = []
 
-        for i, img in enumerate(images):
-            # Preprocesar imagen para mejorar OCR
-            img_processed = self._preprocess_for_ocr(img)
+        for i in range(pages_to_process):
+            page_num = i + 1
+            try:
+                images = pdf2image.convert_from_bytes(
+                    pdf_bytes, dpi=300, fmt="PNG",
+                    first_page=page_num, last_page=page_num,
+                    thread_count=2,
+                )
+                if not images:
+                    continue
 
-            # OCR con datos de confianza
-            ocr_data = pytesseract.image_to_data(
-                img_processed,
-                config=self.tesseract_config,
-                output_type=pytesseract.Output.DICT,
-            )
-
-            # Extraer texto y calcular confianza media
-            text_parts = []
-            conf_values = []
-            for j, word in enumerate(ocr_data["text"]):
-                conf = int(ocr_data["conf"][j])
-                if conf > 0 and word.strip():
-                    text_parts.append(word)
-                    conf_values.append(conf)
-
-            text = " ".join(text_parts)
-            avg_conf = (sum(conf_values) / len(conf_values) / 100) if conf_values else 0.0
-            confidences.append(avg_conf)
-
-            if avg_conf < MIN_OCR_CONFIDENCE:
-                logger.warning(
-                    f"Página {i+1}: confianza OCR baja ({avg_conf:.2f}). "
-                    "El documento puede estar muy deteriorado."
+                img_processed = self._preprocess_for_ocr(images[0])
+                ocr_data = pytesseract.image_to_data(
+                    img_processed,
+                    config=self.tesseract_config,
+                    output_type=pytesseract.Output.DICT,
                 )
 
-            pages.append(PageContent(
-                page_num=i + 1,
-                text=text,
-                tables=[],              # tablas de escaneados se detectan por texto
-                images=[],
-                nature=PDFNature.SCANNED,
-                confidence=avg_conf,
-            ))
+                text_parts = []
+                conf_values = []
+                for j, word in enumerate(ocr_data["text"]):
+                    conf = int(ocr_data["conf"][j])
+                    if conf > 0 and word.strip():
+                        text_parts.append(word)
+                        conf_values.append(conf)
+
+                text = " ".join(text_parts)
+                avg_conf = (sum(conf_values) / len(conf_values) / 100) if conf_values else 0.0
+                confidences.append(avg_conf)
+
+                if avg_conf < MIN_OCR_CONFIDENCE:
+                    logger.warning(
+                        f"Página {page_num}: confianza OCR baja ({avg_conf:.2f}). "
+                        "El documento puede estar muy deteriorado."
+                    )
+
+                pages.append(PageContent(
+                    page_num=page_num,
+                    text=text,
+                    tables=[],
+                    images=[],
+                    nature=PDFNature.SCANNED,
+                    confidence=avg_conf,
+                ))
+
+                del images, img_processed
+            except Exception as e:
+                logger.warning(f"OCR failed for page {page_num}: {e}")
+                continue
 
         global_confidence = sum(confidences) / len(confidences) if confidences else 0.0
         return pages, global_confidence
@@ -225,13 +241,29 @@ class ContentExtractorImpl(ContentExtractor):
         if not scanned_indices:
             return pages_digital, 1.0
 
-        # OCR solo para las páginas escaneadas
-        images = pdf2image.convert_from_bytes(pdf_bytes, dpi=300, fmt="PNG")
-        ocr_confidences = []
+        # Limitar OCR a máximo 50 páginas para evitar OOM en docs grandes (BREFs, etc.)
+        MAX_OCR_PAGES = 50
+        if len(scanned_indices) > MAX_OCR_PAGES:
+            logger.warning(
+                f"Hybrid PDF: {len(scanned_indices)} páginas necesitan OCR, "
+                f"limitando a {MAX_OCR_PAGES} para evitar OOM"
+            )
+            scanned_indices = scanned_indices[:MAX_OCR_PAGES]
 
+        # OCR página a página (evita cargar todas las imágenes en RAM)
+        ocr_confidences = []
         for idx in scanned_indices:
-            if idx < len(images):
-                img_processed = self._preprocess_for_ocr(images[idx])
+            page_num = idx + 1  # pdf2image usa 1-based
+            try:
+                images = pdf2image.convert_from_bytes(
+                    pdf_bytes, dpi=300, fmt="PNG",
+                    first_page=page_num, last_page=page_num,
+                    thread_count=2,
+                )
+                if not images:
+                    continue
+
+                img_processed = self._preprocess_for_ocr(images[0])
                 ocr_data = pytesseract.image_to_data(
                     img_processed,
                     config=self.tesseract_config,
@@ -249,6 +281,12 @@ class ContentExtractorImpl(ContentExtractor):
                 avg_conf = (sum(conf_values) / len(conf_values) / 100) if conf_values else 0.0
                 pages_digital[idx].confidence = avg_conf
                 ocr_confidences.append(avg_conf)
+
+                # Liberar memoria
+                del images, img_processed
+            except Exception as e:
+                logger.warning(f"OCR failed for page {page_num}: {e}")
+                continue
 
         avg_ocr = sum(ocr_confidences) / len(ocr_confidences) if ocr_confidences else 1.0
         return pages_digital, avg_ocr
