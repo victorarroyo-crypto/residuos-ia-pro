@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -119,9 +119,9 @@ const inputClass =
 export default function ProjectDetailPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id: string };
 }) {
-  const { id } = use(params);
+  const { id } = params;
   const [activeTab, setActiveTab] = useState<TabId>("resumen");
   const [project, setProject] = useState<Project | null>(null);
   const [inventory, setInventory] = useState<WasteInventoryItem[]>([]);
