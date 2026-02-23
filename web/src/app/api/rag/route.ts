@@ -2,6 +2,58 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { loadEnv } from "@/lib/env";
 
+type RpcChunk = {
+  chunk_id: string;
+  document_id: string;
+  contenido: string;
+  chunk_type: string;
+  similarity: number;
+  doc_titulo: string;
+  doc_tipo: string;
+  source?: string;
+};
+
+type RankedChunk = RpcChunk & {
+  lexicalScore: number;
+  finalScore: number;
+  sourceScope: "general" | "project";
+};
+
+async function embedQuery(query: string, openaiKey: string): Promise<number[] | null> {
+  try {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openaiKey}`,
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-large",
+        input: query,
+        dimensions: 1536,
+      }),
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.data?.[0]?.embedding ?? null;
+  } catch {
+    return null;
+  }
+}
+
+
+function cSourceToScope(source?: string): "general" | "project" {
+  return source === "project" ? "project" : "general";
+}
+
+function lexicalScore(text: string, terms: string[]): number {
+  if (terms.length === 0) return 0;
+  const lower = (text || "").toLowerCase();
+  const hits = terms.filter((t) => lower.includes(t)).length;
+  return hits / terms.length;
+}
+
 export async function POST(request: NextRequest) {
   const admin = getAdminClient();
   if (!admin.ok) {
@@ -11,7 +63,9 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const query = body.query as string;
-    const topK = (body.top_k as number) || 5;
+    const topK = Math.max(1, Math.min((body.top_k as number) || 5, 15));
+    const scope = (body.scope as "general" | "project" | "combined") || "general";
+    const projectId = body.project_id as string | undefined;
 
     if (!query) {
       return NextResponse.json(
@@ -20,56 +74,75 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sb = admin.client;
+    const openaiKey = loadEnv("OPENAI_API_KEY");
+    if (!openaiKey) {
+      return NextResponse.json(
+        {
+          error:
+            "OPENAI_API_KEY no configurada. La ruta /api/rag requiere embeddings para búsqueda semántica.",
+        },
+        { status: 503 }
+      );
+    }
 
-    // Text-based search across chunks
+    const queryEmbedding = await embedQuery(query, openaiKey);
+    if (!queryEmbedding) {
+      return NextResponse.json(
+        { error: "No se pudo generar el embedding de la consulta." },
+        { status: 502 }
+      );
+    }
+
+    const sb = admin.client;
     const searchTerms = query
       .toLowerCase()
       .split(/\s+/)
       .filter((t) => t.length > 2)
-      .slice(0, 8);
+      .slice(0, 10);
 
-    // Search chunks using ilike for each significant term
-    const scope = (body.scope as string) || "general";
-    const projectId = body.project_id as string | undefined;
+    let rpcRows: RpcChunk[] = [];
+    const candidateLimit = Math.max(topK * 8, 20);
+    const threshold = 0.5;
 
-    // Select the appropriate table based on scope
-    const chunksTable = scope === "project" ? "project_chunks" : "knowledge_chunks";
-
-    let chunkQuery = sb
-      .from(chunksTable)
-      .select("id, document_id, contenido, chunk_type, metadata")
-      .limit(topK * 3);
-
-    // For project scope, filter by project ownership
-    if (scope === "project" && projectId) {
-      const { data: projectDocs } = await sb
-        .from("project_documents")
-        .select("id")
-        .eq("project_id", projectId);
-      const docIds = (projectDocs || []).map((d) => d.id);
-      if (docIds.length > 0) {
-        chunkQuery = chunkQuery.in("document_id", docIds);
-      } else {
-        // No docs for this project → empty result
-        return NextResponse.json({
-          answer: "No hay documentos indexados para este proyecto.",
-          sources: [],
-        });
+    if (scope === "project") {
+      if (!projectId) {
+        return NextResponse.json(
+          { error: "scope=project requiere project_id" },
+          { status: 400 }
+        );
       }
+      const { data, error } = await sb.rpc("search_project", {
+        query_embedding: queryEmbedding,
+        p_project_id: projectId,
+        doc_type_filter: null,
+        match_threshold: threshold,
+        match_count: candidateLimit,
+      });
+      if (error) throw new Error(error.message);
+      rpcRows = (data || []) as RpcChunk[];
+    } else if (scope === "combined") {
+      const { data, error } = await sb.rpc("search_combined", {
+        query_embedding: queryEmbedding,
+        p_project_id: projectId || null,
+        doc_type_filter: null,
+        match_threshold: threshold,
+        match_count_kb: candidateLimit,
+        match_count_project: candidateLimit,
+      });
+      if (error) throw new Error(error.message);
+      rpcRows = (data || []) as RpcChunk[];
+    } else {
+      const { data, error } = await sb.rpc("search_knowledge", {
+        query_embedding: queryEmbedding,
+        doc_type_filter: null,
+        match_threshold: threshold,
+        match_count: candidateLimit,
+      });
+      if (error) throw new Error(error.message);
+      rpcRows = (data || []) as RpcChunk[];
     }
 
-    if (searchTerms.length > 0) {
-      // Use OR filter matching any term
-      const orFilters = searchTerms
-        .map((term) => `contenido.ilike.%${term}%`)
-        .join(",");
-      chunkQuery = chunkQuery.or(orFilters);
-    }
-
-    const { data: chunks } = await chunkQuery.limit(topK * 3);
-
-    if (!chunks || chunks.length === 0) {
+    if (rpcRows.length === 0) {
       return NextResponse.json({
         answer:
           "No encontre informacion relevante en la base de conocimiento para esta consulta. Intenta reformular la pregunta o verifica que hay documentos indexados.",
@@ -77,93 +150,94 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Score chunks by how many terms they match
-    const scored = (chunks || []).map((chunk) => {
-      const lower = (chunk.contenido || "").toLowerCase();
-      const hits = searchTerms.filter((t) => lower.includes(t)).length;
-      return { ...chunk, score: hits / Math.max(searchTerms.length, 1) };
+    // Re-ranking ligero: mezcla de score semántico (vector) + score léxico (términos).
+    const ranked: RankedChunk[] = rpcRows.map((row) => {
+      const lex = lexicalScore(row.contenido || "", searchTerms);
+      const sem = Number.isFinite(row.similarity) ? row.similarity : 0;
+      return {
+        ...row,
+        lexicalScore: lex,
+        finalScore: sem * 0.8 + lex * 0.2,
+        sourceScope:
+          scope === "combined"
+            ? cSourceToScope(row.source)
+            : scope,
+      };
     });
-    scored.sort((a, b) => b.score - a.score);
-    const topChunks = scored.slice(0, topK);
 
-    // Get document titles for sources
-    const docsTable = scope === "project" ? "project_documents" : "knowledge_documents";
-    const docIds = Array.from(new Set(topChunks.map((c) => c.document_id)));
-    const { data: docs } = await sb
-      .from(docsTable)
-      .select("id, titulo, tipo")
-      .in("id", docIds);
+    ranked.sort((a, b) => b.finalScore - a.finalScore);
+    const topChunks = ranked.slice(0, topK);
 
-    const docMap = new Map(
-      (docs || []).map((d) => [d.id, { titulo: d.titulo, tipo: d.tipo }])
-    );
-
-    // Build context and sources
     const context = topChunks
       .map(
         (c, i) =>
-          `[Fuente ${i + 1}] ${docMap.get(c.document_id)?.titulo || "Documento"}\n${c.contenido}`
+          `[Fuente ${i + 1}] ${c.doc_titulo || "Documento"} (score: ${c.finalScore.toFixed(3)})\n${c.contenido}`
       )
       .join("\n\n---\n\n");
 
     const sources = topChunks.map((c) => ({
       document_id: c.document_id,
-      title: docMap.get(c.document_id)?.titulo || "Documento",
-      doc_type: docMap.get(c.document_id)?.tipo || "desconocido",
+      title: c.doc_titulo || "Documento",
+      doc_type: c.doc_tipo || "desconocido",
       chunk_type: c.chunk_type || "texto",
-      similarity: c.score,
-      scope,
+      similarity: c.finalScore,
+      semantic_similarity: c.similarity,
+      lexical_similarity: c.lexicalScore,
+      scope: c.sourceScope,
       excerpt:
         (c.contenido || "").substring(0, 200) +
         ((c.contenido || "").length > 200 ? "..." : ""),
     }));
 
-    // If OpenAI key is available, use GPT to synthesize an answer
-    const openaiKey = loadEnv("OPENAI_API_KEY");
-    if (openaiKey) {
-      try {
-        const gptRes = await fetch(
-          "https://api.openai.com/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${openaiKey}`,
+    try {
+      const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Eres un asistente experto en gestion de residuos industriales en Espana. Responde basandote UNICAMENTE en el contexto proporcionado. Si no encuentras la respuesta en el contexto, dilo claramente. Cita las fuentes por numero [Fuente N].",
             },
-            body: JSON.stringify({
-              model: "gpt-4o-mini",
-              messages: [
-                {
-                  role: "system",
-                  content: `Eres un asistente experto en gestion de residuos industriales en Espana. Responde basandote UNICAMENTE en el contexto proporcionado. Si no encuentras la respuesta en el contexto, dilo claramente. Cita las fuentes por numero [Fuente N].`,
-                },
-                {
-                  role: "user",
-                  content: `Contexto:\n${context}\n\n---\nPregunta: ${query}`,
-                },
-              ],
-              temperature: 0.3,
-              max_tokens: 1000,
-            }),
-          }
-        );
+            {
+              role: "user",
+              content: `Contexto:\n${context}\n\n---\nPregunta: ${query}`,
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 1000,
+        }),
+      });
 
-        if (gptRes.ok) {
-          const gptData = await gptRes.json();
-          return NextResponse.json({
-            answer: gptData.choices[0].message.content,
-            sources,
-          });
-        }
-      } catch {
-        // Fall through to text-based answer
+      if (gptRes.ok) {
+        const gptData = await gptRes.json();
+        return NextResponse.json({
+          answer: gptData.choices[0].message.content,
+          sources,
+          retrieval: {
+            mode: "semantic_with_rerank",
+            candidates: rpcRows.length,
+            top_k: topK,
+          },
+        });
       }
+    } catch {
+      // Fall through to text-based answer
     }
 
-    // Fallback: return raw context
     return NextResponse.json({
       answer: `Basado en los documentos indexados, encontre la siguiente informacion relevante:\n\n${topChunks.map((c, i) => `**[Fuente ${i + 1}]** ${(c.contenido || "").substring(0, 300)}...`).join("\n\n")}`,
       sources,
+      retrieval: {
+        mode: "semantic_with_rerank",
+        candidates: rpcRows.length,
+        top_k: topK,
+      },
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

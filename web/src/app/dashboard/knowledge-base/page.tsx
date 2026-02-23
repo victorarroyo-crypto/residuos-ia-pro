@@ -25,6 +25,7 @@ import {
   ToggleLeft,
   ToggleRight,
   Activity,
+  File,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
+import type { PipelineProgress } from "@/types/database";
 
 // ─── Types ──────────────────────────────────────────────────
 interface KBDocument {
@@ -129,6 +131,61 @@ const knowledgeTypeLabels: Record<string, string> = {
 const ACCEPTED_EXTENSIONS =
   ".pdf,.docx,.doc,.txt,.html,.htm,.md,.xlsx,.xls,.csv";
 
+const stepOrder = [
+  "subiendo",
+  "detectando_tipo",
+  "extrayendo_contenido",
+  "clasificando_documento",
+  "fragmentando",
+  "generando_embeddings",
+  "extrayendo_metadatos",
+  "almacenando",
+  "completado",
+] as const;
+
+const stepLabels: Record<string, string> = {
+  iniciando: "Iniciando...",
+  subiendo: "Subiendo archivo...",
+  detectando_tipo: "Detectando tipo de documento",
+  extrayendo_contenido: "Extrayendo contenido",
+  clasificando_documento: "Clasificando documento",
+  fragmentando: "Fragmentando en chunks",
+  generando_embeddings: "Generando embeddings",
+  extrayendo_metadatos: "Extrayendo metadatos",
+  almacenando: "Almacenando en Supabase",
+  completado: "Completado",
+  error: "Error",
+};
+
+interface UploadFileState {
+  file: File;
+  status: "uploading" | "processing" | "done" | "error";
+  progress: PipelineProgress | null;
+  error: string | null;
+}
+
+async function computeDocId(file: File, ragScope = "general"): Promise<string> {
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const encoder = new TextEncoder();
+  const scopeBytes = encoder.encode(ragScope);
+
+  const all = new Uint8Array(bytes.length + scopeBytes.length);
+  all.set(bytes, 0);
+  all.set(scopeBytes, bytes.length);
+
+  const digest = await crypto.subtle.digest("SHA-256", all);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  if (["xlsx", "xls", "csv"].includes(ext)) {
+    return `xls_${hex.slice(0, 12)}`;
+  }
+
+  return `doc_${hex.slice(0, 16)}`;
+}
+
 function formatBytes(bytes: number | null): string {
   if (!bytes) return "---";
   if (bytes < 1024) return `${bytes} B`;
@@ -164,6 +221,7 @@ export default function KnowledgeBasePage() {
     success: boolean;
     message: string;
   } | null>(null);
+  const [uploadFiles, setUploadFiles] = useState<UploadFileState[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Chat state
@@ -193,6 +251,52 @@ export default function KnowledgeBasePage() {
     message: string;
     details?: SyncDetail[];
   } | null>(null);
+
+  useEffect(() => {
+    if (uploadFiles.length === 0) return;
+
+    const supabase = createClient();
+    const trackedDocIds = new Set(
+      uploadFiles.map((f) => f.progress?.doc_id).filter(Boolean)
+    );
+
+    const channel = supabase
+      .channel("pipeline-progress-kb")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "pipeline_progress",
+        },
+        (payload) => {
+          const progress = payload.new as PipelineProgress;
+          if (!progress?.doc_id || !trackedDocIds.has(progress.doc_id)) return;
+
+          setUploadFiles((prev) =>
+            prev.map((f) => {
+              if (f.progress?.doc_id !== progress.doc_id) return f;
+              return {
+                ...f,
+                progress,
+                status:
+                  progress.step === "completado"
+                    ? "done"
+                    : progress.error
+                    ? "error"
+                    : "processing",
+                error: progress.error,
+              };
+            })
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [uploadFiles]);
 
   // ─── Init: load user + GDrive status ─────────────────────
   useEffect(() => {
@@ -412,11 +516,51 @@ export default function KnowledgeBasePage() {
 
     let successCount = 0;
     let errorCount = 0;
+    const selectedFiles = Array.from(files);
 
-    for (const file of Array.from(files)) {
+    const initialStates: UploadFileState[] = await Promise.all(
+      selectedFiles.map(async (file) => {
+        const docId = await computeDocId(file, "general");
+        return {
+          file,
+          status: "uploading" as const,
+          progress: {
+            doc_id: docId,
+            step: "subiendo",
+            percentage: 5,
+            mensaje: "Subiendo archivo...",
+            error: null,
+            updated_at: null,
+          },
+          error: null,
+        };
+      })
+    );
+    setUploadFiles(initialStates);
+
+    for (const fileState of initialStates) {
       const formData = new FormData();
-      formData.append("file", file);
+      formData.append("file", fileState.file);
       formData.append("rag_scope", "general");
+
+      setUploadFiles((prev) =>
+        prev.map((f) =>
+          f.progress?.doc_id === fileState.progress?.doc_id
+            ? {
+                ...f,
+                status: "processing",
+                progress: {
+                  doc_id: fileState.progress?.doc_id || "",
+                  step: "detectando_tipo",
+                  percentage: 10,
+                  mensaje: "Enviado al pipeline, procesando...",
+                  error: null,
+                  updated_at: null,
+                },
+              }
+            : f
+        )
+      );
 
       try {
         const res = await fetch("/api/ingest", {
@@ -425,11 +569,60 @@ export default function KnowledgeBasePage() {
         });
         if (res.ok) {
           successCount++;
+          setUploadFiles((prev) =>
+            prev.map((f) =>
+              f.progress?.doc_id === fileState.progress?.doc_id
+                ? {
+                    ...f,
+                    status: "done",
+                    progress: {
+                      doc_id: fileState.progress?.doc_id || "",
+                      step: "completado",
+                      percentage: 100,
+                      mensaje: "Completado",
+                      error: null,
+                      updated_at: null,
+                    },
+                  }
+                : f
+            )
+          );
         } else {
           errorCount++;
+          const errorData = await res.json().catch(() => ({}));
+          setUploadFiles((prev) =>
+            prev.map((f) =>
+              f.progress?.doc_id === fileState.progress?.doc_id
+                ? {
+                    ...f,
+                    status: "error",
+                    error: errorData?.error || errorData?.detail || "Error al procesar",
+                    progress: {
+                      doc_id: fileState.progress?.doc_id || "",
+                      step: "error",
+                      percentage: 0,
+                      mensaje: null,
+                      error: errorData?.error || "Error",
+                      updated_at: null,
+                    },
+                  }
+                : f
+            )
+          );
         }
       } catch {
         errorCount++;
+        setUploadFiles((prev) =>
+          prev.map((f) =>
+            f.progress?.doc_id === fileState.progress?.doc_id
+              ? {
+                  ...f,
+                  status: "error",
+                  error: "Error de conexion con el pipeline",
+                }
+              : f
+          )
+        );
       }
     }
 
@@ -823,6 +1016,70 @@ export default function KnowledgeBasePage() {
             <X className="h-4 w-4" />
           </button>
         </div>
+      )}
+
+      {uploadFiles.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Progreso de subida (RAG General)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {uploadFiles.map((fileState) => (
+              <div
+                key={`${fileState.file.name}-${fileState.progress?.doc_id ?? "no-doc"}`}
+                className="rounded-md border p-3"
+              >
+                <div className="flex items-start gap-2">
+                  <File className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                  <div className="flex-1">
+                    <div className="text-sm font-medium">{fileState.file.name}</div>
+                    {fileState.progress && (
+                      <>
+                        <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{stepLabels[fileState.progress.step] ?? fileState.progress.step}</span>
+                          <span>{fileState.progress.percentage}%</span>
+                        </div>
+                        <div className="mt-1 h-2 w-full rounded-full bg-muted">
+                          <div
+                            className="h-2 rounded-full bg-vandarum-teal transition-all"
+                            style={{ width: `${fileState.progress.percentage}%` }}
+                          />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {stepOrder.map((step) => {
+                            const current = stepOrder.indexOf(
+                              fileState.progress!.step as (typeof stepOrder)[number]
+                            );
+                            const idx = stepOrder.indexOf(step);
+                            const isCurrent = fileState.progress?.step === step;
+                            const isDone = current >= 0 && idx < current;
+                            return (
+                              <span
+                                key={`${fileState.progress?.doc_id}-${step}`}
+                                className={`rounded-full px-2 py-0.5 text-[10px] border ${
+                                  isCurrent
+                                    ? "bg-vandarum-blue/15 border-vandarum-blue text-vandarum-blue"
+                                    : isDone
+                                    ? "bg-vandarum-green/15 border-vandarum-green text-vandarum-green"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                {stepLabels[step]}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                    {fileState.error && (
+                      <p className="mt-1 text-xs text-destructive">{fileState.error}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       {ingestResult && (
