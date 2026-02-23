@@ -15,7 +15,9 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("residusia")
+logger.setLevel(logging.INFO)
 
 # Ensure the project root is in the Python path (works locally and in Docker)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
