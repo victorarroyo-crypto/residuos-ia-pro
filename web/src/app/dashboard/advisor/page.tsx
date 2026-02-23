@@ -53,8 +53,8 @@ interface ChatMessage {
 
 interface FileAttachment {
   name: string;
-  type: "image" | "document";
-  content: string; // base64 for images, extracted text for documents
+  type: "image" | "document" | "binary";
+  content: string; // base64 for images/binaries, extracted text for documents
   mime_type?: string; // for images
   size: number;
 }
@@ -110,31 +110,15 @@ async function processFile(file: File): Promise<FileAttachment> {
     };
   }
 
-  // Binary files (PDF, DOCX, XLSX, etc.) → send description
-  try {
-    const text = await file.text();
-    if (text.includes("\x00") || text.includes("�")) {
-      return {
-        name: file.name,
-        type: "document",
-        content: `[Archivo binario: ${file.name} (${(file.size / 1024).toFixed(1)} KB) - El contenido ha sido adjuntado para procesamiento. Describe su contenido en tu pregunta para obtener mejor ayuda.]`,
-        size: file.size,
-      };
-    }
-    return {
-      name: file.name,
-      type: "document",
-      content: text.slice(0, MAX_TEXT_PER_FILE),
-      size: file.size,
-    };
-  } catch {
-    return {
-      name: file.name,
-      type: "document",
-      content: `[Archivo: ${file.name} - No se pudo leer el contenido]`,
-      size: file.size,
-    };
-  }
+  // Binary files (PDF, DOCX, XLSX, etc.) → send as base64 for server-side extraction
+  const base64 = await fileToBase64(file);
+  return {
+    name: file.name,
+    type: "binary",
+    content: base64,
+    mime_type: file.type || "application/octet-stream",
+    size: file.size,
+  };
 }
 
 function getFileIcon(fileName: string) {
