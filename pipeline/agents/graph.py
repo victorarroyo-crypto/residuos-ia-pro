@@ -1,19 +1,24 @@
 """
 GRAFO DE ANALISIS - LangGraph
 ================================
-Define el grafo dirigido que orquesta todos los agentes.
+Define el grafo dirigido que orquesta los agentes seleccionados
+por el consultor.
 
 Flujo:
   load_project_data
         |
         v
-  [AAI, Contratos, Facturas, Registro, Normativo]  (paralelo)
+  [agentes seleccionados]  (paralelo)
         |
         v
     Optimizador
         |
         v
      Redactor
+
+Los agentes especializados (aai, contratos, facturas, registro, normativo)
+son opcionales. El consultor elige cuales ejecutar.
+Optimizador y Redactor siempre se ejecutan.
 """
 
 import asyncio
@@ -33,6 +38,17 @@ from .agent_optimizador import agent_optimizador
 from .agent_redactor import agent_redactor
 
 logger = logging.getLogger(__name__)
+
+# Mapa de agentes disponibles
+AGENT_MAP = {
+    "aai": ("aai_findings", agent_aai),
+    "contratos": ("contratos_findings", agent_contratos),
+    "facturas": ("facturas_findings", agent_facturas),
+    "registro": ("registro_findings", agent_registro),
+    "normativo": ("normativo_findings", agent_normativo),
+}
+
+ALL_AGENT_IDS = list(AGENT_MAP.keys())
 
 
 # ─── Wrappers sync para nodos que son async ─────────────────────────
@@ -56,26 +72,6 @@ def _node_load(state: AnalysisState) -> dict:
     return load_project_data(state)
 
 
-def _node_aai(state: AnalysisState) -> dict:
-    return _run_async(agent_aai(state))
-
-
-def _node_contratos(state: AnalysisState) -> dict:
-    return _run_async(agent_contratos(state))
-
-
-def _node_facturas(state: AnalysisState) -> dict:
-    return _run_async(agent_facturas(state))
-
-
-def _node_registro(state: AnalysisState) -> dict:
-    return _run_async(agent_registro(state))
-
-
-def _node_normativo(state: AnalysisState) -> dict:
-    return _run_async(agent_normativo(state))
-
-
 def _node_optimizador(state: AnalysisState) -> dict:
     return _run_async(agent_optimizador(state))
 
@@ -92,51 +88,78 @@ def _should_continue_after_load(state: AnalysisState) -> str:
     return "analysis"
 
 
-# ─── Fan-out node: ejecuta los 5 agentes en paralelo ────────────────
+# ─── Fan-out node: ejecuta solo los agentes seleccionados ───────────
 
-def _node_parallel_analysis(state: AnalysisState) -> dict:
-    """Ejecuta AAI, Contratos, Facturas, Registro y Normativo en paralelo."""
+def _make_parallel_node(agent_ids: list[str]):
+    """Crea un nodo que ejecuta solo los agentes seleccionados en paralelo."""
 
-    async def _run_all():
-        results = await asyncio.gather(
-            agent_aai(state),
-            agent_contratos(state),
-            agent_facturas(state),
-            agent_registro(state),
-            agent_normativo(state),
-            return_exceptions=True,
-        )
-        return results
+    def _node_parallel_analysis(state: AnalysisState) -> dict:
+        selected = [
+            (key, fn)
+            for aid in agent_ids
+            if aid in AGENT_MAP
+            for key, fn in [AGENT_MAP[aid]]
+        ]
 
-    results = _run_async(_run_all())
+        if not selected:
+            return {"errors": list(state.get("errors", [])) + ["No hay agentes seleccionados"]}
 
-    # Merge results
-    merged: dict[str, Any] = {"errors": list(state.get("errors", []))}
-    keys = ["aai_findings", "contratos_findings", "facturas_findings", "registro_findings", "normativo_findings"]
+        async def _run_all():
+            tasks = [fn(state) for _, fn in selected]
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
-    for i, key in enumerate(keys):
-        result = results[i]
-        if isinstance(result, Exception):
-            merged["errors"].append(f"Error en agente {key}: {result}")
-            merged[key] = []
-        elif isinstance(result, dict):
-            merged[key] = result.get(key, [])
-            merged["errors"].extend(result.get("errors", []))
-        else:
-            merged[key] = []
+        results = _run_async(_run_all())
 
-    return merged
+        # Merge results
+        merged: dict[str, Any] = {"errors": list(state.get("errors", []))}
+
+        # Inicializar todos los findings keys a lista vacia
+        for key, _ in AGENT_MAP.values():
+            if not isinstance(key, str):
+                continue
+        for aid in ALL_AGENT_IDS:
+            findings_key = AGENT_MAP[aid][0]
+            merged[findings_key] = []
+
+        # Rellenar con resultados reales
+        for i, (findings_key, _) in enumerate(selected):
+            result = results[i]
+            if isinstance(result, Exception):
+                merged["errors"].append(f"Error en agente {findings_key}: {result}")
+            elif isinstance(result, dict):
+                merged[findings_key] = result.get(findings_key, [])
+                merged["errors"].extend(result.get("errors", []))
+
+        return merged
+
+    return _node_parallel_analysis
 
 
 # ─── Construccion del grafo ──────────────────────────────────────────
 
-def build_analysis_graph() -> StateGraph:
-    """Construye y compila el grafo de analisis."""
+def build_analysis_graph(agent_ids: list[str] | None = None) -> StateGraph:
+    """Construye y compila el grafo de analisis.
+
+    Args:
+        agent_ids: Lista de agentes a ejecutar. None = todos.
+                   Valores validos: "aai", "contratos", "facturas", "registro", "normativo"
+                   Optimizador y Redactor siempre se ejecutan.
+    """
+    if agent_ids is None:
+        agent_ids = ALL_AGENT_IDS
+
+    # Filtrar solo IDs validos
+    agent_ids = [aid for aid in agent_ids if aid in AGENT_MAP]
+    if not agent_ids:
+        agent_ids = ALL_AGENT_IDS
+
+    logger.info(f"Grafo configurado con agentes: {agent_ids}")
+
     graph = StateGraph(AnalysisState)
 
     # Nodos
     graph.add_node("load", _node_load)
-    graph.add_node("analysis", _node_parallel_analysis)
+    graph.add_node("analysis", _make_parallel_node(agent_ids))
     graph.add_node("optimizador", _node_optimizador)
     graph.add_node("redactor", _node_redactor)
 
@@ -160,16 +183,24 @@ async def run_project_analysis(
     supabase_key: str,
     anthropic_api_key: str,
     openai_api_key: str = "",
+    agents: list[str] | None = None,
 ) -> dict:
-    """Ejecuta el analisis completo de un proyecto.
+    """Ejecuta el analisis de un proyecto con los agentes seleccionados.
+
+    Args:
+        agents: Lista de agentes a ejecutar. None = todos.
+                Valores: "aai", "contratos", "facturas", "registro", "normativo"
 
     Retorna dict con:
       - report: str (informe Markdown)
       - findings: list[Finding] (todos los hallazgos)
       - opportunities: list[Finding] (oportunidades priorizadas)
       - errors: list[str]
+      - agents_used: list[str]
     """
-    graph = build_analysis_graph()
+    graph = build_analysis_graph(agents)
+
+    used_agents = agents if agents else ALL_AGENT_IDS
 
     initial_state: AnalysisState = {
         "project_id": project_id,
@@ -180,7 +211,7 @@ async def run_project_analysis(
         "errors": [],
     }
 
-    logger.info(f"Iniciando analisis del proyecto {project_id}")
+    logger.info(f"Iniciando analisis del proyecto {project_id} con agentes: {used_agents}")
 
     # Invoke el grafo sincronamente (LangGraph maneja internamente)
     final_state = graph.invoke(initial_state)
@@ -195,6 +226,7 @@ async def run_project_analysis(
         "findings": all_findings,
         "opportunities": final_state.get("opportunities", []),
         "errors": final_state.get("errors", []),
+        "agents_used": used_agents,
         "aai_findings": final_state.get("aai_findings", []),
         "contratos_findings": final_state.get("contratos_findings", []),
         "facturas_findings": final_state.get("facturas_findings", []),

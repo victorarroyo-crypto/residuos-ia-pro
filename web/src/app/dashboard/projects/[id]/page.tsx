@@ -83,6 +83,16 @@ const tabs: { id: TabId; label: string; icon: typeof LayoutList }[] = [
 
 // ─── Analysis types ──────────────────────────────────────────────────
 
+type AgentId = "aai" | "contratos" | "facturas" | "registro" | "normativo";
+
+const AVAILABLE_AGENTS: { id: AgentId; label: string; description: string }[] = [
+  { id: "aai", label: "AAI", description: "Autorizacion ambiental: LERs autorizados, limites, condiciones" },
+  { id: "contratos", label: "Contratos", description: "Vencimientos, precios vs mercado, gestores" },
+  { id: "facturas", label: "Facturas", description: "Anomalias de precio, cantidades, tendencias" },
+  { id: "registro", label: "Registro", description: "Plazos almacenamiento, DARI, libro cronologico" },
+  { id: "normativo", label: "Normativo", description: "Normativa aplicable por sector y CCAA" },
+];
+
 interface AnalysisFinding {
   tipo: string;
   descripcion: string;
@@ -123,6 +133,9 @@ export default function ProjectDetailPage({
   const [loading, setLoading] = useState(true);
 
   // Analysis state
+  const [selectedAgents, setSelectedAgents] = useState<Set<AgentId>>(
+    new Set(AVAILABLE_AGENTS.map((a) => a.id))
+  );
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -252,7 +265,25 @@ export default function ProjectDetailPage({
 
   // ─── Analysis handler ──────────────────────────────────────────────
 
+  function toggleAgent(agentId: AgentId) {
+    setSelectedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) {
+        next.delete(agentId);
+      } else {
+        next.add(agentId);
+      }
+      return next;
+    });
+  }
+
   async function runAnalysis() {
+    if (selectedAgents.size === 0) {
+      setAnalysisError("Selecciona al menos un agente para el analisis");
+      setActiveTab("analisis");
+      return;
+    }
+
     setAnalysisRunning(true);
     setAnalysisError(null);
     setAnalysisResult(null);
@@ -262,7 +293,10 @@ export default function ProjectDetailPage({
       const response = await fetch("/api/analyze-project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: id }),
+        body: JSON.stringify({
+          project_id: id,
+          agents: Array.from(selectedAgents),
+        }),
       });
 
       const data = await response.json();
@@ -1118,6 +1152,60 @@ export default function ProjectDetailPage({
       {/* ═══ Tab: Analisis IA ═══ */}
       {activeTab === "analisis" && (
         <div className="space-y-6">
+          {/* Agent selector - always visible when not running */}
+          {!analysisRunning && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Sparkles className="h-5 w-5 text-vandarum-teal" />
+                  Configurar analisis
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Selecciona que agentes quieres ejecutar. Optimizador y Redactor se ejecutan automaticamente con los hallazgos de los agentes seleccionados.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {AVAILABLE_AGENTS.map((agent) => (
+                    <label
+                      key={agent.id}
+                      className={cn(
+                        "flex items-start gap-3 rounded-md border p-3 cursor-pointer transition-colors",
+                        selectedAgents.has(agent.id)
+                          ? "border-vandarum-teal bg-vandarum-teal/5"
+                          : "border-muted hover:border-muted-foreground/30"
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedAgents.has(agent.id)}
+                        onChange={() => toggleAgent(agent.id)}
+                        className="mt-0.5 accent-[var(--vandarum-teal)]"
+                      />
+                      <div>
+                        <p className="text-sm font-medium">{agent.label}</p>
+                        <p className="text-xs text-muted-foreground">{agent.description}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button
+                    className="bg-gradient-brand text-white hover:opacity-90"
+                    onClick={runAnalysis}
+                    disabled={selectedAgents.size === 0}
+                  >
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    Lanzar analisis ({selectedAgents.size + 2} agentes)
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {selectedAgents.size} especializados + Optimizador + Redactor
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Running state */}
           {analysisRunning && (
             <Card className="border-vandarum-teal/30">
@@ -1125,15 +1213,16 @@ export default function ProjectDetailPage({
                 <Loader2 className="mx-auto h-10 w-10 animate-spin text-vandarum-teal mb-4" />
                 <p className="text-lg font-medium">Analizando proyecto...</p>
                 <p className="text-sm text-muted-foreground mt-2">
-                  7 agentes especializados estan revisando los documentos, contratos,
-                  facturas, inventario y normativa aplicable. Esto puede tardar 1-2 minutos.
+                  {selectedAgents.size + 2} agentes trabajando. Esto puede tardar 1-2 minutos.
                 </p>
                 <div className="flex flex-wrap justify-center gap-2 mt-4">
-                  {["AAI", "Contratos", "Facturas", "Registro", "Normativo", "Optimizador", "Redactor"].map((name) => (
-                    <Badge key={name} variant="secondary" className="animate-pulse">
-                      {name}
+                  {AVAILABLE_AGENTS.filter((a) => selectedAgents.has(a.id)).map((a) => (
+                    <Badge key={a.id} variant="secondary" className="animate-pulse">
+                      {a.label}
                     </Badge>
                   ))}
+                  <Badge variant="secondary" className="animate-pulse">Optimizador</Badge>
+                  <Badge variant="secondary" className="animate-pulse">Redactor</Badge>
                 </div>
               </CardContent>
             </Card>
@@ -1145,28 +1234,6 @@ export default function ProjectDetailPage({
               <CardContent className="py-8 text-center">
                 <AlertTriangle className="mx-auto h-8 w-8 text-red-500 mb-3" />
                 <p className="text-sm text-destructive">{analysisError}</p>
-                <Button variant="outline" size="sm" className="mt-4" onClick={runAnalysis}>
-                  Reintentar
-                </Button>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* No analysis yet */}
-          {!analysisResult && !analysisRunning && !analysisError && (
-            <Card>
-              <CardContent className="py-12 text-center">
-                <Sparkles className="mx-auto h-10 w-10 text-muted-foreground/50 mb-3" />
-                <p className="text-lg font-medium">Analisis integral con IA</p>
-                <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto">
-                  7 agentes especializados analizaran los documentos del proyecto:
-                  AAI, contratos, facturas, registros, normativa aplicable,
-                  oportunidades de ahorro e informe ejecutivo.
-                </p>
-                <Button className="mt-4 bg-gradient-brand text-white hover:opacity-90" onClick={runAnalysis}>
-                  <Sparkles className="mr-2 h-4 w-4" />
-                  Lanzar analisis
-                </Button>
               </CardContent>
             </Card>
           )}

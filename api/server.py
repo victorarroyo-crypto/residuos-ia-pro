@@ -240,14 +240,15 @@ async def rag_query(request: RAGQueryRequest):
 
 class AnalyzeRequest(BaseModel):
     project_id: str
+    agents: Optional[list[str]] = None  # None = all agents
 
 
 @app.post("/api/analyze")
 async def analyze_project(request: AnalyzeRequest):
     """
     Lanza el analisis multi-agente (LangGraph) para un proyecto.
-    Ejecuta 7 agentes: AAI, Contratos, Facturas, Registro, Normativo,
-    Optimizador y Redactor. Retorna hallazgos, oportunidades e informe.
+    El consultor elige que agentes ejecutar via el campo 'agents'.
+    Optimizador y Redactor siempre se ejecutan con los hallazgos disponibles.
     """
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -261,6 +262,7 @@ async def analyze_project(request: AnalyzeRequest):
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
+            agents=request.agents,
         )
         return result
     except Exception as e:

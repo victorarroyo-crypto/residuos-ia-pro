@@ -8,13 +8,14 @@ const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
  * Lanza el analisis multi-agente (LangGraph) para un proyecto.
  * Delega al servidor Python que ejecuta el grafo completo.
  *
- * Body: { project_id: string }
+ * Body: { project_id: string, agents?: string[] }
  * Response: { report, findings, opportunities, errors }
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const projectId = body.project_id as string;
+    const agents = body.agents as string[] | undefined;
 
     if (!projectId) {
       return NextResponse.json(
@@ -23,10 +24,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const payload: Record<string, unknown> = { project_id: projectId };
+    if (agents && agents.length > 0) {
+      payload.agents = agents;
+    }
+
     const response = await fetch(`${PIPELINE_URL}/api/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projectId }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
