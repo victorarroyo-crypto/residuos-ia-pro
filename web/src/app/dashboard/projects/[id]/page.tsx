@@ -18,6 +18,8 @@ import {
   Check,
   CheckCircle2,
   LayoutList,
+  FileSignature,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +40,8 @@ import type {
   ProjectDocument,
   ComplianceAlert,
   SavingsOpportunity,
+  Contract,
+  WasteManager,
 } from "@/types/database";
 
 // ─── Constants ────────────────────────────────────────────────────────
@@ -65,15 +69,37 @@ const severityColors: Record<string, "danger" | "warning" | "secondary" | "destr
   baja: "secondary",
 };
 
-type TabId = "resumen" | "documentos" | "inventario" | "alertas" | "ahorros";
+type TabId = "resumen" | "documentos" | "inventario" | "contratos" | "alertas" | "ahorros" | "analisis";
 
 const tabs: { id: TabId; label: string; icon: typeof LayoutList }[] = [
   { id: "resumen", label: "Resumen", icon: LayoutList },
   { id: "documentos", label: "Documentos", icon: FileText },
   { id: "inventario", label: "Inventario", icon: Package },
+  { id: "contratos", label: "Contratos", icon: FileSignature },
   { id: "alertas", label: "Alertas", icon: AlertTriangle },
   { id: "ahorros", label: "Ahorros", icon: TrendingDown },
+  { id: "analisis", label: "Analisis IA", icon: Sparkles },
 ];
+
+// ─── Analysis types ──────────────────────────────────────────────────
+
+interface AnalysisFinding {
+  tipo: string;
+  descripcion: string;
+  severidad: string;
+  ahorro_eur_ano?: number;
+  inversion_eur?: number;
+  norma?: string;
+  agente?: string;
+  datos?: Record<string, unknown>;
+}
+
+interface AnalysisResult {
+  report: string;
+  findings: AnalysisFinding[];
+  opportunities: AnalysisFinding[];
+  errors: string[];
+}
 
 const inputClass =
   "mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20";
@@ -92,7 +118,14 @@ export default function ProjectDetailPage({
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [alerts, setAlerts] = useState<ComplianceAlert[]>([]);
   const [savings, setSavings] = useState<SavingsOpportunity[]>([]);
+  const [contracts, setContracts] = useState<Contract[]>([]);
+  const [managers, setManagers] = useState<WasteManager[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Analysis state
+  const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -105,18 +138,33 @@ export default function ProjectDetailPage({
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
-    const [projectRes, inventoryRes, docsRes, alertsRes, savingsRes] = await Promise.all([
+    const [projectRes, inventoryRes, docsRes, alertsRes, savingsRes, contractsRes] = await Promise.all([
       supabase.from("projects").select("*").eq("id", id).single(),
       supabase.from("waste_inventory").select("*").eq("project_id", id),
       supabase.from("project_documents").select("*").eq("project_id", id).order("fecha_ingesta", { ascending: false }),
       supabase.from("compliance_alerts").select("*").eq("project_id", id),
       supabase.from("savings_opportunities").select("*").eq("project_id", id),
+      supabase.from("contracts").select("*").eq("project_id", id),
     ]);
     setProject(projectRes.data);
     setInventory(inventoryRes.data ?? []);
     setDocuments(docsRes.data ?? []);
     setAlerts(alertsRes.data ?? []);
     setSavings(savingsRes.data ?? []);
+    setContracts(contractsRes.data ?? []);
+
+    // Load managers for contracts
+    const managerIds = (contractsRes.data ?? [])
+      .map((c: Contract) => c.manager_id)
+      .filter(Boolean) as string[];
+    if (managerIds.length > 0) {
+      const { data: mgrs } = await supabase
+        .from("waste_managers")
+        .select("*")
+        .in("id", managerIds);
+      setManagers(mgrs ?? []);
+    }
+
     setLoading(false);
   }, [id]);
 
@@ -200,6 +248,38 @@ export default function ProjectDetailPage({
     setAlerts((prev) =>
       prev.map((a) => (a.id === alertId ? { ...a, estado: "descartada" as const } : a))
     );
+  }
+
+  // ─── Analysis handler ──────────────────────────────────────────────
+
+  async function runAnalysis() {
+    setAnalysisRunning(true);
+    setAnalysisError(null);
+    setAnalysisResult(null);
+    setActiveTab("analisis");
+
+    try {
+      const response = await fetch("/api/analyze-project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: id }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setAnalysisError(data.error || "Error en el analisis");
+        return;
+      }
+
+      setAnalysisResult(data);
+    } catch (err) {
+      setAnalysisError(
+        err instanceof Error ? err.message : "Error de conexion con el pipeline"
+      );
+    } finally {
+      setAnalysisRunning(false);
+    }
   }
 
   // ─── Loading / Not found ────────────────────────────────────────────
@@ -294,11 +374,24 @@ export default function ProjectDetailPage({
             Editar
           </Button>
           <Link href={`/dashboard/projects/${id}/upload`}>
-            <Button size="sm">
+            <Button variant="outline" size="sm">
               <Upload className="mr-2 h-3.5 w-3.5" />
               Subir documentos
             </Button>
           </Link>
+          <Button
+            size="sm"
+            onClick={runAnalysis}
+            disabled={analysisRunning}
+            className="bg-gradient-brand text-white hover:opacity-90"
+          >
+            {analysisRunning ? (
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 h-3.5 w-3.5" />
+            )}
+            {analysisRunning ? "Analizando..." : "Analisis IA"}
+          </Button>
         </div>
       </div>
 
@@ -308,6 +401,7 @@ export default function ProjectDetailPage({
           const count =
             tab.id === "documentos" ? documents.length :
             tab.id === "inventario" ? inventory.length :
+            tab.id === "contratos" ? contracts.length :
             tab.id === "alertas" ? pendingAlerts.length :
             tab.id === "ahorros" ? savings.length : 0;
           return (
@@ -820,6 +914,82 @@ export default function ProjectDetailPage({
         </div>
       )}
 
+      {/* ═══ Tab: Contratos ═══ */}
+      {activeTab === "contratos" && (
+        <div className="space-y-4">
+          {contracts.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <FileSignature className="mx-auto h-10 w-10 text-muted-foreground/50 mb-3" />
+                <p className="text-muted-foreground">
+                  Sin contratos registrados. Se crean al procesar documentos de tipo contrato.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <span>{contracts.length} contratos</span>
+                <span>
+                  {contracts.filter((c) => {
+                    if (!c.fecha_vencimiento) return false;
+                    const venc = new Date(c.fecha_vencimiento);
+                    const now = new Date();
+                    const diff = (venc.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+                    return diff <= 90 && diff >= 0;
+                  }).length} proximos a vencer
+                </span>
+              </div>
+              <div className="space-y-3">
+                {contracts.map((contract) => {
+                  const manager = managers.find((m) => m.id === contract.manager_id);
+                  const isExpired = contract.fecha_vencimiento && new Date(contract.fecha_vencimiento) < new Date();
+                  const isExpiring = contract.fecha_vencimiento && (() => {
+                    const diff = (new Date(contract.fecha_vencimiento!).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+                    return diff <= 90 && diff >= 0;
+                  })();
+
+                  return (
+                    <Card key={contract.id} className={isExpired ? "border-red-300" : isExpiring ? "border-vandarum-orange/50" : ""}>
+                      <CardContent className="py-4">
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium">{manager?.nombre || "Gestor no identificado"}</p>
+                              {isExpired && <Badge variant="destructive">Vencido</Badge>}
+                              {isExpiring && !isExpired && <Badge variant="warning">Prox. vencer</Badge>}
+                            </div>
+                            {manager?.nif && (
+                              <p className="text-xs text-muted-foreground font-mono">NIF: {manager.nif}</p>
+                            )}
+                            <div className="flex flex-wrap gap-1">
+                              {(contract.codigos_ler ?? []).map((ler) => (
+                                <Badge key={ler} variant="outline" className="text-xs font-mono">
+                                  {ler}
+                                </Badge>
+                              ))}
+                            </div>
+                            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                              {contract.fecha_inicio && <span>Inicio: {contract.fecha_inicio}</span>}
+                              {contract.fecha_vencimiento && <span>Vencimiento: {contract.fecha_vencimiento}</span>}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            {contract.precio_eur_ton != null && (
+                              <p className="text-lg font-bold">{contract.precio_eur_ton} EUR/t</p>
+                            )}
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* ═══ Tab: Alertas ═══ */}
       {activeTab === "alertas" && (
         <div className="space-y-4">
@@ -941,6 +1111,212 @@ export default function ProjectDetailPage({
                 ))}
               </div>
             </>
+          )}
+        </div>
+      )}
+
+      {/* ═══ Tab: Analisis IA ═══ */}
+      {activeTab === "analisis" && (
+        <div className="space-y-6">
+          {/* Running state */}
+          {analysisRunning && (
+            <Card className="border-vandarum-teal/30">
+              <CardContent className="py-12 text-center">
+                <Loader2 className="mx-auto h-10 w-10 animate-spin text-vandarum-teal mb-4" />
+                <p className="text-lg font-medium">Analizando proyecto...</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  7 agentes especializados estan revisando los documentos, contratos,
+                  facturas, inventario y normativa aplicable. Esto puede tardar 1-2 minutos.
+                </p>
+                <div className="flex flex-wrap justify-center gap-2 mt-4">
+                  {["AAI", "Contratos", "Facturas", "Registro", "Normativo", "Optimizador", "Redactor"].map((name) => (
+                    <Badge key={name} variant="secondary" className="animate-pulse">
+                      {name}
+                    </Badge>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Error state */}
+          {analysisError && !analysisRunning && (
+            <Card className="border-red-300">
+              <CardContent className="py-8 text-center">
+                <AlertTriangle className="mx-auto h-8 w-8 text-red-500 mb-3" />
+                <p className="text-sm text-destructive">{analysisError}</p>
+                <Button variant="outline" size="sm" className="mt-4" onClick={runAnalysis}>
+                  Reintentar
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* No analysis yet */}
+          {!analysisResult && !analysisRunning && !analysisError && (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <Sparkles className="mx-auto h-10 w-10 text-muted-foreground/50 mb-3" />
+                <p className="text-lg font-medium">Analisis integral con IA</p>
+                <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto">
+                  7 agentes especializados analizaran los documentos del proyecto:
+                  AAI, contratos, facturas, registros, normativa aplicable,
+                  oportunidades de ahorro e informe ejecutivo.
+                </p>
+                <Button className="mt-4 bg-gradient-brand text-white hover:opacity-90" onClick={runAnalysis}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Lanzar analisis
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Results */}
+          {analysisResult && !analysisRunning && (
+            <div className="space-y-6">
+              {/* Errors / warnings */}
+              {analysisResult.errors.length > 0 && (
+                <Card className="border-vandarum-orange/30">
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-vandarum-orange" />
+                      Limitaciones del analisis
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="space-y-1">
+                      {analysisResult.errors.map((err, i) => (
+                        <li key={i} className="text-xs text-muted-foreground">- {err}</li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Executive report */}
+              {analysisResult.report && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                      <Sparkles className="h-5 w-5 text-vandarum-teal" />
+                      Informe ejecutivo
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div
+                      className="prose prose-sm max-w-none dark:prose-invert"
+                      dangerouslySetInnerHTML={{
+                        __html: analysisResult.report
+                          .replace(/^### (.*$)/gm, '<h3 class="text-base font-semibold mt-4 mb-2">$1</h3>')
+                          .replace(/^## (.*$)/gm, '<h2 class="text-lg font-bold mt-6 mb-2">$1</h2>')
+                          .replace(/^# (.*$)/gm, '<h1 class="text-xl font-bold mt-6 mb-3">$1</h1>')
+                          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                          .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                          .replace(/^- (.*$)/gm, '<li class="ml-4">$1</li>')
+                          .replace(/^(\d+)\. (.*$)/gm, '<li class="ml-4"><strong>$1.</strong> $2</li>')
+                          .replace(/\n\n/g, '<br/><br/>')
+                          .replace(/\n/g, '<br/>')
+                      }}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Opportunities summary */}
+              {analysisResult.opportunities.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                      <TrendingDown className="h-5 w-5 text-vandarum-green" />
+                      Oportunidades detectadas ({analysisResult.opportunities.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      {analysisResult.opportunities.map((opp, i) => (
+                        <div key={i} className="flex items-start gap-3 rounded-md border p-3">
+                          <Badge variant="outline" className="capitalize shrink-0">
+                            {opp.tipo.replace(/_/g, " ")}
+                          </Badge>
+                          <div className="flex-1">
+                            <p className="text-sm">{opp.descripcion}</p>
+                            {opp.norma && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Base legal: {opp.norma}
+                              </p>
+                            )}
+                          </div>
+                          <div className="text-right shrink-0">
+                            {(opp.ahorro_eur_ano ?? 0) > 0 && (
+                              <p className="font-bold text-vandarum-green">
+                                {(opp.ahorro_eur_ano ?? 0).toLocaleString("es-ES")} EUR/a
+                              </p>
+                            )}
+                            {(opp.inversion_eur ?? 0) > 0 && (
+                              <p className="text-xs text-muted-foreground">
+                                Inv: {(opp.inversion_eur ?? 0).toLocaleString("es-ES")} EUR
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* All findings by severity */}
+              {analysisResult.findings.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-lg">
+                      <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
+                      Hallazgos ({analysisResult.findings.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {analysisResult.findings
+                        .sort((a, b) => {
+                          const order: Record<string, number> = { critica: 0, alta: 1, media: 2, baja: 3, info: 4 };
+                          return (order[a.severidad] ?? 5) - (order[b.severidad] ?? 5);
+                        })
+                        .map((finding, i) => (
+                          <div key={i} className="flex items-start gap-2 rounded-md border p-3">
+                            <Badge
+                              variant={severityColors[finding.severidad] || "secondary"}
+                              className="shrink-0"
+                            >
+                              {finding.severidad}
+                            </Badge>
+                            <div className="flex-1">
+                              <p className="text-sm">{finding.descripcion}</p>
+                              <div className="flex gap-2 mt-1">
+                                <Badge variant="outline" className="text-xs">
+                                  {finding.agente}
+                                </Badge>
+                                {finding.norma && (
+                                  <span className="text-xs text-muted-foreground">
+                                    {finding.norma}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Re-run button */}
+              <div className="flex justify-center">
+                <Button variant="outline" onClick={runAnalysis}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Ejecutar nuevo analisis
+                </Button>
+              </div>
+            </div>
           )}
         </div>
       )}

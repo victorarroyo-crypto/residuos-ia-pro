@@ -12,6 +12,7 @@ Pillow==10.4.0              # manipulación de imágenes para preprocesamiento O
 anthropic==0.34.0           # Claude para clasificación y extracción de metadatos
 openai==1.45.0              # embeddings text-embedding-3-large
 langchain-core==0.3.0       # tipos base compartidos con LangGraph
+langgraph==0.2.0            # orquestación multi-agente
 
 # Base de datos
 supabase==2.7.0             # cliente Supabase async
