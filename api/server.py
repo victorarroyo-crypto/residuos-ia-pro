@@ -10,7 +10,9 @@ from typing import Optional
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -100,7 +102,9 @@ async def health():
 
 @app.post("/api/ingest")
 async def ingest_document(
-    file: UploadFile = File(...),
+    file: UploadFile = File(default=None),
+    file_url: str = Form(default=None),
+    filename: str = Form(default=None),
     project_id: str = Form(default=None),
     rag_scope: str = Form(default=None),
     password: str = Form(default=None),
@@ -108,10 +112,81 @@ async def ingest_document(
     if service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
+    if not file and not file_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Debes enviar un archivo (`file`) o una URL de PDF (`file_url`).",
+        )
 
-    file_bytes = await file.read()
+    async def _validate_pdf_url(url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise HTTPException(status_code=400, detail="file_url debe usar http/https")
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                head = await client.head(url)
+                if head.status_code >= 400:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No se puede acceder al archivo URL (HEAD {head.status_code}).",
+                    )
+
+                content_type = (head.headers.get("content-type") or "").lower()
+                if content_type and "pdf" not in content_type:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"El content-type no parece PDF: {content_type}",
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error validando URL: {e}")
+
+    async def _download_pdf_with_retry(url: str) -> bytes:
+        delays = [1, 2, 4]
+        last_error: Exception | None = None
+
+        for idx, delay in enumerate(delays, 1):
+            try:
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+
+                payload = response.content
+                if not payload:
+                    raise ValueError("El archivo descargado está vacío")
+                if len(payload) > 100 * 1024 * 1024:
+                    raise ValueError("File too large (max 100 MB)")
+                return payload
+            except Exception as e:
+                last_error = e
+                if idx == len(delays):
+                    break
+                await asyncio.sleep(delay)
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo descargar el PDF tras {len(delays)} intentos: {last_error}",
+        )
+
+    file_bytes: bytes
+    ingest_filename: str
+
+    if file_url:
+        await _validate_pdf_url(file_url)
+        file_bytes = await _download_pdf_with_retry(file_url)
+
+        parsed = urlparse(file_url)
+        inferred_name = os.path.basename(parsed.path) or "documento.pdf"
+        ingest_filename = filename or inferred_name
+        if not ingest_filename.lower().endswith(".pdf"):
+            ingest_filename = f"{ingest_filename}.pdf"
+    else:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        ingest_filename = file.filename
+        file_bytes = await file.read()
 
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="File is empty")
@@ -122,7 +197,7 @@ async def ingest_document(
     try:
         result = await service.ingest(
             file_bytes=file_bytes,
-            filename=file.filename,
+            filename=ingest_filename,
             project_id=project_id,
             rag_scope=rag_scope,
             password=password,
@@ -130,7 +205,7 @@ async def ingest_document(
         if not result.success:
             raise HTTPException(
                 status_code=422,
-                detail=result.error or f"Error al procesar '{file.filename}'.",
+                detail=result.error or f"Error al procesar '{ingest_filename}'.",
             )
         return result.to_dict()
     except HTTPException:

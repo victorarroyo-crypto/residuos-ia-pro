@@ -19,6 +19,18 @@ const ACCEPTED_TYPES = [
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".xlsx", ".xls", ".csv"];
 
+const stepOrder = [
+  "subiendo",
+  "detectando_tipo",
+  "extrayendo_contenido",
+  "clasificando_documento",
+  "fragmentando",
+  "generando_embeddings",
+  "extrayendo_metadatos",
+  "almacenando",
+  "completado",
+] as const;
+
 const stepLabels: Record<string, string> = {
   iniciando: "Iniciando...",
   subiendo: "Subiendo archivo...",
@@ -39,6 +51,29 @@ interface FileUploadState {
   progress: PipelineProgress | null;
   error: string | null;
   result: Record<string, unknown> | null;
+}
+
+
+async function computeDocId(file: File, projectId: string): Promise<string> {
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const encoder = new TextEncoder();
+  const clientBytes = encoder.encode(projectId || "general");
+
+  const all = new Uint8Array(bytes.length + clientBytes.length);
+  all.set(bytes, 0);
+  all.set(clientBytes, bytes.length);
+
+  const digest = await crypto.subtle.digest("SHA-256", all);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  if (["xlsx", "xls", "csv"].includes(ext)) {
+    return `xls_${hex.slice(0, 12)}`;
+  }
+
+  return `doc_${hex.slice(0, 16)}`;
 }
 
 export default function UploadPage({
@@ -67,12 +102,9 @@ export default function UploadPage({
   }, [id]);
 
   useEffect(() => {
-    const processingFiles = files.filter((f) => f.status === "processing");
-    if (processingFiles.length === 0) return;
-
     const supabase = createClient();
     const channel = supabase
-      .channel("pipeline-progress")
+      .channel(`pipeline-progress-${id}`)
       .on(
         "postgres_changes",
         {
@@ -82,23 +114,22 @@ export default function UploadPage({
         },
         (payload) => {
           const progress = payload.new as PipelineProgress;
+          if (!progress?.doc_id) return;
+
           setFiles((prev) =>
             prev.map((f) => {
-              if (f.status !== "processing") return f;
-              if (progress.doc_id && progress.doc_id.includes(f.file.name)) {
-                return {
-                  ...f,
-                  progress,
-                  status:
-                    progress.step === "completado"
-                      ? "done"
-                      : progress.error
-                      ? "error"
-                      : "processing",
-                  error: progress.error,
-                };
-              }
-              return f;
+              if (f.progress?.doc_id !== progress.doc_id) return f;
+              return {
+                ...f,
+                progress,
+                status:
+                  progress.step === "completado"
+                    ? "done"
+                    : progress.error
+                    ? "error"
+                    : "processing",
+                error: progress.error,
+              };
             })
           );
         }
@@ -108,7 +139,7 @@ export default function UploadPage({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [files]);
+  }, [id]);
 
   const addFiles = useCallback((newFiles: FileList | File[]) => {
     const validFiles = Array.from(newFiles).filter((file) => {
@@ -157,6 +188,8 @@ export default function UploadPage({
       const fileState = files[index];
       if (!fileState) return;
 
+      const docId = await computeDocId(fileState.file, id);
+
       setFiles((prev) =>
         prev.map((f, i) =>
           i === index
@@ -164,7 +197,7 @@ export default function UploadPage({
                 ...f,
                 status: "uploading",
                 progress: {
-                  doc_id: "",
+                  doc_id: docId,
                   step: "subiendo",
                   percentage: 5,
                   mensaje: "Subiendo archivo...",
@@ -188,7 +221,7 @@ export default function UploadPage({
                   ...f,
                   status: "processing",
                   progress: {
-                    doc_id: "",
+                    doc_id: docId,
                     step: "detectando_tipo",
                     percentage: 10,
                     mensaje: "Enviado al pipeline, procesando...",
@@ -216,7 +249,7 @@ export default function UploadPage({
                     status: "error",
                     error: result.error || result.detail || "Error en el procesamiento",
                     progress: {
-                      doc_id: "",
+                      doc_id: docId,
                       step: "error",
                       percentage: 0,
                       mensaje: null,
@@ -405,6 +438,28 @@ export default function UploadPage({
                               <span className="font-medium">{fileState.progress.percentage}%</span>
                             </div>
                             <Progress value={fileState.progress.percentage} />
+                            <div className="flex flex-wrap gap-1 pt-1">
+                              {stepOrder.map((step) => {
+                                const current = stepOrder.indexOf(fileState.progress!.step as (typeof stepOrder)[number]);
+                                const idx = stepOrder.indexOf(step);
+                                const isCurrent = fileState.progress?.step === step;
+                                const isDone = current >= 0 && idx < current;
+                                return (
+                                  <span
+                                    key={step}
+                                    className={`rounded-full px-2 py-0.5 text-[10px] border ${
+                                      isCurrent
+                                        ? "bg-vandarum-blue/15 border-vandarum-blue text-vandarum-blue"
+                                        : isDone
+                                        ? "bg-vandarum-green/15 border-vandarum-green text-vandarum-green"
+                                        : "text-muted-foreground"
+                                    }`}
+                                  >
+                                    {stepLabels[step]}
+                                  </span>
+                                );
+                              })}
+                            </div>
                           </div>
                         )}
 
