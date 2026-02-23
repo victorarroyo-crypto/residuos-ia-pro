@@ -287,11 +287,23 @@ class AdvisorMessage(BaseModel):
     content: str
 
 
+class FileAttachment(BaseModel):
+    name: str
+    type: str  # "image" or "document"
+    content: str  # base64 for images, extracted text for documents
+    mime_type: Optional[str] = None  # for images (e.g., "image/png")
+    size: int = 0
+
+
 class AdvisorRequest(BaseModel):
     query: str
     conversation_history: list[AdvisorMessage] = []
     project_id: Optional[str] = None
-    file_content: Optional[str] = None  # Texto extraído de un fichero subido
+    # Multi-file support (up to 6)
+    files: Optional[list[FileAttachment]] = None
+    urls: Optional[list[str]] = None
+    # Legacy single-file support (backward compatibility)
+    file_content: Optional[str] = None
     file_name: Optional[str] = None
 
 
@@ -301,11 +313,42 @@ class AdvisorResponse(BaseModel):
     rag_context_used: bool
 
 
+async def _fetch_url_content(url: str) -> str:
+    """Fetch text content from a URL for advisor context."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "ResidusIA-Advisor/1.0",
+                "Accept": "text/html,text/plain,application/json,*/*",
+            })
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "")
+            text = resp.text
+
+            # Strip HTML tags for a rough text extraction
+            if "html" in content_type:
+                import re
+                # Remove script/style blocks
+                text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', text, flags=re.DOTALL | re.IGNORECASE)
+                # Remove HTML tags
+                text = re.sub(r'<[^>]+>', ' ', text)
+                # Collapse whitespace
+                text = re.sub(r'\s+', ' ', text).strip()
+
+            return text[:15000]
+    except Exception as e:
+        return f"[Error al obtener URL {url}: {e}]"
+
+
 @app.post("/api/advisor", response_model=AdvisorResponse)
 async def advisor_query(request: AdvisorRequest):
     """
     Asesor IA experto en gestión de residuos industriales.
     Usa RAG + razonamiento avanzado de Claude para responder consultas complejas.
+    Soporta hasta 6 archivos adjuntos (PDF, Excel, Word, imágenes) y URLs.
     """
     if rag_service is None or _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -323,40 +366,114 @@ async def advisor_query(request: AdvisorRequest):
             project_id=request.project_id,
             scopes=scopes,
             top_k_per_scope=8,
-            similarity_threshold=0.60,  # Umbral más bajo para capturar más contexto
+            similarity_threshold=0.60,
         )
 
         has_rag_context = bool(rag_response.results)
 
-        # 2. Construir el mensaje del usuario con todo el contexto disponible
-        user_parts = []
+        # 2. Normalize files: merge legacy single-file into files list
+        files = list(request.files or [])
+        if not files and request.file_content:
+            files.append(FileAttachment(
+                name=request.file_name or "archivo",
+                type="document",
+                content=request.file_content[:15000],
+            ))
 
-        # Contexto RAG
+        # Enforce max 6 files
+        files = files[:6]
+
+        # 3. Fetch URL content in parallel
+        url_contents: list[tuple[str, str]] = []
+        if request.urls:
+            urls_to_fetch = request.urls[:6 - len(files)]
+            import asyncio as _aio
+            tasks = [_fetch_url_content(u) for u in urls_to_fetch]
+            results = await _aio.gather(*tasks, return_exceptions=True)
+            for url, result in zip(urls_to_fetch, results):
+                if isinstance(result, Exception):
+                    url_contents.append((url, f"[Error al obtener URL: {result}]"))
+                else:
+                    url_contents.append((url, result))
+
+        # 4. Separate images from documents
+        image_files = [f for f in files if f.type == "image" and f.mime_type]
+        doc_files = [f for f in files if f.type != "image"]
+
+        # 5. Build user message content blocks (multimodal)
+        # Claude API supports a list of content blocks mixing text and images
+        user_content_blocks: list[dict] = []
+
+        # Text context parts
+        text_parts = []
+
+        # RAG context
         if has_rag_context:
-            user_parts.append(
+            text_parts.append(
                 "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
                 f"{rag_response.context_text}\n"
             )
 
-        # Fichero adjunto
-        if request.file_content:
-            label = f" ({request.file_name})" if request.file_name else ""
-            user_parts.append(
-                f"DOCUMENTO ADJUNTO{label}:\n"
-                f"{request.file_content[:15000]}\n"  # Limitar a 15k chars
+        # Document attachments (text-based)
+        for i, doc in enumerate(doc_files, 1):
+            text_parts.append(
+                f"DOCUMENTO ADJUNTO {i} ({doc.name}):\n"
+                f"{doc.content[:15000]}\n"
             )
 
-        user_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+        # URL contents
+        for i, (url, content) in enumerate(url_contents, 1):
+            text_parts.append(
+                f"CONTENIDO DE URL {i} ({url}):\n"
+                f"{content}\n"
+            )
 
-        user_message = "\n---\n".join(user_parts)
+        # Add image descriptions header if there are images
+        if image_files:
+            text_parts.append(
+                f"Se han adjuntado {len(image_files)} imagen(es). "
+                "Analiza cada imagen en detalle: identifica residuos, codigos, "
+                "etiquetas, valores de analisis quimicos, fichas de seguridad, "
+                "o cualquier informacion relevante para la gestion de residuos.\n"
+            )
 
-        # 3. Construir historial de conversación
+        # The user query always goes last
+        text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+
+        # If there are images, build multimodal content blocks
+        if image_files:
+            # Add images first so Claude can reference them
+            for img in image_files:
+                user_content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.mime_type,
+                        "data": img.content,
+                    },
+                })
+
+            # Then add the text context
+            user_content_blocks.append({
+                "type": "text",
+                "text": "\n---\n".join(text_parts),
+            })
+        else:
+            # No images: simple text message
+            user_content_blocks.append({
+                "type": "text",
+                "text": "\n---\n".join(text_parts),
+            })
+
+        # 6. Build conversation history
         messages = []
-        for msg in request.conversation_history[-10:]:  # Últimos 10 mensajes
+        for msg in request.conversation_history[-10:]:
             messages.append({"role": msg.role, "content": msg.content})
-        messages.append({"role": "user", "content": user_message})
 
-        # 4. Llamar a Claude con extended thinking
+        # Last user message with multimodal content
+        messages.append({"role": "user", "content": user_content_blocks})
+
+        # 7. Call Claude with extended thinking
         claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
 
         response = await claude.messages.create(
@@ -370,14 +487,14 @@ async def advisor_query(request: AdvisorRequest):
             messages=messages,
         )
 
-        # Extraer respuesta (puede incluir thinking blocks)
+        # Extract response (may include thinking blocks)
         answer = ""
         for block in response.content:
             if block.type == "text":
                 answer = block.text
                 break
 
-        # 5. Preparar fuentes
+        # 8. Prepare sources
         sources = [
             {
                 "document_id": r.document_id,

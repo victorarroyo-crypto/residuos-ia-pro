@@ -6,9 +6,9 @@ const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
  * POST /api/advisor
  *
  * Proxy al Asesor IA del pipeline Python.
- * Envía la consulta con historial de conversación y contexto opcional.
+ * Envía la consulta con historial de conversación y archivos adjuntos.
  *
- * Body: { query, conversation_history?, project_id?, file_content?, file_name? }
+ * Body: { query, conversation_history?, project_id?, files?, urls? }
  * Response: { answer, sources, rag_context_used }
  */
 export async function POST(request: NextRequest) {
@@ -18,6 +18,14 @@ export async function POST(request: NextRequest) {
     if (!body.query) {
       return NextResponse.json(
         { error: "Se requiere un campo 'query'" },
+        { status: 400 }
+      );
+    }
+
+    // Validate files array if present
+    if (body.files && Array.isArray(body.files) && body.files.length > 6) {
+      return NextResponse.json(
+        { error: "Maximo 6 archivos adjuntos." },
         { status: 400 }
       );
     }
