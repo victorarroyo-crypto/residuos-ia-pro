@@ -10,6 +10,8 @@ import {
   LayoutDashboard,
   FolderKanban,
   BookOpen,
+  AlertTriangle,
+  TrendingDown,
   Settings,
   Leaf,
   LogOut,
@@ -19,6 +21,8 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/projects", label: "Proyectos", icon: FolderKanban },
   { href: "/dashboard/knowledge-base", label: "Base de Conocimiento", icon: BookOpen },
+  { href: "/dashboard/alerts", label: "Alertas", icon: AlertTriangle },
+  { href: "/dashboard/savings", label: "Ahorros", icon: TrendingDown },
   { href: "/dashboard/settings", label: "Ajustes", icon: Settings },
 ];
 

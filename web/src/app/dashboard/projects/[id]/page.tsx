@@ -20,6 +20,8 @@ import {
   LayoutList,
   FileSignature,
   Sparkles,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -109,6 +111,12 @@ interface AnalysisResult {
   findings: AnalysisFinding[];
   opportunities: AnalysisFinding[];
   errors: string[];
+  agents_used?: string[];
+  aai_findings?: AnalysisFinding[];
+  contratos_findings?: AnalysisFinding[];
+  facturas_findings?: AnalysisFinding[];
+  registro_findings?: AnalysisFinding[];
+  normativo_findings?: AnalysisFinding[];
 }
 
 const inputClass =
@@ -148,6 +156,13 @@ export default function ProjectDetailPage({
 
   // Document filter
   const [docTypeFilter, setDocTypeFilter] = useState("todos");
+
+  // Alert filters
+  const [alertSeverityFilter, setAlertSeverityFilter] = useState("todos");
+  const [alertEstadoFilter, setAlertEstadoFilter] = useState("todos");
+
+  // Analysis: expanded agent sections
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
@@ -264,6 +279,18 @@ export default function ProjectDetailPage({
   }
 
   // ─── Analysis handler ──────────────────────────────────────────────
+
+  function toggleExpandedAgent(agentId: string) {
+    setExpandedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) {
+        next.delete(agentId);
+      } else {
+        next.add(agentId);
+      }
+      return next;
+    });
+  }
 
   function toggleAgent(agentId: AgentId) {
     setSelectedAgents((prev) => {
@@ -1037,50 +1064,86 @@ export default function ProjectDetailPage({
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-3">
-              {alerts.map((alert) => (
-                <Card
-                  key={alert.id}
-                  className={
-                    alert.estado === "resuelta" || alert.estado === "descartada"
-                      ? "opacity-60"
-                      : ""
-                  }
+            <>
+              <div className="flex items-center gap-3">
+                <select
+                  value={alertSeverityFilter}
+                  onChange={(e) => setAlertSeverityFilter(e.target.value)}
+                  className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
                 >
-                  <CardContent className="flex items-start gap-3 py-4">
-                    <Badge variant={severityColors[alert.severidad]}>
-                      {alert.severidad}
-                    </Badge>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">{alert.descripcion}</p>
-                      <div className="flex flex-wrap gap-3 mt-1 text-xs text-muted-foreground">
-                        {alert.fecha_limite && <span>Limite: {alert.fecha_limite}</span>}
-                        <Badge variant="outline" className="text-xs">
-                          {alert.tipo.replace(/_/g, " ")}
-                        </Badge>
-                        {alert.estado !== "pendiente" && (
-                          <Badge variant="outline" className="capitalize text-xs">
-                            {alert.estado}
+                  <option value="todos">Toda severidad</option>
+                  <option value="critica">Critica</option>
+                  <option value="alta">Alta</option>
+                  <option value="media">Media</option>
+                  <option value="baja">Baja</option>
+                </select>
+                <select
+                  value={alertEstadoFilter}
+                  onChange={(e) => setAlertEstadoFilter(e.target.value)}
+                  className="rounded-md border bg-background px-3 py-2 text-sm outline-none"
+                >
+                  <option value="todos">Todo estado</option>
+                  <option value="pendiente">Pendiente</option>
+                  <option value="resuelta">Resuelta</option>
+                  <option value="descartada">Descartada</option>
+                </select>
+                <span className="text-sm text-muted-foreground">
+                  {alerts.filter((a) =>
+                    (alertSeverityFilter === "todos" || a.severidad === alertSeverityFilter) &&
+                    (alertEstadoFilter === "todos" || a.estado === alertEstadoFilter)
+                  ).length} alertas
+                </span>
+              </div>
+              <div className="space-y-3">
+                {alerts
+                  .filter((a) =>
+                    (alertSeverityFilter === "todos" || a.severidad === alertSeverityFilter) &&
+                    (alertEstadoFilter === "todos" || a.estado === alertEstadoFilter)
+                  )
+                  .map((alert) => (
+                  <Card
+                    key={alert.id}
+                    className={
+                      alert.estado === "resuelta" || alert.estado === "descartada"
+                        ? "opacity-60"
+                        : ""
+                    }
+                  >
+                    <CardContent className="flex items-start gap-3 py-4">
+                      <Badge variant={severityColors[alert.severidad]}>
+                        {alert.severidad}
+                      </Badge>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{alert.descripcion}</p>
+                        <div className="flex flex-wrap gap-3 mt-1 text-xs text-muted-foreground">
+                          {alert.fecha_limite && <span>Limite: {alert.fecha_limite}</span>}
+                          <Badge variant="outline" className="text-xs">
+                            {alert.tipo.replace(/_/g, " ")}
                           </Badge>
-                        )}
+                          {alert.estado !== "pendiente" && (
+                            <Badge variant="outline" className="capitalize text-xs">
+                              {alert.estado}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    {alert.estado === "pendiente" && (
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => resolveAlert(alert.id)}>
-                          <CheckCircle2 className="mr-1 h-3 w-3" />
-                          Resolver
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => dismissAlert(alert.id)}>
-                          <X className="mr-1 h-3 w-3" />
-                          Descartar
-                        </Button>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                      {alert.estado === "pendiente" && (
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => resolveAlert(alert.id)}>
+                            <CheckCircle2 className="mr-1 h-3 w-3" />
+                            Resolver
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => dismissAlert(alert.id)}>
+                            <X className="mr-1 h-3 w-3" />
+                            Descartar
+                          </Button>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -1241,6 +1304,23 @@ export default function ProjectDetailPage({
           {/* Results */}
           {analysisResult && !analysisRunning && (
             <div className="space-y-6">
+              {/* Agents used summary */}
+              {analysisResult.agents_used && analysisResult.agents_used.length > 0 && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <span>Agentes ejecutados:</span>
+                  {analysisResult.agents_used.map((a) => {
+                    const agentInfo = AVAILABLE_AGENTS.find((av) => av.id === a);
+                    return (
+                      <Badge key={a} variant="outline" className="text-xs">
+                        {agentInfo?.label ?? a}
+                      </Badge>
+                    );
+                  })}
+                  <Badge variant="outline" className="text-xs">Optimizador</Badge>
+                  <Badge variant="outline" className="text-xs">Redactor</Badge>
+                </div>
+              )}
+
               {/* Errors / warnings */}
               {analysisResult.errors.length > 0 && (
                 <Card className="border-vandarum-orange/30">
@@ -1289,7 +1369,7 @@ export default function ProjectDetailPage({
                 </Card>
               )}
 
-              {/* Opportunities summary */}
+              {/* Opportunities with prioridad and payback */}
               {analysisResult.opportunities.length > 0 && (
                 <Card>
                   <CardHeader>
@@ -1297,43 +1377,157 @@ export default function ProjectDetailPage({
                       <TrendingDown className="h-5 w-5 text-vandarum-green" />
                       Oportunidades detectadas ({analysisResult.opportunities.length})
                     </CardTitle>
+                    <p className="text-xs text-muted-foreground">
+                      Ahorro total estimado: {analysisResult.opportunities.reduce((s, o) => s + (o.ahorro_eur_ano ?? 0), 0).toLocaleString("es-ES")} EUR/a
+                    </p>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-3">
-                      {analysisResult.opportunities.map((opp, i) => (
-                        <div key={i} className="flex items-start gap-3 rounded-md border p-3">
-                          <Badge variant="outline" className="capitalize shrink-0">
-                            {opp.tipo.replace(/_/g, " ")}
-                          </Badge>
-                          <div className="flex-1">
-                            <p className="text-sm">{opp.descripcion}</p>
-                            {opp.norma && (
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Base legal: {opp.norma}
-                              </p>
-                            )}
+                      {analysisResult.opportunities.map((opp, i) => {
+                        const prioridad = (opp.datos?.prioridad as string) || "";
+                        const payback = (opp.datos?.payback_meses as number) ?? opp.datos?.payback ?? null;
+                        return (
+                          <div key={i} className="flex items-start gap-3 rounded-md border p-3">
+                            <div className="flex flex-col gap-1 shrink-0">
+                              <Badge variant="outline" className="capitalize">
+                                {opp.tipo.replace(/_/g, " ")}
+                              </Badge>
+                              {prioridad && (
+                                <Badge
+                                  variant={prioridad === "alta" ? "danger" : prioridad === "media" ? "warning" : "secondary"}
+                                  className="text-xs"
+                                >
+                                  P: {prioridad}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm">{opp.descripcion}</p>
+                              {opp.norma && (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Base legal: {opp.norma}
+                                </p>
+                              )}
+                            </div>
+                            <div className="text-right shrink-0">
+                              {(opp.ahorro_eur_ano ?? 0) > 0 && (
+                                <p className="font-bold text-vandarum-green">
+                                  {(opp.ahorro_eur_ano ?? 0).toLocaleString("es-ES")} EUR/a
+                                </p>
+                              )}
+                              {(opp.inversion_eur ?? 0) > 0 && (
+                                <p className="text-xs text-muted-foreground">
+                                  Inv: {(opp.inversion_eur ?? 0).toLocaleString("es-ES")} EUR
+                                </p>
+                              )}
+                              {payback != null && Number(payback) > 0 && (
+                                <p className="text-xs text-muted-foreground">
+                                  Payback: {payback} meses
+                                </p>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-right shrink-0">
-                            {(opp.ahorro_eur_ano ?? 0) > 0 && (
-                              <p className="font-bold text-vandarum-green">
-                                {(opp.ahorro_eur_ano ?? 0).toLocaleString("es-ES")} EUR/a
-                              </p>
-                            )}
-                            {(opp.inversion_eur ?? 0) > 0 && (
-                              <p className="text-xs text-muted-foreground">
-                                Inv: {(opp.inversion_eur ?? 0).toLocaleString("es-ES")} EUR
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </CardContent>
                 </Card>
               )}
 
-              {/* All findings by severity */}
-              {analysisResult.findings.length > 0 && (
+              {/* Per-agent findings (collapsible) */}
+              {(() => {
+                const agentSections: { id: string; label: string; findings: AnalysisFinding[] }[] = [];
+                const agentMap: Record<string, { label: string; key: keyof AnalysisResult }> = {
+                  aai: { label: "AAI - Autorizacion Ambiental", key: "aai_findings" },
+                  contratos: { label: "Contratos", key: "contratos_findings" },
+                  facturas: { label: "Facturas", key: "facturas_findings" },
+                  registro: { label: "Registro", key: "registro_findings" },
+                  normativo: { label: "Normativo", key: "normativo_findings" },
+                };
+                for (const [agentId, info] of Object.entries(agentMap)) {
+                  const findings = (analysisResult[info.key] as AnalysisFinding[] | undefined) ?? [];
+                  if (findings.length > 0) {
+                    agentSections.push({ id: agentId, label: info.label, findings });
+                  }
+                }
+
+                if (agentSections.length === 0) return null;
+
+                return (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-lg">
+                        <AlertTriangle className="h-5 w-5 text-vandarum-orange" />
+                        Hallazgos por agente
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      {agentSections.map((section) => {
+                        const isExpanded = expandedAgents.has(section.id);
+                        const critCount = section.findings.filter((f) => f.severidad === "critica" || f.severidad === "alta").length;
+                        return (
+                          <div key={section.id} className="rounded-md border">
+                            <button
+                              onClick={() => toggleExpandedAgent(section.id)}
+                              className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                )}
+                                <span className="text-sm font-medium">{section.label}</span>
+                                <Badge variant="secondary" className="text-xs">
+                                  {section.findings.length} hallazgos
+                                </Badge>
+                                {critCount > 0 && (
+                                  <Badge variant="danger" className="text-xs">
+                                    {critCount} criticos/altos
+                                  </Badge>
+                                )}
+                              </div>
+                            </button>
+                            {isExpanded && (
+                              <div className="border-t px-4 py-3 space-y-2">
+                                {section.findings
+                                  .sort((a, b) => {
+                                    const order: Record<string, number> = { critica: 0, alta: 1, media: 2, baja: 3, info: 4 };
+                                    return (order[a.severidad] ?? 5) - (order[b.severidad] ?? 5);
+                                  })
+                                  .map((finding, i) => (
+                                  <div key={i} className="flex items-start gap-2 rounded-md bg-muted/30 p-2.5">
+                                    <Badge
+                                      variant={severityColors[finding.severidad] || "secondary"}
+                                      className="shrink-0 text-xs"
+                                    >
+                                      {finding.severidad}
+                                    </Badge>
+                                    <div className="flex-1">
+                                      <p className="text-sm">{finding.descripcion}</p>
+                                      {finding.norma && (
+                                        <p className="text-xs text-muted-foreground mt-1">{finding.norma}</p>
+                                      )}
+                                    </div>
+                                    {(finding.ahorro_eur_ano ?? 0) > 0 && (
+                                      <span className="text-xs font-medium text-vandarum-green shrink-0">
+                                        {(finding.ahorro_eur_ano ?? 0).toLocaleString("es-ES")} EUR/a
+                                      </span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+
+              {/* All findings combined (fallback if per-agent not available) */}
+              {analysisResult.findings.length > 0 && !analysisResult.aai_findings && !analysisResult.contratos_findings && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-lg">
@@ -1359,9 +1553,11 @@ export default function ProjectDetailPage({
                             <div className="flex-1">
                               <p className="text-sm">{finding.descripcion}</p>
                               <div className="flex gap-2 mt-1">
-                                <Badge variant="outline" className="text-xs">
-                                  {finding.agente}
-                                </Badge>
+                                {finding.agente && (
+                                  <Badge variant="outline" className="text-xs">
+                                    {finding.agente}
+                                  </Badge>
+                                )}
                                 {finding.norma && (
                                   <span className="text-xs text-muted-foreground">
                                     {finding.norma}

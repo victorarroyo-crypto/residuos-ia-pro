@@ -254,6 +254,18 @@ export default async function DashboardPage() {
                 Base de conocimiento
               </Button>
             </Link>
+            <Link href="/dashboard/alerts">
+              <Button variant="outline">
+                <AlertTriangle className="mr-2 h-4 w-4" />
+                Alertas
+              </Button>
+            </Link>
+            <Link href="/dashboard/savings">
+              <Button variant="outline">
+                <TrendingDown className="mr-2 h-4 w-4" />
+                Ahorros
+              </Button>
+            </Link>
           </div>
         </CardContent>
       </Card>
