@@ -1479,9 +1479,16 @@ async def gdrive_sync(request: GDriveSyncRequest):
         raise HTTPException(status_code=500, detail=f"Error creando registro de sync: {e}")
 
     # Fire-and-forget: launch heavy work in background
-    asyncio.create_task(
-        _run_sync_job(sync_id, request.consultant_id, folder_id, gd, sb)
-    )
+    async def _safe_sync_wrapper():
+        """Wrapper to ensure exceptions from background task are always logged."""
+        try:
+            logger.info("Sync %s: background task STARTING", sync_id)
+            await _run_sync_job(sync_id, request.consultant_id, folder_id, gd, sb)
+            logger.info("Sync %s: background task FINISHED", sync_id)
+        except Exception as e:
+            logger.error("Sync %s: background task CRASHED: %s", sync_id, e, exc_info=True)
+
+    asyncio.create_task(_safe_sync_wrapper())
 
     # Return immediately
     return {
@@ -1515,6 +1522,7 @@ async def _run_sync_job(
 
     try:
         # 1. Recursively list all files in Drive (run in thread to avoid blocking event loop)
+        logger.info("Sync %s: _run_sync_job entered, folder=%s, service=%s", sync_id, folder_id, service is not None)
         logger.info("Sync %s: scanning Drive folder %s ...", sync_id, folder_id)
         all_files = await asyncio.to_thread(gd.list_all_files_recursive, folder_id)
         total_found = len(all_files)
