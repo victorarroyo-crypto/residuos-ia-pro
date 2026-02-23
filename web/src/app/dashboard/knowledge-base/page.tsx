@@ -117,6 +117,13 @@ interface SyncStatus {
   recent_syncs: SyncLog[];
 }
 
+interface DriveIngestProgress {
+  fileId: string;
+  fileName: string;
+  status: "queued" | "downloading" | "processing" | "done" | "error";
+  message: string;
+}
+
 const knowledgeTypeLabels: Record<string, string> = {
   legislacion: "Legislación",
   documentacion_tecnica: "Doc. Técnica",
@@ -242,6 +249,7 @@ export default function KnowledgeBasePage() {
     success: boolean;
     message: string;
   } | null>(null);
+  const [driveIngestProgress, setDriveIngestProgress] = useState<DriveIngestProgress[]>([]);
 
   // Sync state
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
@@ -405,9 +413,21 @@ export default function KnowledgeBasePage() {
     if (!userId || ingesting) return;
     setIngesting(item.id);
     setIngestResult(null);
+    setDriveIngestProgress([{
+      fileId: item.id,
+      fileName: item.name,
+      status: "downloading",
+      message: "Descargando desde Google Drive...",
+    }]);
 
     try {
       const folderPath = breadcrumbs.map((b) => b.name).join(" / ");
+      setDriveIngestProgress([{
+        fileId: item.id,
+        fileName: item.name,
+        status: "processing",
+        message: "Procesando e indexando en RAG...",
+      }]);
       const res = await fetch("/api/gdrive/ingest-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -424,6 +444,12 @@ export default function KnowledgeBasePage() {
           success: true,
           message: `"${item.name}" indexado correctamente.`,
         });
+        setDriveIngestProgress([{
+          fileId: item.id,
+          fileName: item.name,
+          status: "done",
+          message: "Indexado correctamente",
+        }]);
         // Mark as indexed locally
         setDriveItems((prev) =>
           prev.map((i) => (i.id === item.id ? { ...i, indexed: true } : i))
@@ -438,15 +464,30 @@ export default function KnowledgeBasePage() {
           success: false,
           message: err.error || "Error al indexar el archivo.",
         });
+        setDriveIngestProgress([{
+          fileId: item.id,
+          fileName: item.name,
+          status: "error",
+          message: err.error || "Error al indexar el archivo.",
+        }]);
       }
     } catch {
       setIngestResult({
         success: false,
         message: "Pipeline API no disponible.",
       });
+      setDriveIngestProgress([{
+        fileId: item.id,
+        fileName: item.name,
+        status: "error",
+        message: "Pipeline API no disponible.",
+      }]);
     } finally {
       setIngesting(null);
-      setTimeout(() => setIngestResult(null), 5000);
+      setTimeout(() => {
+        setIngestResult(null);
+        setDriveIngestProgress([]);
+      }, 5000);
     }
   }
 
@@ -458,6 +499,14 @@ export default function KnowledgeBasePage() {
 
     setIngesting("batch");
     setIngestResult(null);
+    setDriveIngestProgress(
+      pendingFiles.map((f) => ({
+        fileId: f.id,
+        fileName: f.name,
+        status: "queued",
+        message: "En cola...",
+      }))
+    );
 
     let successCount = 0;
     let errorCount = 0;
@@ -471,6 +520,13 @@ export default function KnowledgeBasePage() {
         success: true,
         message: `Indexando ${idx + 1} de ${total}: "${item.name}"...`,
       });
+      setDriveIngestProgress((prev) =>
+        prev.map((f) =>
+          f.fileId === item.id
+            ? { ...f, status: "processing", message: "Procesando e indexando en RAG..." }
+            : f
+        )
+      );
 
       try {
         const res = await fetch("/api/gdrive/ingest-file", {
@@ -489,11 +545,32 @@ export default function KnowledgeBasePage() {
           setDriveItems((prev) =>
             prev.map((i) => (i.id === item.id ? { ...i, indexed: true } : i))
           );
+          setDriveIngestProgress((prev) =>
+            prev.map((f) =>
+              f.fileId === item.id
+                ? { ...f, status: "done", message: "Indexado correctamente" }
+                : f
+            )
+          );
         } else {
           errorCount++;
+          setDriveIngestProgress((prev) =>
+            prev.map((f) =>
+              f.fileId === item.id
+                ? { ...f, status: "error", message: "Error al indexar archivo" }
+                : f
+            )
+          );
         }
       } catch {
         errorCount++;
+        setDriveIngestProgress((prev) =>
+          prev.map((f) =>
+            f.fileId === item.id
+              ? { ...f, status: "error", message: "Error de conexion con pipeline" }
+              : f
+          )
+        );
       }
     }
 
@@ -504,6 +581,7 @@ export default function KnowledgeBasePage() {
     });
     setLoadingDocs(true);
     await Promise.all([loadDocuments(), loadStats()]);
+    setTimeout(() => setDriveIngestProgress([]), 5000);
   }
 
   // ─── Upload handler ───────────────────────────────────────
@@ -1342,6 +1420,7 @@ export default function KnowledgeBasePage() {
           breadcrumbs={breadcrumbs}
           ingesting={ingesting}
           syncStatus={syncStatus}
+          driveIngestProgress={driveIngestProgress}
           onNavigateFolder={navigateToFolder}
           onNavigateBreadcrumb={navigateToBreadcrumb}
           onIngest={handleIngestFromDrive}
@@ -1382,6 +1461,7 @@ function DriveTab({
   breadcrumbs,
   ingesting,
   syncStatus,
+  driveIngestProgress,
   onNavigateFolder,
   onNavigateBreadcrumb,
   onIngest,
@@ -1393,6 +1473,7 @@ function DriveTab({
   breadcrumbs: BreadcrumbItem[];
   ingesting: string | null;
   syncStatus: SyncStatus | null;
+  driveIngestProgress: DriveIngestProgress[];
   onNavigateFolder: (id: string, name: string) => void;
   onNavigateBreadcrumb: (index: number) => void;
   onIngest: (item: DriveItem) => void;
@@ -1472,6 +1553,24 @@ function DriveTab({
         </div>
       </CardHeader>
       <CardContent>
+        {driveIngestProgress.length > 0 && (
+          <div className="mb-4 rounded-md border p-3 space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Progreso de indexacion desde Google Drive</p>
+            {driveIngestProgress.map((progressItem) => (
+              <div key={progressItem.fileId} className="flex items-center gap-2 text-xs">
+                {progressItem.status === "done" ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-vandarum-green" />
+                ) : progressItem.status === "error" ? (
+                  <XCircle className="h-3.5 w-3.5 text-destructive" />
+                ) : (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-vandarum-teal" />
+                )}
+                <span className="font-medium truncate max-w-[280px]">{progressItem.fileName}</span>
+                <span className="text-muted-foreground">{progressItem.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-vandarum-teal" />
