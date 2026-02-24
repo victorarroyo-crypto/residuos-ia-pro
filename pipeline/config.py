@@ -1,7 +1,4 @@
-"""
-CONFIGURACIÓN Y SERVICIO DE EMBEDDINGS
-=======================================
-"""
+"""Configuración y servicio de embeddings."""
 
 import logging
 import asyncio
