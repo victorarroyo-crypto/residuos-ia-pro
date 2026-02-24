@@ -260,7 +260,7 @@ export default function AdvisorPage() {
     } finally {
       setLoading(false);
     }
-  }, [input, loading, attachedFiles, urls, messages, hasFiles]);
+  }, [input, loading, attachedFiles, urls, messages]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || []);

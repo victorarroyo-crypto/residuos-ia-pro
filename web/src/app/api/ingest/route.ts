@@ -47,13 +47,13 @@ export async function POST(request: NextRequest) {
       // ── FormData mode ──
       const formData = await request.formData();
       // Forward all fields
-      for (const [key, value] of formData.entries()) {
+      formData.forEach((value, key) => {
         if (value instanceof Blob) {
           pipelineForm.append(key, value, (value as File).name || "file");
         } else {
           pipelineForm.append(key, value);
         }
-      }
+      });
     }
 
     const response = await fetch(`${PIPELINE_URL}/api/ingest`, {
