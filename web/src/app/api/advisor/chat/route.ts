@@ -104,6 +104,7 @@ export async function POST(request: NextRequest) {
     const response = await fetch(`${PIPELINE_URL}/api/advisor/chat`, {
       method: "POST",
       body: pipelineForm,
+      signal: AbortSignal.timeout(115_000), // 115s — just under Vercel's 120s maxDuration
     });
 
     if (!response.ok) {
@@ -122,13 +123,22 @@ export async function POST(request: NextRequest) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error("[advisor/chat] Error:", detail);
 
-    const message =
+    const isTimeout =
+      detail.includes("TimeoutError") || detail.includes("aborted");
+    const isNetwork =
       detail.includes("fetch") ||
       detail.includes("ECONNREFUSED") ||
-      detail.includes("ENOTFOUND")
+      detail.includes("ENOTFOUND");
+
+    const message = isTimeout
+      ? "El asesor tardo demasiado en responder. Intenta con menos archivos o una pregunta mas corta."
+      : isNetwork
         ? `Pipeline API no disponible (${PIPELINE_URL}). Asegurate de que el servidor Python esta corriendo.`
         : `Error en asesor: ${detail}`;
 
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json(
+      { error: message },
+      { status: isTimeout ? 504 : 502 }
+    );
   }
 }
