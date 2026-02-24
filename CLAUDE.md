@@ -9,6 +9,7 @@
 5. **Una cosa a la vez.** No bombardear al usuario con múltiples preguntas o acciones simultáneas.
 6. **SQL que funcione.** No usar `DO $$` en Supabase SQL Editor (inyecta comentarios y rompe). Usar queries simples y directas.
 7. **No sacar conclusiones precipitadas.** Verificar antes de afirmar.
+8. **ANTES de cualquier operación destructiva (DELETE, TRUNCATE, DROP, UPDATE masivo), verificar TODAS las dependencias.** Generar SQL para consultar foreign keys, conteos de filas dependientes, y cualquier referencia antes de proponer el comando. NUNCA dar un TRUNCATE/DELETE sin haber verificado primero qué tablas referencian la tabla objetivo. Ejemplo: antes de truncar una tabla, ejecutar `SELECT conname, confrelid::regclass AS tabla_origen FROM pg_constraint WHERE confrelid = 'nombre_tabla'::regclass AND contype = 'f';` para ver quién depende de ella.
 
 ---
 
