@@ -29,10 +29,19 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB per file
 const ACCEPTED_EXTENSIONS =
   ".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif";
 
-// Vercel serverless functions have a 4.5MB body limit.
-// Files larger than this threshold are sent directly to the pipeline API.
-const VERCEL_BODY_LIMIT = 4 * 1024 * 1024; // 4 MB (leave margin)
-const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_API_URL || "";
+// Helper: read a File as base64 string (data only, no prefix)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Strip "data:...;base64," prefix
+      resolve(result.split(",")[1] || "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -186,30 +195,27 @@ export default function AdvisorPage() {
       let res: Response;
 
       if (hasFileAttachments) {
-        // ── FormData: send files for analysis ──
-        const formData = new FormData();
-        formData.append("query", query);
-        formData.append("conversation_history", JSON.stringify(conversationHistory));
-        if (currentUrls.length > 0) {
-          formData.append("urls", JSON.stringify(currentUrls));
-        }
-        for (const file of currentFiles) {
-          formData.append("files", file);
-        }
-
-        // Vercel serverless has a ~4.5MB body limit.
-        // Large files go directly to the pipeline API to avoid 413.
-        const totalSize = currentFiles.reduce((sum, f) => sum + f.size, 0);
-        const useDirect = totalSize > VERCEL_BODY_LIMIT && PIPELINE_URL;
-
-        res = await fetch(
-          useDirect ? `${PIPELINE_URL}/api/advisor/chat` : "/api/advisor/chat",
-          {
-            method: "POST",
-            body: formData,
-            // No Content-Type header - browser sets it with boundary for multipart
-          },
+        // ── JSON with base64 files: bypasses Vercel's 4.5MB FormData limit ──
+        // Each file is converted to base64 and sent as JSON through the proxy.
+        // The proxy reconstructs FormData server-side for the pipeline.
+        const base64Files = await Promise.all(
+          currentFiles.map(async (file) => ({
+            name: file.name,
+            type: file.type,
+            base64: await fileToBase64(file),
+          }))
         );
+
+        res = await fetch("/api/advisor/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            conversation_history: conversationHistory,
+            urls: currentUrls.length > 0 ? currentUrls : undefined,
+            files: base64Files,
+          }),
+        });
       } else {
         // ── JSON: text-only queries through Next.js proxy ──
         res = await fetch("/api/advisor", {
@@ -244,12 +250,7 @@ export default function AdvisorPage() {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
 
-      if (detail.includes("413") && !PIPELINE_URL) {
-        setError(
-          "Archivo demasiado grande para el proxy. Configura NEXT_PUBLIC_PIPELINE_API_URL " +
-            "para subir archivos de mas de 4 MB."
-        );
-      } else if (detail.includes("Failed to fetch") || detail.includes("NetworkError")) {
+      if (detail.includes("Failed to fetch") || detail.includes("NetworkError")) {
         setError(
           "Error de red. Verifica tu conexion y que el servidor esta activo."
         );
