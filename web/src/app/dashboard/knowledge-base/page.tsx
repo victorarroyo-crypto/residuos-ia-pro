@@ -351,7 +351,7 @@ export default function KnowledgeBasePage() {
           .catch(() => {});
       }
     });
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Load documents ───────────────────────────────────────
   const loadDocuments = useCallback(async () => {
@@ -2146,10 +2146,9 @@ function DocumentsTab({
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">
                         {hasChunkIssue && (
-                          <AlertTriangle
-                            className="h-3.5 w-3.5 text-amber-500"
-                            title="Documento sin chunks - no buscable por RAG"
-                          />
+                          <span title="Documento sin chunks - no buscable por RAG">
+                            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                          </span>
                         )}
                         <span className={hasChunkIssue ? "text-amber-600 font-medium" : ""}>
                           {doc.total_chunks ?? "---"}
