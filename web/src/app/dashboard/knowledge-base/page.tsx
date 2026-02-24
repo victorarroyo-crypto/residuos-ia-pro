@@ -967,8 +967,8 @@ export default function KnowledgeBasePage() {
   }, [messages]);
 
   // ─── Auto-sync polling ──────────────────────────────────────
-  // When auto-sync is enabled and page is open, poll every 5 min
-  const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  // When auto-sync is enabled and page is open, poll every 6 hours
+  const SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
   const syncingRef = useRef(false);
 
   useEffect(() => {
