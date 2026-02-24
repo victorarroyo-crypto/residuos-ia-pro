@@ -771,10 +771,9 @@ async def _run_advisor(
     if analysis_context:
         system_prompt += _build_analysis_context_addendum(analysis_context)
 
-    response = await claude.messages.create(
+    async with claude.messages.stream(
         model="claude-sonnet-4-20250514",
         max_tokens=32000,
-        stream=True,
         thinking={
             "type": "enabled",
             "budget_tokens": 24000,
@@ -782,10 +781,8 @@ async def _run_advisor(
         tools=[web_search_tool],
         system=system_prompt,
         messages=messages,
-    )
-
-    # Accumulate streamed response
-    final_response = await response.get_final_message()
+    ) as stream:
+        final_response = await stream.get_final_message()
 
     # Parse response: extract answer text and web search results
     answer = ""
