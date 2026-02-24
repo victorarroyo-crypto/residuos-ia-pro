@@ -53,7 +53,6 @@ export async function uploadAndIngest(params: IngestParams): Promise<IngestResul
   // Step 1: Get signed upload URL
   let signedUrl: string;
   let storagePath: string;
-  let token: string;
 
   try {
     const urlRes = await fetch("/api/upload-signed-url", {
@@ -74,7 +73,6 @@ export async function uploadAndIngest(params: IngestParams): Promise<IngestResul
     const urlData = await urlRes.json();
     signedUrl = urlData.signed_url;
     storagePath = urlData.storage_path;
-    token = urlData.token;
   } catch (e) {
     return {
       ok: false,

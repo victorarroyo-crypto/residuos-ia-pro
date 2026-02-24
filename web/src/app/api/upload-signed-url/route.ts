@@ -13,7 +13,7 @@ import { getAdminClient } from "@/lib/supabase/admin";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { filename, project_id, content_type } = body;
+    const { filename, project_id } = body;
 
     if (!filename) {
       return NextResponse.json(

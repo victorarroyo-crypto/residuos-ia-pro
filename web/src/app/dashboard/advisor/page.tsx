@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 
 const MAX_FILES = 6;
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB per file
+const DIRECT_UPLOAD_THRESHOLD = 4 * 1024 * 1024; // 4 MB — above this, upload to Storage first
 
 const ACCEPTED_EXTENSIONS =
   ".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif";
@@ -195,16 +196,44 @@ export default function AdvisorPage() {
       let res: Response;
 
       if (hasFileAttachments) {
-        // ── JSON with base64 files: bypasses Vercel's 4.5MB FormData limit ──
-        // Each file is converted to base64 and sent as JSON through the proxy.
-        // The proxy reconstructs FormData server-side for the pipeline.
-        const base64Files = await Promise.all(
-          currentFiles.map(async (file) => ({
-            name: file.name,
-            type: file.type,
-            base64: await fileToBase64(file),
-          }))
-        );
+        // Split files: small ones as base64, large ones uploaded to Storage first
+        const base64Files: { name: string; type: string; base64: string }[] = [];
+        const storagePaths: { name: string; type: string; storage_path: string }[] = [];
+
+        for (const file of currentFiles) {
+          if (file.size > DIRECT_UPLOAD_THRESHOLD) {
+            // Large file: upload to Supabase Storage via signed URL
+            try {
+              const urlRes = await fetch("/api/upload-signed-url", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ filename: file.name }),
+              });
+              if (!urlRes.ok) throw new Error("No se pudo obtener URL de subida");
+              const { signed_url, storage_path } = await urlRes.json();
+
+              const uploadRes = await fetch(signed_url, {
+                method: "PUT",
+                headers: { "Content-Type": file.type || "application/octet-stream" },
+                body: file,
+              });
+              if (!uploadRes.ok) throw new Error("Error subiendo archivo a Storage");
+
+              storagePaths.push({ name: file.name, type: file.type, storage_path });
+            } catch (e) {
+              throw new Error(
+                `Error subiendo ${file.name}: ${e instanceof Error ? e.message : e}`
+              );
+            }
+          } else {
+            // Small file: base64
+            base64Files.push({
+              name: file.name,
+              type: file.type,
+              base64: await fileToBase64(file),
+            });
+          }
+        }
 
         res = await fetch("/api/advisor/chat", {
           method: "POST",
@@ -213,7 +242,8 @@ export default function AdvisorPage() {
             query,
             conversation_history: conversationHistory,
             urls: currentUrls.length > 0 ? currentUrls : undefined,
-            files: base64Files,
+            files: base64Files.length > 0 ? base64Files : undefined,
+            storage_files: storagePaths.length > 0 ? storagePaths : undefined,
           }),
         });
       } else {
