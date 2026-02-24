@@ -5,17 +5,16 @@ import {
   BookOpen,
   Upload,
   Search,
-  Send,
   FileText,
   Trash2,
   Loader2,
-  MessageSquare,
   Database,
   X,
   AlertCircle,
   AlertTriangle,
   FolderOpen,
   ChevronRight,
+  ChevronDown,
   HardDrive,
   Download,
   CheckCircle2,
@@ -33,14 +32,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { createClient } from "@/lib/supabase/client";
 import type { PipelineProgress } from "@/types/database";
 
@@ -57,22 +48,6 @@ interface KBDocument {
   estado: string | null;
   fecha_documento: string | null;
   fecha_ingesta: string | null;
-}
-
-interface RAGSource {
-  document_id: string;
-  title: string;
-  doc_type: string;
-  chunk_type: string;
-  similarity: number;
-  scope: string;
-  excerpt: string;
-}
-
-interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  sources?: RAGSource[];
 }
 
 interface DriveItem {
@@ -232,7 +207,7 @@ function formatBytes(bytes: number | null): string {
 
 // ─── Component ──────────────────────────────────────────────
 export default function KnowledgeBasePage() {
-  const [activeTab, setActiveTab] = useState<"drive" | "documents" | "chat">(
+  const [activeTab, setActiveTab] = useState<"drive" | "documents">(
     "drive"
   );
 
@@ -260,12 +235,6 @@ export default function KnowledgeBasePage() {
   } | null>(null);
   const [uploadFiles, setUploadFiles] = useState<UploadFileState[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Chat state
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Delete state
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -929,65 +898,6 @@ export default function KnowledgeBasePage() {
     }
   }
 
-  // ─── Chat handler ─────────────────────────────────────────
-  async function handleSendMessage() {
-    if (!chatInput.trim() || chatLoading) return;
-
-    const userMessage = chatInput.trim();
-    setChatInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
-    setChatLoading(true);
-
-    try {
-      const res = await fetch("/api/rag", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: userMessage,
-          scope: "general",
-          top_k: 5,
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: data.answer,
-            sources: data.sources,
-          },
-        ]);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: `Error: ${err.error || "No se pudo procesar la consulta"}`,
-          },
-        ]);
-      }
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            "Error: No se pudo conectar con el servidor. Verifica que el pipeline API esta activo.",
-        },
-      ]);
-    } finally {
-      setChatLoading(false);
-    }
-  }
-
-  // Auto-scroll chat
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
   // ─── Auto-sync polling ──────────────────────────────────────
   // When auto-sync is enabled and page is open, poll every 6 hours
   const SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -1420,33 +1330,47 @@ export default function KnowledgeBasePage() {
                 </div>
               ) : null;
             })()}
-            {syncResult.details && syncResult.details.length > 0 && (
-              <div className="mt-2 space-y-0.5 text-xs ml-6">
-                {syncResult.details.slice(0, 10).map((d, i) => (
-                  <div key={i} className="flex items-center gap-1">
-                    {d.status === "ingested" ? (
-                      <CheckCircle2 className="h-3 w-3 text-green-600" />
-                    ) : d.status === "error" ? (
-                      <XCircle className="h-3 w-3 text-red-500" />
-                    ) : (
-                      <Clock className="h-3 w-3 text-gray-400" />
-                    )}
-                    <span className="truncate">{d.file}</span>
-                    {d.chunks != null && (
-                      <span className="text-green-600">({d.chunks} chunks)</span>
-                    )}
-                    {d.error && (
-                      <span className="text-red-500 truncate">{d.error}</span>
-                    )}
-                  </div>
-                ))}
-                {syncResult.details.length > 10 && (
-                  <p className="text-muted-foreground">
-                    ...y {syncResult.details.length - 10} archivos mas
-                  </p>
-                )}
-              </div>
-            )}
+            {syncResult.details && syncResult.details.length > 0 && (() => {
+              const errors = syncResult.details.filter((d) => d.status === "error");
+              const ingested = syncResult.details.filter((d) => d.status === "ingested");
+              const skipped = syncResult.details.filter((d) => d.status === "skipped");
+              return (
+                <div className="mt-2 ml-6 space-y-2">
+                  {/* Errores primero, siempre visibles */}
+                  {errors.length > 0 && (
+                    <div className="rounded-md border border-red-200 bg-red-50/50 p-2">
+                      <p className="text-xs font-medium text-red-800 mb-1">
+                        {errors.length} error{errors.length !== 1 ? "es" : ""}:
+                      </p>
+                      <div className="space-y-1 max-h-48 overflow-y-auto">
+                        {errors.map((d, i) => (
+                          <div key={i} className="flex items-start gap-1 text-xs">
+                            <XCircle className="h-3 w-3 text-red-500 shrink-0 mt-0.5" />
+                            <span className="font-medium">{d.file}</span>
+                            {d.error && (
+                              <span className="text-red-600">{d.error}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Resumen de exitosos y saltados */}
+                  {ingested.length > 0 && (
+                    <p className="text-xs text-green-700">
+                      <CheckCircle2 className="h-3 w-3 inline mr-1" />
+                      {ingested.length} indexado{ingested.length !== 1 ? "s" : ""} correctamente
+                    </p>
+                  )}
+                  {skipped.length > 0 && (
+                    <p className="text-xs text-gray-500">
+                      <Clock className="h-3 w-3 inline mr-1" />
+                      {skipped.length} ya existente{skipped.length !== 1 ? "s" : ""}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
           <button onClick={() => setSyncResult(null)} className="shrink-0">
             <X className="h-4 w-4" />
@@ -1674,17 +1598,6 @@ export default function KnowledgeBasePage() {
           <FileText className="h-4 w-4" />
           Documentos indexados
         </button>
-        <button
-          onClick={() => setActiveTab("chat")}
-          className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            activeTab === "chat"
-              ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <MessageSquare className="h-4 w-4" />
-          Consultar RAG
-        </button>
       </div>
 
       {/* Tab content */}
@@ -1702,7 +1615,7 @@ export default function KnowledgeBasePage() {
           onIngest={handleIngestFromDrive}
           onBatchIngest={handleBatchIngestFromDrive}
         />
-      ) : activeTab === "documents" ? (
+      ) : (
         <DocumentsTab
           documents={documents}
           search={search}
@@ -1716,15 +1629,6 @@ export default function KnowledgeBasePage() {
             setLoadingDocs(true);
             loadDocuments();
           }}
-        />
-      ) : (
-        <ChatTab
-          messages={messages}
-          chatInput={chatInput}
-          setChatInput={setChatInput}
-          chatLoading={chatLoading}
-          onSend={handleSendMessage}
-          chatEndRef={chatEndRef}
         />
       )}
     </div>
@@ -1975,7 +1879,7 @@ function DriveTab({
   );
 }
 
-// ─── Documents Tab ──────────────────────────────────────────
+// ─── Documents Tab (folder structure like GD) ──────────────
 function DocumentsTab({
   documents,
   search,
@@ -1997,6 +1901,7 @@ function DocumentsTab({
   onReprocess: (ids: string[]) => void;
   onSearch: () => void;
 }) {
+  const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
   const filteredDocs =
@@ -2007,6 +1912,30 @@ function DocumentsTab({
             (d) => d.estado === "indexado" && (!d.total_chunks || d.total_chunks === 0)
           )
         : documents.filter((d) => d.estado === statusFilter);
+
+  // Agrupar por tipo (replica estructura de carpetas de GD)
+  const grouped = filteredDocs.reduce<Record<string, KBDocument[]>>((acc, doc) => {
+    const tipo = doc.tipo || "sin_clasificar";
+    if (!acc[tipo]) acc[tipo] = [];
+    acc[tipo].push(doc);
+    return acc;
+  }, {});
+
+  // Ordenar carpetas por nombre
+  const sortedFolders = Object.keys(grouped).sort((a, b) => {
+    const labelA = knowledgeTypeLabels[a] ?? a;
+    const labelB = knowledgeTypeLabels[b] ?? b;
+    return labelA.localeCompare(labelB);
+  });
+
+  function toggleFolder(tipo: string) {
+    setOpenFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(tipo)) next.delete(tipo);
+      else next.add(tipo);
+      return next;
+    });
+  }
 
   const docsWithIssues = documents.filter(
     (d) =>
@@ -2101,268 +2030,143 @@ function DocumentsTab({
             </p>
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Titulo</TableHead>
-                <TableHead>Tipo</TableHead>
-                <TableHead>Formato</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead className="text-right">Pags</TableHead>
-                <TableHead className="text-right">Chunks</TableHead>
-                <TableHead>Fecha ingesta</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredDocs.map((doc) => {
-                const hasChunkIssue =
-                  doc.estado === "indexado" &&
-                  (!doc.total_chunks || doc.total_chunks === 0);
-                const isError = doc.estado === "error";
-                const canReprocess = hasChunkIssue || isError;
-                const isReprocessing = reprocessing.has(doc.id);
+          <div className="space-y-1">
+            {sortedFolders.map((tipo) => {
+              const docs = grouped[tipo];
+              const isOpen = openFolders.has(tipo);
+              const folderLabel = knowledgeTypeLabels[tipo] ?? tipo;
+              const errorCount = docs.filter((d) => d.estado === "error").length;
+              const noChunkCount = docs.filter(
+                (d) => d.estado === "indexado" && (!d.total_chunks || d.total_chunks === 0)
+              ).length;
 
-                return (
-                  <TableRow
-                    key={doc.id}
-                    className={
-                      hasChunkIssue
-                        ? "bg-amber-50/50"
-                        : isError
-                          ? "bg-red-50/50"
-                          : undefined
-                    }
+              return (
+                <div key={tipo}>
+                  {/* Folder row */}
+                  <button
+                    onClick={() => toggleFolder(tipo)}
+                    className="flex items-center gap-3 w-full rounded-md px-3 py-2.5 text-left hover:bg-muted transition-colors group"
                   >
-                    <TableCell className="max-w-[300px] truncate font-medium">
-                      {doc.titulo || "Sin titulo"}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">
-                        {doc.tipo
-                          ? knowledgeTypeLabels[doc.tipo] ?? doc.tipo
-                          : "---"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {doc.naturaleza_pdf || "---"}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          doc.estado === "indexado"
-                            ? hasChunkIssue
-                              ? "secondary"
-                              : "success"
-                            : doc.estado === "error"
-                              ? "destructive"
-                              : "secondary"
-                        }
-                      >
-                        {doc.estado || "---"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {doc.total_paginas ?? "---"}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        {hasChunkIssue && (
-                          <span title="Documento sin chunks - no buscable por RAG">
-                            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-                          </span>
-                        )}
-                        <span className={hasChunkIssue ? "text-amber-600 font-medium" : ""}>
-                          {doc.total_chunks ?? "---"}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {doc.fecha_ingesta
-                        ? new Date(doc.fecha_ingesta).toLocaleDateString(
-                            "es-ES"
-                          )
-                        : "---"}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {canReprocess && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onReprocess([doc.id])}
-                            disabled={isReprocessing}
-                            className="text-amber-600 hover:text-amber-800 hover:bg-amber-50"
-                            title="Reprocesar documento"
-                          >
-                            {isReprocessing ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <RotateCcw className="h-4 w-4" />
-                            )}
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => onDelete(doc.id)}
-                          disabled={deleting === doc.id}
-                          className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                        >
-                          {deleting === doc.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ─── Chat Tab ───────────────────────────────────────────────
-function ChatTab({
-  messages,
-  chatInput,
-  setChatInput,
-  chatLoading,
-  onSend,
-  chatEndRef,
-}: {
-  messages: ChatMessage[];
-  chatInput: string;
-  setChatInput: (s: string) => void;
-  chatLoading: boolean;
-  onSend: () => void;
-  chatEndRef: React.RefObject<HTMLDivElement>;
-}) {
-  return (
-    <Card className="flex flex-col" style={{ height: "calc(100vh - 420px)" }}>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <MessageSquare className="h-5 w-5 text-vandarum-teal" />
-          Consultar Base de Conocimiento
-        </CardTitle>
-        <p className="text-sm text-muted-foreground">
-          Pregunta sobre normativa, procedimientos tecnicos, codigos LER,
-          obligaciones legales y mas.
-        </p>
-      </CardHeader>
-
-      {/* Messages area */}
-      <CardContent className="flex-1 overflow-y-auto space-y-4 pb-0">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <BookOpen className="h-12 w-12 text-muted-foreground/30 mb-4" />
-            <p className="text-muted-foreground text-sm">
-              Escribe una pregunta para consultar la base de conocimiento.
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2 justify-center">
-              {[
-                "Que dice la normativa sobre almacenamiento temporal de residuos peligrosos?",
-                "Cuales son las obligaciones del productor segun la Ley 7/2022?",
-                "Que es un codigo LER y como se clasifica?",
-              ].map((suggestion) => (
-                <button
-                  key={suggestion}
-                  onClick={() => {
-                    setChatInput(suggestion);
-                  }}
-                  className="rounded-full border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[80%] rounded-lg px-4 py-3 text-sm ${
-                msg.role === "user"
-                  ? "bg-vandarum-teal text-white"
-                  : "bg-muted"
-              }`}
-            >
-              <div className="whitespace-pre-wrap">{msg.content}</div>
-
-              {/* Sources */}
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="mt-3 border-t border-border/50 pt-2">
-                  <p className="text-xs font-medium mb-1 opacity-70">
-                    Fuentes:
-                  </p>
-                  <div className="space-y-1">
-                    {msg.sources.map((src, j) => (
-                      <div
-                        key={j}
-                        className="flex items-center gap-2 text-xs opacity-70"
-                      >
-                        <FileText className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{src.title}</span>
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] py-0 shrink-0"
-                        >
-                          {src.similarity > 0
-                            ? `${Math.round(src.similarity * 100)}%`
-                            : src.doc_type}
+                    {isOpen ? (
+                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    )}
+                    <FolderOpen className="h-5 w-5 text-vandarum-teal shrink-0" />
+                    <span className="flex-1 text-sm font-medium group-hover:text-vandarum-teal">
+                      {folderLabel}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      {errorCount > 0 && (
+                        <Badge variant="destructive" className="text-[10px]">
+                          {errorCount} error{errorCount !== 1 ? "es" : ""}
                         </Badge>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
+                      )}
+                      {noChunkCount > 0 && (
+                        <Badge variant="secondary" className="text-[10px] bg-amber-100 text-amber-800">
+                          {noChunkCount} sin chunks
+                        </Badge>
+                      )}
+                      <Badge variant="outline" className="text-[10px]">
+                        {docs.length} doc{docs.length !== 1 ? "s" : ""}
+                      </Badge>
+                    </div>
+                  </button>
 
-        {chatLoading && (
-          <div className="flex justify-start">
-            <div className="bg-muted rounded-lg px-4 py-3 text-sm flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
-              Consultando base de conocimiento...
-            </div>
+                  {/* Documents inside folder */}
+                  {isOpen && (
+                    <div className="ml-8 border-l pl-4 space-y-0.5 mb-2">
+                      {docs.map((doc) => {
+                        const hasChunkIssue =
+                          doc.estado === "indexado" &&
+                          (!doc.total_chunks || doc.total_chunks === 0);
+                        const isError = doc.estado === "error";
+                        const canReprocess = hasChunkIssue || isError;
+                        const isReprocessing = reprocessing.has(doc.id);
+
+                        return (
+                          <div
+                            key={doc.id}
+                            className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm ${
+                              isError
+                                ? "bg-red-50/50"
+                                : hasChunkIssue
+                                  ? "bg-amber-50/50"
+                                  : "hover:bg-muted/50"
+                            } transition-colors`}
+                          >
+                            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">
+                                {doc.titulo || "Sin titulo"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {doc.naturaleza_pdf || "---"}
+                                {doc.total_paginas ? ` · ${doc.total_paginas} pags` : ""}
+                                {doc.total_chunks ? ` · ${doc.total_chunks} chunks` : ""}
+                                {doc.fecha_ingesta &&
+                                  ` · ${new Date(doc.fecha_ingesta).toLocaleDateString("es-ES")}`}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {hasChunkIssue && (
+                                <span title="Sin chunks"><AlertTriangle className="h-3.5 w-3.5 text-amber-500" /></span>
+                              )}
+                              <Badge
+                                variant={
+                                  isError
+                                    ? "destructive"
+                                    : hasChunkIssue
+                                      ? "secondary"
+                                      : "success"
+                                }
+                                className="text-[10px]"
+                              >
+                                {doc.estado || "---"}
+                              </Badge>
+                              {canReprocess && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => onReprocess([doc.id])}
+                                  disabled={isReprocessing}
+                                  className="h-7 w-7 p-0 text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                                  title="Reprocesar"
+                                >
+                                  {isReprocessing ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => onDelete(doc.id)}
+                                disabled={deleting === doc.id}
+                                className="h-7 w-7 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                title="Eliminar"
+                              >
+                                {deleting === doc.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
-
-        <div ref={chatEndRef} />
       </CardContent>
-
-      {/* Input area */}
-      <div className="border-t p-4">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && onSend()}
-            placeholder="Escribe tu pregunta sobre normativa o procedimientos..."
-            className="flex-1 rounded-md border bg-background px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20"
-            disabled={chatLoading}
-          />
-          <Button
-            onClick={onSend}
-            disabled={chatLoading || !chatInput.trim()}
-            className="bg-vandarum-teal hover:bg-vandarum-teal/90"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
     </Card>
   );
 }
+
