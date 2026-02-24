@@ -327,7 +327,7 @@ export default function ProjectDetailPage({
       contacto_email: project.contacto_email,
       contacto_telefono: project.contacto_telefono,
       notas: project.notas,
-      tipo_relacion: project.tipo_relacion,
+      tipo: project.tipo,
     });
     setEditing(true);
     setSaveError(null);
@@ -352,7 +352,7 @@ export default function ProjectDetailPage({
         contacto_email: editForm.contacto_email || null,
         contacto_telefono: editForm.contacto_telefono || null,
         notas: editForm.notas || null,
-        tipo_relacion: editForm.tipo_relacion || null,
+        tipo: editForm.tipo || null,
       })
       .eq("id", project.id);
 
@@ -643,9 +643,9 @@ export default function ProjectDetailPage({
                 {[project.municipio, project.comunidad_autonoma].filter(Boolean).join(", ")}
               </span>
             )}
-            {project.tipo_relacion && (
+            {project.tipo && (
               <Badge variant="outline" className="capitalize">
-                {project.tipo_relacion}
+                {project.tipo}
               </Badge>
             )}
             <span className="flex items-center gap-1.5">
@@ -799,8 +799,8 @@ export default function ProjectDetailPage({
                 <div>
                   <label className="text-sm font-medium">Tipo de relacion</label>
                   <select
-                    value={editForm.tipo_relacion ?? "retainer"}
-                    onChange={(e) => setEditForm({ ...editForm, tipo_relacion: e.target.value as Project["tipo_relacion"] })}
+                    value={editForm.tipo ?? "retainer"}
+                    onChange={(e) => setEditForm({ ...editForm, tipo: e.target.value as Project["tipo"] })}
                     className={inputClass}
                   >
                     <option value="retainer">Retainer</option>
