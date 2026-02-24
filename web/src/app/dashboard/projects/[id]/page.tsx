@@ -37,6 +37,9 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
+import { AnalysisPlanReview } from "@/components/analysis-plan-review";
+import { AnalysisProgress } from "@/components/analysis-progress";
+import { AnalysisRound2 } from "@/components/analysis-round2";
 import type {
   Project,
   WasteInventoryItem,
@@ -119,11 +122,29 @@ interface AnalysisResult {
   opportunities: AnalysisFinding[];
   errors: string[];
   agents_used?: string[];
+  round_number?: number;
   aai_findings?: AnalysisFinding[];
   contratos_findings?: AnalysisFinding[];
   facturas_findings?: AnalysisFinding[];
   registro_findings?: AnalysisFinding[];
   normativo_findings?: AnalysisFinding[];
+}
+
+// HITL phase types
+type AnalysisPhase = "idle" | "planning" | "plan_review" | "executing" | "results" | "round2_executing";
+
+interface AgentPlanItem {
+  id: string;
+  enabled: boolean;
+  reason: string;
+  focus: string;
+  data_available: Record<string, unknown>;
+}
+
+interface AnalysisPlanData {
+  agents: AgentPlanItem[];
+  data_summary: Record<string, unknown>;
+  data_gaps: string[];
 }
 
 const inputClass =
@@ -147,13 +168,20 @@ export default function ProjectDetailPage({
   const [managers, setManagers] = useState<WasteManager[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Analysis state
+  // Analysis state (legacy - kept for backwards compat)
   const [selectedAgents, setSelectedAgents] = useState<Set<AgentId>>(
     new Set(AVAILABLE_AGENTS.map((a) => a.id))
   );
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  // HITL analysis state
+  const [analysisPhase, setAnalysisPhase] = useState<AnalysisPhase>("idle");
+  const [analysisPlan, setAnalysisPlan] = useState<AnalysisPlanData | null>(null);
+  const [executeStartTime, setExecuteStartTime] = useState(0);
+  const [executingAgents, setExecutingAgents] = useState<string[]>([]);
+  const [executingInstructions, setExecutingInstructions] = useState("");
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -331,40 +359,128 @@ export default function ProjectDetailPage({
     });
   }
 
+  // Legacy run (kept for header button)
   async function runAnalysis() {
-    if (selectedAgents.size === 0) {
-      setAnalysisError("Selecciona al menos un agente para el analisis");
-      setActiveTab("analisis");
-      return;
-    }
+    startHitlAnalysis();
+  }
 
-    setAnalysisRunning(true);
+  // ─── HITL Phase Functions ──────────────────────────────────────
+
+  async function startHitlAnalysis() {
+    setAnalysisPhase("planning");
     setAnalysisError(null);
     setAnalysisResult(null);
+    setAnalysisPlan(null);
     setActiveTab("analisis");
 
     try {
-      const response = await fetch("/api/analyze-project", {
+      const response = await fetch("/api/analyze-project/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: id,
-          agents: Array.from(selectedAgents),
-        }),
+        body: JSON.stringify({ project_id: id }),
       });
 
       const data = await response.json();
-
       if (!response.ok) {
-        setAnalysisError(data.error || "Error en el analisis");
+        setAnalysisError(data.error || "Error generando plan");
+        setAnalysisPhase("idle");
         return;
       }
 
-      setAnalysisResult(data);
+      setAnalysisPlan(data.analysis_plan);
+      setAnalysisPhase("plan_review");
     } catch (err) {
       setAnalysisError(
         err instanceof Error ? err.message : "Error de conexion con el pipeline"
       );
+      setAnalysisPhase("idle");
+    }
+  }
+
+  async function executeAnalysis(
+    agents: string[],
+    instructions: string,
+    agentFocus: Record<string, string>
+  ) {
+    setAnalysisPhase("executing");
+    setAnalysisRunning(true);
+    setAnalysisError(null);
+    setExecuteStartTime(Date.now());
+    setExecutingAgents(agents);
+    setExecutingInstructions(instructions);
+
+    try {
+      const response = await fetch("/api/analyze-project/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: id,
+          agents,
+          consultant_instructions: instructions,
+          agent_focus: agentFocus,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        setAnalysisError(data.error || "Error en ejecucion");
+        setAnalysisPhase("plan_review");
+        return;
+      }
+
+      setAnalysisResult(data);
+      setAnalysisPhase("results");
+    } catch (err) {
+      setAnalysisError(
+        err instanceof Error ? err.message : "Error de conexion con el pipeline"
+      );
+      setAnalysisPhase("plan_review");
+    } finally {
+      setAnalysisRunning(false);
+    }
+  }
+
+  async function executeRound2(
+    agents: string[],
+    instructions: string,
+    agentFocus: Record<string, string>
+  ) {
+    if (!analysisResult) return;
+
+    setAnalysisPhase("round2_executing");
+    setAnalysisRunning(true);
+    setAnalysisError(null);
+    setExecuteStartTime(Date.now());
+    setExecutingAgents(agents);
+    setExecutingInstructions(instructions);
+
+    try {
+      const response = await fetch("/api/analyze-project/round2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: id,
+          agents,
+          consultant_instructions: instructions,
+          agent_focus: agentFocus,
+          previous_findings: analysisResult.findings,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        setAnalysisError(data.error || "Error en 2a vuelta");
+        setAnalysisPhase("results");
+        return;
+      }
+
+      setAnalysisResult(data);
+      setAnalysisPhase("results");
+    } catch (err) {
+      setAnalysisError(
+        err instanceof Error ? err.message : "Error de conexion con el pipeline"
+      );
+      setAnalysisPhase("results");
     } finally {
       setAnalysisRunning(false);
     }
@@ -1259,78 +1375,70 @@ export default function ProjectDetailPage({
       {/* ═══ Tab: Analisis IA ═══ */}
       {activeTab === "analisis" && (
         <div className="space-y-6">
-          {/* Agent selector - always visible when not running */}
-          {!analysisRunning && (
+          {/* Phase: IDLE - Start button */}
+          {analysisPhase === "idle" && !analysisResult && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Sparkles className="h-5 w-5 text-vandarum-teal" />
-                  Configurar analisis
+                  Analisis inteligente con HITL
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Selecciona que agentes quieres ejecutar. Optimizador y Redactor se ejecutan automaticamente con los hallazgos de los agentes seleccionados.
+                  El coordinador IA analizara los datos del proyecto y propondra un plan de analisis.
+                  Podras revisar, ajustar y dar instrucciones antes de ejecutar.
                 </p>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {AVAILABLE_AGENTS.map((agent) => (
-                    <label
-                      key={agent.id}
-                      className={cn(
-                        "flex items-start gap-3 rounded-md border p-3 cursor-pointer transition-colors",
-                        selectedAgents.has(agent.id)
-                          ? "border-vandarum-teal bg-vandarum-teal/5"
-                          : "border-muted hover:border-muted-foreground/30"
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedAgents.has(agent.id)}
-                        onChange={() => toggleAgent(agent.id)}
-                        className="mt-0.5 accent-[var(--vandarum-teal)]"
-                      />
-                      <div>
-                        <p className="text-sm font-medium">{agent.label}</p>
-                        <p className="text-xs text-muted-foreground">{agent.description}</p>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-                <div className="flex items-center gap-3">
-                  <Button
-                    className="bg-gradient-brand text-white hover:opacity-90"
-                    onClick={runAnalysis}
-                    disabled={selectedAgents.size === 0}
-                  >
-                    <Sparkles className="mr-2 h-4 w-4" />
-                    Lanzar analisis ({selectedAgents.size + 2} agentes)
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {selectedAgents.size} especializados + Optimizador + Redactor
-                  </span>
-                </div>
+                <Button
+                  className="bg-gradient-brand text-white hover:opacity-90"
+                  onClick={startHitlAnalysis}
+                >
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Planificar analisis
+                </Button>
               </CardContent>
             </Card>
           )}
 
-          {/* Running state */}
-          {analysisRunning && (
+          {/* Phase: PLANNING - Loading */}
+          {analysisPhase === "planning" && (
             <Card className="border-vandarum-teal/30">
               <CardContent className="py-12 text-center">
                 <Loader2 className="mx-auto h-10 w-10 animate-spin text-vandarum-teal mb-4" />
-                <p className="text-lg font-medium">Analizando proyecto...</p>
+                <p className="text-lg font-medium">Analizando datos del proyecto...</p>
                 <p className="text-sm text-muted-foreground mt-2">
-                  {selectedAgents.size + 2} agentes trabajando. Esto puede tardar 1-2 minutos.
+                  El coordinador IA esta revisando documentos, inventario y contratos para proponer un plan.
                 </p>
-                <div className="flex flex-wrap justify-center gap-2 mt-4">
-                  {AVAILABLE_AGENTS.filter((a) => selectedAgents.has(a.id)).map((a) => (
-                    <Badge key={a.id} variant="secondary" className="animate-pulse">
-                      {a.label}
-                    </Badge>
-                  ))}
-                  <Badge variant="secondary" className="animate-pulse">Optimizador</Badge>
-                  <Badge variant="secondary" className="animate-pulse">Redactor</Badge>
-                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Phase: PLAN_REVIEW - HITL #1 */}
+          {analysisPhase === "plan_review" && analysisPlan && project && (
+            <Card>
+              <CardContent className="pt-6">
+                <AnalysisPlanReview
+                  projectId={id}
+                  projectName={project.nombre}
+                  plan={analysisPlan}
+                  onApprove={executeAnalysis}
+                  onCancel={() => { setAnalysisPhase("idle"); setAnalysisPlan(null); }}
+                  loading={analysisRunning}
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Phase: EXECUTING / ROUND2_EXECUTING */}
+          {(analysisPhase === "executing" || analysisPhase === "round2_executing") && (
+            <Card className="border-vandarum-teal/30">
+              <CardContent className="pt-6">
+                <AnalysisProgress
+                  agents={executingAgents}
+                  instructions={executingInstructions}
+                  startTime={executeStartTime}
+                  isComplete={!analysisRunning}
+                />
               </CardContent>
             </Card>
           )}
@@ -1345,8 +1453,8 @@ export default function ProjectDetailPage({
             </Card>
           )}
 
-          {/* Results */}
-          {analysisResult && !analysisRunning && (
+          {/* Results - shown in results phase or when we have results from idle */}
+          {analysisResult && (analysisPhase === "results" || analysisPhase === "idle") && !analysisRunning && (
             <div className="space-y-6">
               {/* Agents used summary */}
               {analysisResult.agents_used && analysisResult.agents_used.length > 0 && (
@@ -1616,11 +1724,39 @@ export default function ProjectDetailPage({
                 </Card>
               )}
 
+              {/* Round 2 section - HITL #2 */}
+              {analysisPhase === "results" && project && (() => {
+                const agentResults = ["aai", "contratos", "facturas", "registro", "normativo"]
+                  .map((agentId) => {
+                    const key = `${agentId}_findings` as keyof AnalysisResult;
+                    const findings = (analysisResult[key] as AnalysisFinding[] | undefined) ?? [];
+                    return {
+                      id: agentId,
+                      findings,
+                      criticalCount: findings.filter((f) => f.severidad === "critica").length,
+                      highCount: findings.filter((f) => f.severidad === "alta").length,
+                    };
+                  })
+                  .filter((r) => r.findings.length > 0);
+
+                return (
+                  <AnalysisRound2
+                    projectId={id}
+                    projectName={project.nombre}
+                    agentResults={agentResults}
+                    allFindings={analysisResult.findings}
+                    onLaunchRound2={executeRound2}
+                    onFinish={() => setAnalysisPhase("idle")}
+                    loading={analysisRunning}
+                  />
+                );
+              })()}
+
               {/* Re-run button */}
               <div className="flex justify-center">
-                <Button variant="outline" onClick={runAnalysis}>
+                <Button variant="outline" onClick={startHitlAnalysis}>
                   <Sparkles className="mr-2 h-4 w-4" />
-                  Ejecutar nuevo analisis
+                  Nuevo analisis desde cero
                 </Button>
               </div>
             </div>

@@ -7,7 +7,7 @@ incumplimientos de plazos legales.
 
 import logging
 from .state import AnalysisState, Finding
-from .prompts import SYSTEM_REGISTRO
+from .prompts import SYSTEM_REGISTRO, build_instructions_block, build_agent_focus_block, build_previous_findings_block
 from .llm import call_claude
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,11 @@ def _build_registro_context(state: AnalysisState) -> str:
     if not registro_docs and not registro_chunks:
         sections.append("NO HAY DOCUMENTOS DE REGISTRO/DARI INDEXADOS.")
         sections.append("Analiza el inventario para detectar posibles problemas de plazos basandote en los datos disponibles.")
+
+    # Inyectar instrucciones HITL
+    hitl = build_instructions_block(state) + build_agent_focus_block(state, "registro") + build_previous_findings_block(state, "registro")
+    if hitl:
+        sections.insert(0, hitl)
 
     return "\n".join(sections)
 

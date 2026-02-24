@@ -7,7 +7,7 @@ normativa aplicable al sector y CCAA del proyecto.
 
 import logging
 from .state import AnalysisState, Finding
-from .prompts import SYSTEM_NORMATIVO
+from .prompts import SYSTEM_NORMATIVO, build_instructions_block, build_agent_focus_block, build_previous_findings_block
 from .llm import call_claude
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,11 @@ def _build_normativo_context(state: AnalysisState) -> str:
     queries = _build_rag_queries(state)
     rag_context = _search_knowledge_text(state, queries)
     sections.append(rag_context)
+
+    # Inyectar instrucciones HITL
+    hitl = build_instructions_block(state) + build_agent_focus_block(state, "normativo") + build_previous_findings_block(state, "normativo")
+    if hitl:
+        sections.insert(0, hitl)
 
     return "\n".join(sections)
 

@@ -23,7 +23,7 @@ Arquitectura del grafo:
     Redactor    (genera informe ejecutivo final)
 """
 
-from .graph import build_analysis_graph, run_project_analysis
+from .graph import build_analysis_graph, run_project_analysis, plan_analysis
 from .state import AnalysisState
 
-__all__ = ["build_analysis_graph", "run_project_analysis", "AnalysisState"]
+__all__ = ["build_analysis_graph", "run_project_analysis", "plan_analysis", "AnalysisState"]

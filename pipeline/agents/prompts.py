@@ -171,3 +171,56 @@ El informe debe ser:
 - Maximo 2 paginas equivalentes
 
 Responde directamente con el informe en Markdown (no JSON)."""
+
+
+# ─── Bloque inyectable de instrucciones del consultor ─────────────
+
+def build_instructions_block(state: dict) -> str:
+    """Genera el bloque de instrucciones del consultor para inyectar en el contexto."""
+    instructions = state.get("consultant_instructions", "")
+    if not instructions:
+        return ""
+    return (
+        "=== INSTRUCCIONES DEL CONSULTOR ===\n"
+        f"{instructions}\n"
+        "Presta especial atencion a estas instrucciones al generar tu analisis.\n"
+    )
+
+
+def build_agent_focus_block(state: dict, agent_id: str) -> str:
+    """Genera el bloque de foco especifico para un agente."""
+    agent_focus = state.get("agent_focus", {})
+    focus = agent_focus.get(agent_id, "")
+    if not focus:
+        return ""
+    return (
+        "=== FOCO ESPECIFICO PARA ESTE ANALISIS ===\n"
+        f"{focus}\n"
+        "Centra tu analisis en este foco sin dejar de cubrir lo basico.\n"
+    )
+
+
+def build_previous_findings_block(state: dict, agent_id: str) -> str:
+    """Genera bloque con hallazgos previos para la 2a vuelta."""
+    round_number = state.get("round_number", 1)
+    if round_number < 2:
+        return ""
+
+    previous = state.get("previous_findings", [])
+    agent_previous = [f for f in previous if f.get("agente") == agent_id]
+    if not agent_previous:
+        return ""
+
+    parts = ["=== HALLAZGOS DE LA RONDA ANTERIOR (profundizar) ==="]
+    for f in agent_previous:
+        ahorro = f.get("ahorro_eur_ano", 0)
+        ahorro_str = f" | {ahorro:,.0f} EUR/ano" if ahorro else ""
+        parts.append(
+            f"- [{f.get('severidad', 'info').upper()}] {f.get('descripcion', '')}{ahorro_str}"
+        )
+    parts.append("")
+    parts.append(
+        "IMPORTANTE: Esta es la 2a vuelta. Profundiza en los hallazgos anteriores "
+        "y busca detalles adicionales segun las instrucciones del consultor."
+    )
+    return "\n".join(parts)

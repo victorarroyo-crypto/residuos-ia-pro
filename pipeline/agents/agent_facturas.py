@@ -7,7 +7,7 @@ anomalias de precio, cantidad y tendencias.
 
 import logging
 from .state import AnalysisState, Finding
-from .prompts import SYSTEM_FACTURAS
+from .prompts import SYSTEM_FACTURAS, build_instructions_block, build_agent_focus_block, build_previous_findings_block
 from .llm import call_claude
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,11 @@ def _build_facturas_context(state: AnalysisState) -> str:
     if not invoice_lines and not factura_chunks:
         sections.append("NO HAY FACTURAS INDEXADAS PARA ESTE PROYECTO.")
         sections.append("Indica que no se puede realizar el analisis financiero sin facturas.")
+
+    # Inyectar instrucciones HITL
+    hitl = build_instructions_block(state) + build_agent_focus_block(state, "facturas") + build_previous_findings_block(state, "facturas")
+    if hitl:
+        sections.insert(0, hitl)
 
     return "\n".join(sections)
 

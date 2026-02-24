@@ -7,7 +7,7 @@ detectar incumplimientos y verificar condiciones.
 
 import logging
 from .state import AnalysisState, Finding
-from .prompts import SYSTEM_AAI
+from .prompts import SYSTEM_AAI, build_instructions_block, build_agent_focus_block, build_previous_findings_block
 from .llm import call_claude
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,11 @@ def _build_aai_context(state: AnalysisState) -> str:
     if not aai_docs and not aai_chunks:
         sections.append("NO HAY DOCUMENTOS DE AAI INDEXADOS PARA ESTE PROYECTO.")
         sections.append("Indica que no se puede realizar el analisis de AAI sin documentos.")
+
+    # Inyectar instrucciones HITL
+    hitl = build_instructions_block(state) + build_agent_focus_block(state, "aai") + build_previous_findings_block(state, "aai")
+    if hitl:
+        sections.insert(0, hitl)
 
     return "\n".join(sections)
 
