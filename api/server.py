@@ -836,12 +836,15 @@ async def advisor_chat(
     conversation_history: str = Form(default="[]"),
     project_id: Optional[str] = Form(default=None),
     urls: str = Form(default="[]"),
+    storage_files: str = Form(default="[]"),
     files: list[UploadFile] = File(default=[]),
 ):
     """
     Asesor IA - FormData endpoint for file uploads.
     Frontend calls this directly (bypassing Vercel's 4.5MB payload limit).
     Accepts real file uploads via multipart/form-data.
+    Large files (>4MB) arrive as storage_files (JSON array of {name, type, storage_path})
+    already uploaded to Supabase Storage.
     """
     import base64 as b64
     import json
@@ -858,9 +861,54 @@ async def advisor_chat(
         except (json.JSONDecodeError, TypeError):
             url_list = []
 
+        try:
+            storage_file_list = json.loads(storage_files)
+        except (json.JSONDecodeError, TypeError):
+            storage_file_list = []
+
         # Process uploaded files
         processed_docs: list[tuple[str, str]] = []
         image_blocks: list[dict] = []
+
+        # Process large files from Supabase Storage
+        if storage_file_list and _config:
+            from supabase._async.client import create_client as acreate_client
+
+            sb = await acreate_client(
+                _config.supabase_url,
+                _config.supabase_service_key,
+            )
+            for sf in storage_file_list[:6]:
+                sf_name = sf.get("name", "archivo")
+                sf_path = sf.get("storage_path", "")
+                if not sf_path:
+                    continue
+                try:
+                    file_bytes = await sb.storage.from_("documentos").download(sf_path)
+                    if len(file_bytes) == 0:
+                        continue
+                    ext = sf_name.rsplit(".", 1)[-1].lower() if "." in sf_name else ""
+                    if ext in IMAGE_EXTENSIONS:
+                        encoded = b64.b64encode(file_bytes).decode("ascii")
+                        mime = sf.get("type") or f"image/{ext}"
+                        image_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime,
+                                "data": encoded,
+                            },
+                        })
+                        logger.info("Advisor: storage image %s (%d KB)", sf_name, len(file_bytes) // 1024)
+                    else:
+                        extracted = await asyncio.to_thread(
+                            _extract_binary_text, file_bytes, sf_name
+                        )
+                        processed_docs.append((sf_name, extracted[:15000]))
+                        logger.info("Advisor: storage doc %s (%d chars)", sf_name, len(extracted))
+                except Exception as e:
+                    processed_docs.append((sf_name, f"[Error descargando {sf_name} de Storage: {e}]"))
+                    logger.warning("Advisor: storage download failed for %s: %s", sf_name, e)
 
         for upload in files[:6]:
             if not upload.filename:

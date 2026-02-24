@@ -31,8 +31,10 @@ export async function POST(request: NextRequest) {
     let urls: string | undefined;
     const fileBlobs: { blob: Blob; name: string }[] = [];
 
+    let storageFiles: string | undefined;
+
     if (contentType.includes("application/json")) {
-      // ── JSON mode: files arrive as base64 strings ──
+      // ── JSON mode: files arrive as base64 strings (or storage_paths for large files) ──
       const body = await request.json();
       query = body.query;
       if (!query || typeof query !== "string" || !query.trim()) {
@@ -47,6 +49,7 @@ export async function POST(request: NextRequest) {
       projectId = body.project_id;
       urls = body.urls ? JSON.stringify(body.urls) : undefined;
 
+      // Small files: base64 → decode to blob
       if (Array.isArray(body.files)) {
         for (const f of body.files) {
           if (f.base64 && f.name) {
@@ -55,6 +58,11 @@ export async function POST(request: NextRequest) {
             fileBlobs.push({ blob, name: f.name });
           }
         }
+      }
+
+      // Large files: already in Storage, pass paths to Python
+      if (Array.isArray(body.storage_files) && body.storage_files.length > 0) {
+        storageFiles = JSON.stringify(body.storage_files);
       }
     } else {
       // ── FormData mode (small files, < 4MB) ──
@@ -88,6 +96,7 @@ export async function POST(request: NextRequest) {
     if (conversationHistory) pipelineForm.append("conversation_history", conversationHistory);
     if (projectId) pipelineForm.append("project_id", projectId);
     if (urls) pipelineForm.append("urls", urls);
+    if (storageFiles) pipelineForm.append("storage_files", storageFiles);
     for (const { blob, name } of fileBlobs) {
       pipelineForm.append("files", blob, name);
     }
