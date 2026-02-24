@@ -27,13 +27,19 @@ logger = logging.getLogger(__name__)
 
 # Tokens por chunk según tipo de documento
 CHUNK_CONFIG = {
-    DocType.AAI:        {"size": 800,  "overlap": 200},  # secciones largas
-    DocType.CONTRATO:   {"size": 600,  "overlap": 150},  # cláusulas medianas
-    DocType.FACTURA:    {"size": 300,  "overlap": 50},   # líneas cortas
-    DocType.REGISTRO:   {"size": 400,  "overlap": 100},
-    DocType.DARI:       {"size": 500,  "overlap": 100},
-    DocType.NORMATIVA:  {"size": 1000, "overlap": 250},  # artículos largos
-    DocType.DESCONOCIDO:{"size": 600,  "overlap": 150},
+    DocType.AAI:           {"size": 800,  "overlap": 200},  # secciones largas
+    DocType.CONTRATO:      {"size": 600,  "overlap": 150},  # cláusulas medianas
+    DocType.FACTURA:       {"size": 300,  "overlap": 50},   # líneas cortas
+    DocType.REGISTRO:      {"size": 400,  "overlap": 100},
+    DocType.DARI:          {"size": 500,  "overlap": 100},
+    DocType.NORMATIVA:     {"size": 1000, "overlap": 250},  # artículos largos
+    DocType.ANALISIS:      {"size": 500,  "overlap": 100},  # resultados + interpretación
+    DocType.CERTIFICACION: {"size": 600,  "overlap": 150},  # secciones certificado
+    DocType.RFQ:           {"size": 400,  "overlap": 80},   # especificaciones cortas
+    DocType.FDS:           {"size": 600,  "overlap": 150},  # secciones SDS 1-16
+    DocType.INFORME:       {"size": 700,  "overlap": 180},  # secciones técnicas
+    DocType.PLAN_GESTION:  {"size": 700,  "overlap": 180},  # capítulos plan
+    DocType.DESCONOCIDO:   {"size": 600,  "overlap": 150},
 }
 
 # Señales en nombre de archivo
@@ -47,6 +53,30 @@ FILENAME_SIGNALS = {
         "ley", "decreto", "orden", "boe", "dogc", "bopv",
         "bref", "directiva", "reglamento", "normativa",
         "real_decreto", "uwwtd", "nca", "bat_", "mtd",
+    ],
+    DocType.ANALISIS: [
+        "analisis", "análisis", "caracterizacion", "laboratorio",
+        "ensayo", "lixiviado", "cromatografia", "icp", "toxicidad",
+    ],
+    DocType.CERTIFICACION: [
+        "certificado", "certificacion", "certificación", "homologacion",
+        "end_of_waste", "fin_residuo", "no_peligrosidad",
+    ],
+    DocType.RFQ: [
+        "rfq", "cotizacion", "cotización", "solicitud_oferta", "peticion_oferta",
+        "petición_oferta", "presupuesto_gestor", "request_for_quotation",
+    ],
+    DocType.FDS: [
+        "fds", "sds", "msds", "ficha_seguridad", "ficha_datos_seguridad",
+        "safety_data", "hoja_seguridad",
+    ],
+    DocType.INFORME: [
+        "informe", "auditoria", "auditoría", "diagnostico", "diagnóstico",
+        "estudio", "dictamen", "peritaje",
+    ],
+    DocType.PLAN_GESTION: [
+        "plan_gestion", "plan_gestión", "plan_minimizacion", "plan_minimización",
+        "plan_prevencion", "plan_prevención", "pgr", "estudio_minimizacion",
     ],
 }
 
@@ -82,6 +112,48 @@ CONTENT_SIGNALS = {
         "artículo", "considerando", "transposición",
         "estado miembro", "member state",
         "valores límite de emisión", "emission limit values",
+    ],
+    DocType.ANALISIS: [
+        "informe de análisis", "resultados analíticos", "ensayo de laboratorio",
+        "concentración", "mg/kg", "mg/l", "ppm", "lixiviado",
+        "método de ensayo", "límite de detección", "muestra",
+        "cromatografía", "icp", "espectrometría", "ph", "conductividad",
+        "parámetro", "valor límite", "test de lixiviación",
+    ],
+    DocType.CERTIFICACION: [
+        "certificado de gestión", "certificado de tratamiento",
+        "certificado de valorización", "certificado de eliminación",
+        "fin de condición de residuo", "end of waste",
+        "declaración de no peligrosidad", "certificado de destrucción",
+        "se certifica que", "hace constar",
+    ],
+    DocType.RFQ: [
+        "solicitud de cotización", "solicitud de oferta",
+        "petición de oferta", "request for quotation",
+        "condiciones de servicio solicitadas", "frecuencia de recogida",
+        "volumen estimado", "precio por tonelada solicitado",
+        "descripción del residuo a gestionar",
+    ],
+    DocType.FDS: [
+        "ficha de datos de seguridad", "safety data sheet",
+        "sección 1", "sección 2", "sección 3",
+        "identificación de la sustancia", "identificación de peligros",
+        "composición", "primeros auxilios", "medidas de lucha contra incendios",
+        "pictograma", "h-statement", "p-statement", "ghs", "clp",
+        "palabra de advertencia", "indicaciones de peligro",
+    ],
+    DocType.INFORME: [
+        "informe técnico", "informe de auditoría", "informe de diagnóstico",
+        "estudio de minimización", "conclusiones y recomendaciones",
+        "alcance del estudio", "metodología", "hallazgos",
+        "plan de acción", "mejora continua",
+    ],
+    DocType.PLAN_GESTION: [
+        "plan de gestión de residuos", "plan de minimización",
+        "plan de prevención", "estudio de minimización",
+        "objetivos de reducción", "medidas de prevención",
+        "indicadores de seguimiento", "plan director",
+        "jerarquía de residuos", "economía circular",
     ],
 }
 
@@ -137,12 +209,17 @@ Clasifica este documento en UNO de estos tipos:
 {chr(10).join(f"- {t}" for t in valid_types)}
 
 Guía de clasificación:
-- normativa: BREFs (Best Available Techniques Reference Documents), Directivas EU, \
-Reglamentos EU, Leyes, Decretos, Órdenes ministeriales, cualquier texto legislativo o regulatorio.
+- normativa: BREFs, Directivas EU, Reglamentos EU, Leyes, Decretos, Órdenes ministeriales, texto legislativo o regulatorio.
 - factura: Facturas de pago con importes, IVA, NIF. NO clasificar como factura si no tiene importes económicos.
 - autorizacion_ambiental_integrada: AAIs, permisos IPPC con condiciones y LERs autorizados.
 - contrato_gestor: Contratos de servicios de gestión de residuos con cláusulas.
 - declaracion_anual_residuos: DARIs, memorias anuales de producción de residuos.
+- analisis_residuos: Informes de laboratorio, análisis químicos, caracterizaciones de residuos, ensayos de lixiviación, resultados con concentraciones (mg/kg, ppm).
+- informe_certificacion: Certificados de gestión, valorización, eliminación, destrucción, declaraciones de no peligrosidad, fin de condición de residuo.
+- solicitud_cotizacion: RFQ, solicitudes de oferta/cotización a gestores, peticiones de precio para servicios de gestión.
+- ficha_seguridad: FDS/SDS/MSDS, fichas de datos de seguridad con secciones 1-16, pictogramas, frases H/P.
+- informe_tecnico: Informes técnicos, auditorías ambientales, diagnósticos, estudios, dictámenes, peritajes.
+- plan_gestion: Planes de gestión de residuos, minimización, prevención, planes directores, estudios de minimización.
 
 Nombre del archivo: {filename}
 Primeras páginas del documento:
@@ -187,12 +264,18 @@ class SemanticChunker:
         """Selecciona estrategia de chunking según tipo de documento."""
 
         strategy_map = {
-            DocType.AAI:      self._chunk_by_section,
-            DocType.CONTRATO: self._chunk_by_clause,
-            DocType.FACTURA:  self._chunk_by_line_item,
-            DocType.REGISTRO: self._chunk_by_entry,
-            DocType.DARI:     self._chunk_by_section,
-            DocType.NORMATIVA:self._chunk_by_article,
+            DocType.AAI:           self._chunk_by_section,
+            DocType.CONTRATO:      self._chunk_by_clause,
+            DocType.FACTURA:       self._chunk_by_line_item,
+            DocType.REGISTRO:      self._chunk_by_entry,
+            DocType.DARI:          self._chunk_by_section,
+            DocType.NORMATIVA:     self._chunk_by_article,
+            DocType.ANALISIS:      self._chunk_by_section,
+            DocType.CERTIFICACION: self._chunk_by_section,
+            DocType.RFQ:           self._chunk_by_section,
+            DocType.FDS:           self._chunk_by_sds_section,
+            DocType.INFORME:       self._chunk_by_section,
+            DocType.PLAN_GESTION:  self._chunk_by_section,
         }
 
         strategy = strategy_map.get(doc_type, self._chunk_sliding_window)
@@ -326,6 +409,27 @@ class SemanticChunker:
         if len(splits) <= 1:
             return await self._chunk_sliding_window(pages, doc_id, doc_type)
 
+        return self._build_chunks(splits, pages, doc_id, doc_type, config)
+
+    async def _chunk_by_sds_section(
+        self, pages: list[PageContent], doc_id: str, doc_type: DocType
+    ) -> list[DocumentChunk]:
+        """
+        Para fichas de datos de seguridad (FDS/SDS): divide por las 16 secciones
+        estandarizadas del Reglamento REACH / formato GHS.
+        """
+        config = CHUNK_CONFIG[doc_type]
+        full_text = "\n".join(p.text for p in pages)
+
+        sds_patterns = [
+            r"(?:^|\n)(SECCI[ÓO]N\s+\d+[^\n]*)",
+            r"(?:^|\n)(Secci[óo]n\s+\d+[^\n]*)",
+            r"(?:^|\n)(\d+\.\s+(?:Identificaci|Composici|Primeros|Medidas|Manipulaci|Controles|Propiedades|Estabilidad|Informaci|Consideraciones)[^\n]*)",
+        ]
+
+        splits = self._split_by_patterns(full_text, sds_patterns)
+        if len(splits) <= 1:
+            return await self._chunk_sliding_window(pages, doc_id, doc_type)
         return self._build_chunks(splits, pages, doc_id, doc_type, config)
 
     async def _chunk_sliding_window(

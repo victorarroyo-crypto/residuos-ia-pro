@@ -48,6 +48,12 @@ class DocType(str, Enum):
     PERMISO        = "permiso_ambiental"
     MANUAL         = "manual_interno"
     NORMATIVA      = "normativa"
+    ANALISIS       = "analisis_residuos"
+    CERTIFICACION  = "informe_certificacion"
+    RFQ            = "solicitud_cotizacion"
+    FDS            = "ficha_seguridad"
+    INFORME        = "informe_tecnico"
+    PLAN_GESTION   = "plan_gestion"
     DESCONOCIDO    = "desconocido"
 
 

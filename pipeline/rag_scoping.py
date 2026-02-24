@@ -298,6 +298,8 @@ class DocumentIngestionRouter:
         "permiso_ambiental", "manual_interno",
         "costes_anuales", "inventario_ler", "comparativa_gestores",
         "presupuesto", "auditoria",
+        "analisis_residuos", "informe_certificacion", "solicitud_cotizacion",
+        "ficha_seguridad", "informe_tecnico", "plan_gestion",
     }
 
     def route(

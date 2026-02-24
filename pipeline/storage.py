@@ -29,15 +29,21 @@ STORAGE_BUCKET = "documentos"
 
 # Subcarpetas por tipo de documento
 DOC_TYPE_FOLDERS = {
-    DocType.AAI:         "AAI_Autorizaciones",
-    DocType.DARI:        "DARI_Declaraciones",
-    DocType.CONTRATO:    "Contratos_Gestores",
-    DocType.FACTURA:     "Facturas",
-    DocType.REGISTRO:    "Registros_Produccion",
-    DocType.PERMISO:     "Permisos",
-    DocType.NORMATIVA:   "Normativa",
-    DocType.MANUAL:      "Manuales",
-    DocType.DESCONOCIDO: "_Sin_Clasificar",
+    DocType.AAI:           "AAI_Autorizaciones",
+    DocType.DARI:          "DARI_Declaraciones",
+    DocType.CONTRATO:      "Contratos_Gestores",
+    DocType.FACTURA:       "Facturas",
+    DocType.REGISTRO:      "Registros_Produccion",
+    DocType.PERMISO:       "Permisos",
+    DocType.NORMATIVA:     "Normativa",
+    DocType.MANUAL:        "Manuales",
+    DocType.ANALISIS:      "Analisis_Residuos",
+    DocType.CERTIFICACION: "Certificaciones",
+    DocType.RFQ:           "Solicitudes_Cotizacion",
+    DocType.FDS:           "Fichas_Seguridad",
+    DocType.INFORME:       "Informes_Tecnicos",
+    DocType.PLAN_GESTION:  "Planes_Gestion",
+    DocType.DESCONOCIDO:   "_Sin_Clasificar",
 }
 
 # Tipos de documento que van al RAG general (knowledge)

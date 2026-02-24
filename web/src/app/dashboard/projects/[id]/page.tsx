@@ -61,6 +61,12 @@ const projectDocTypeLabels: Record<string, string> = {
   comparativa_gestores: "Comparativa",
   facturas_agregadas: "Fact. agregadas",
   presupuesto: "Presupuesto",
+  analisis_residuos: "Analisis",
+  informe_certificacion: "Certificacion",
+  solicitud_cotizacion: "RFQ",
+  ficha_seguridad: "FDS",
+  informe_tecnico: "Informe",
+  plan_gestion: "Plan gestion",
   desconocido: "Sin clasificar",
 };
 
