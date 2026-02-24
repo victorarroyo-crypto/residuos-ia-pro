@@ -147,6 +147,12 @@ export type ProjectDocType =
   | "comparativa_gestores"
   | "facturas_agregadas"
   | "presupuesto"
+  | "analisis_residuos"
+  | "informe_certificacion"
+  | "solicitud_cotizacion"
+  | "ficha_seguridad"
+  | "informe_tecnico"
+  | "plan_gestion"
   | "desconocido";
 
 /** @deprecated Use KnowledgeDocument or ProjectDocument instead */

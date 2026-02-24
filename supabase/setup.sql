@@ -147,7 +147,9 @@ CREATE TABLE IF NOT EXISTS project_documents (
     'contrato_gestor','factura','registro_produccion',
     'permiso_ambiental','manual_interno','desconocido',
     'costes_anuales','inventario_ler','comparativa_gestores',
-    'facturas_agregadas','presupuesto'
+    'facturas_agregadas','presupuesto',
+    'analisis_residuos','informe_certificacion','solicitud_cotizacion',
+    'ficha_seguridad','informe_tecnico','plan_gestion'
   ))
 );
 
