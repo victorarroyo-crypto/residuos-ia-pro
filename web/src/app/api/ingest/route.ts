@@ -7,16 +7,21 @@ export const maxDuration = 120;
 /**
  * POST /api/ingest
  *
- * Acepta dos formatos:
+ * Acepta tres formatos:
  *
  * 1) **JSON** con archivo en base64 (esquiva el limite de 4.5MB de Vercel):
  *    { file_base64: string, file_name: string, file_type: string,
  *      project_id?: string, rag_scope?: string, password?: string }
  *
- * 2) **FormData** (multipart) para archivos pequenos:
+ * 2) **JSON** con storage_path (para archivos grandes, ya subidos a Storage):
+ *    { storage_path: string, file_name: string,
+ *      project_id?: string, rag_scope?: string, password?: string }
+ *
+ * 3) **FormData** (multipart) para archivos pequenos:
  *    file, project_id?, rag_scope?, password?
  *
- * En ambos casos se construye un FormData y se reenvia al pipeline Python.
+ * En los casos 1 y 3 se construye un FormData y se reenvia al pipeline Python.
+ * En el caso 2 se pasa storage_path al pipeline para que descargue de Storage.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -24,21 +29,25 @@ export async function POST(request: NextRequest) {
     const pipelineForm = new FormData();
 
     if (contentType.includes("application/json")) {
-      // ── JSON mode: file arrives as base64 ──
       const body = await request.json();
 
-      if (!body.file_base64 || !body.file_name) {
+      if (body.storage_path && body.file_name) {
+        // ── Storage mode: file already uploaded to Supabase Storage ──
+        pipelineForm.append("storage_path", body.storage_path);
+        pipelineForm.append("filename", body.file_name);
+      } else if (body.file_base64 && body.file_name) {
+        // ── Base64 mode: file arrives as base64 ──
+        const binary = Buffer.from(body.file_base64, "base64");
+        const blob = new Blob([binary], {
+          type: body.file_type || "application/octet-stream",
+        });
+        pipelineForm.append("file", blob, body.file_name);
+      } else {
         return NextResponse.json(
-          { error: "Se requiere file_base64 y file_name" },
+          { error: "Se requiere (file_base64 + file_name) o (storage_path + file_name)" },
           { status: 400 }
         );
       }
-
-      const binary = Buffer.from(body.file_base64, "base64");
-      const blob = new Blob([binary], {
-        type: body.file_type || "application/octet-stream",
-      });
-      pipelineForm.append("file", blob, body.file_name);
 
       if (body.project_id) pipelineForm.append("project_id", body.project_id);
       if (body.rag_scope) pipelineForm.append("rag_scope", body.rag_scope);
@@ -46,7 +55,6 @@ export async function POST(request: NextRequest) {
     } else {
       // ── FormData mode ──
       const formData = await request.formData();
-      // Forward all fields
       formData.forEach((value, key) => {
         if (value instanceof Blob) {
           pipelineForm.append(key, value, (value as File).name || "file");

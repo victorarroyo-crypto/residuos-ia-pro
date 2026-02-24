@@ -104,6 +104,7 @@ async def health():
 async def ingest_document(
     file: UploadFile = File(default=None),
     file_url: str = Form(default=None),
+    storage_path: str = Form(default=None),
     filename: str = Form(default=None),
     project_id: str = Form(default=None),
     rag_scope: str = Form(default=None),
@@ -112,10 +113,10 @@ async def ingest_document(
     if service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    if not file and not file_url:
+    if not file and not file_url and not storage_path:
         raise HTTPException(
             status_code=400,
-            detail="Debes enviar un archivo (`file`) o una URL de PDF (`file_url`).",
+            detail="Debes enviar un archivo (`file`), una URL (`file_url`) o un `storage_path`.",
         )
 
     async def _validate_pdf_url(url: str) -> None:
@@ -173,7 +174,30 @@ async def ingest_document(
     file_bytes: bytes
     ingest_filename: str
 
-    if file_url:
+    if storage_path:
+        # ── Storage mode: download from Supabase Storage ──
+        if not filename:
+            # Derive filename from storage_path
+            filename = os.path.basename(storage_path)
+        ingest_filename = filename
+
+        try:
+            from supabase._async.client import create_client as acreate_client
+
+            sb = await acreate_client(
+                _config.supabase_url,
+                _config.supabase_service_key,
+            )
+            file_bytes = await sb.storage.from_("documentos").download(storage_path)
+            logger.info(
+                "Descargado desde Storage: %s (%d bytes)", storage_path, len(file_bytes)
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error descargando de Supabase Storage ({storage_path}): {e}",
+            )
+    elif file_url:
         await _validate_pdf_url(file_url)
         file_bytes = await _download_pdf_with_retry(file_url)
 
