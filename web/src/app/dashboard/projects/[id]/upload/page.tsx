@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { createClient } from "@/lib/supabase/client";
+import { uploadAndIngest, DIRECT_UPLOAD_THRESHOLD } from "@/lib/upload";
 import type { PipelineProgress, Project } from "@/types/database";
 
 const ACCEPTED_TYPES = [
@@ -54,18 +55,7 @@ interface FileUploadState {
 }
 
 
-// Helper: read a File as base64 (bypasses Vercel's 4.5MB FormData limit)
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      resolve(result.split(",")[1] || "");
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+// fileToBase64 and upload logic moved to @/lib/upload
 
 async function computeDocId(file: File, projectId: string): Promise<string> {
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
@@ -202,6 +192,7 @@ export default function UploadPage({
       if (!fileState) return;
 
       const docId = await computeDocId(fileState.file, id);
+      const isLargeFile = fileState.file.size > DIRECT_UPLOAD_THRESHOLD;
 
       setFiles((prev) =>
         prev.map((f, i) =>
@@ -213,7 +204,9 @@ export default function UploadPage({
                   doc_id: docId,
                   step: "subiendo",
                   percentage: 5,
-                  mensaje: "Subiendo archivo...",
+                  mensaje: isLargeFile
+                    ? "Subiendo archivo grande a Storage..."
+                    : "Subiendo archivo...",
                   error: null,
                   updated_at: null,
                 },
@@ -222,50 +215,45 @@ export default function UploadPage({
         )
       );
 
-      // Convert to base64 to bypass Vercel's 4.5MB FormData limit
-      const base64Data = await fileToBase64(fileState.file);
-
       try {
-        setFiles((prev) =>
-          prev.map((f, i) =>
-            i === index
-              ? {
-                  ...f,
-                  status: "processing",
-                  progress: {
-                    doc_id: docId,
-                    step: "detectando_tipo",
-                    percentage: 10,
-                    mensaje: "Enviado al pipeline, procesando...",
-                    error: null,
-                    updated_at: null,
-                  },
-                }
-              : f
-          )
-        );
-
-        const response = await fetch("/api/ingest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            file_base64: base64Data,
-            file_name: fileState.file.name,
-            file_type: fileState.file.type,
-            project_id: id,
-          }),
+        const result = await uploadAndIngest({
+          file: fileState.file,
+          project_id: id,
+          onProgress: (step) => {
+            setFiles((prev) =>
+              prev.map((f, i) =>
+                i === index
+                  ? {
+                      ...f,
+                      status: "processing",
+                      progress: {
+                        doc_id: docId,
+                        step: step === "procesando" ? "detectando_tipo" : "subiendo",
+                        percentage: step === "procesando" ? 15 : 10,
+                        mensaje:
+                          step === "subiendo_storage"
+                            ? "Subiendo a Storage (archivo grande)..."
+                            : step === "subiendo_archivo"
+                            ? "Subiendo archivo a Storage..."
+                            : "Enviado al pipeline, procesando...",
+                        error: null,
+                        updated_at: null,
+                      },
+                    }
+                  : f
+              )
+            );
+          },
         });
 
-        const result = await response.json();
-
-        if (!response.ok || result.error) {
+        if (!result.ok) {
           setFiles((prev) =>
             prev.map((f, i) =>
               i === index
                 ? {
                     ...f,
                     status: "error",
-                    error: result.error || result.detail || "Error en el procesamiento",
+                    error: result.error || "Error en el procesamiento",
                     progress: {
                       doc_id: docId,
                       step: "error",
@@ -287,9 +275,9 @@ export default function UploadPage({
               ? {
                   ...f,
                   status: "done",
-                  result,
+                  result: result.data || null,
                   progress: {
-                    doc_id: result.doc_id || "",
+                    doc_id: (result.data?.doc_id as string) || docId,
                     step: "completado",
                     percentage: 100,
                     mensaje: "Completado",
@@ -391,7 +379,7 @@ export default function UploadPage({
                 : "Arrastra archivos o haz clic para seleccionar"}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              PDF, Excel (.xlsx, .xls), CSV
+              PDF, Excel (.xlsx, .xls), CSV — sin limite de tamano
             </p>
             <input
               ref={fileInputRef}

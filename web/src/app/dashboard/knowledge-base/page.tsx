@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/client";
+import { uploadAndIngest, DIRECT_UPLOAD_THRESHOLD } from "@/lib/upload";
 import type { PipelineProgress } from "@/types/database";
 
 // ─── Types ──────────────────────────────────────────────────
@@ -130,18 +131,7 @@ const knowledgeTypeLabels: Record<string, string> = {
 const ACCEPTED_EXTENSIONS =
   ".pdf,.docx,.doc,.txt,.html,.htm,.md,.xlsx,.xls,.csv";
 
-// Helper: read a File as base64 (bypasses Vercel's 4.5MB FormData limit)
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      resolve(result.split(",")[1] || "");
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+// fileToBase64 and upload logic moved to @/lib/upload
 
 const stepOrder = [
   "subiendo",
@@ -616,6 +606,7 @@ export default function KnowledgeBasePage() {
     const initialStates: UploadFileState[] = await Promise.all(
       selectedFiles.map(async (file) => {
         const docId = await computeDocId(file, "general");
+        const isLarge = file.size > DIRECT_UPLOAD_THRESHOLD;
         return {
           file,
           status: "uploading" as const,
@@ -623,7 +614,9 @@ export default function KnowledgeBasePage() {
             doc_id: docId,
             step: "subiendo",
             percentage: 5,
-            mensaje: "Subiendo archivo...",
+            mensaje: isLarge
+              ? "Subiendo archivo grande a Storage..."
+              : "Subiendo archivo...",
             error: null,
             updated_at: null,
           },
@@ -634,49 +627,49 @@ export default function KnowledgeBasePage() {
     setUploadFiles(initialStates);
 
     for (const fileState of initialStates) {
-      // Convert file to base64 to bypass Vercel's 4.5MB FormData limit
-      const base64Data = await fileToBase64(fileState.file);
-
-      setUploadFiles((prev) =>
-        prev.map((f) =>
-          f.progress?.doc_id === fileState.progress?.doc_id
-            ? {
-                ...f,
-                status: "processing",
-                progress: {
-                  doc_id: fileState.progress?.doc_id || "",
-                  step: "detectando_tipo",
-                  percentage: 10,
-                  mensaje: "Enviado al pipeline, procesando...",
-                  error: null,
-                  updated_at: null,
-                },
-              }
-            : f
-        )
-      );
+      const docId = fileState.progress?.doc_id || "";
 
       try {
-        const res = await fetch("/api/ingest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            file_base64: base64Data,
-            file_name: fileState.file.name,
-            file_type: fileState.file.type,
-            rag_scope: "general",
-          }),
+        const result = await uploadAndIngest({
+          file: fileState.file,
+          rag_scope: "general",
+          onProgress: (step) => {
+            setUploadFiles((prev) =>
+              prev.map((f) =>
+                f.progress?.doc_id === docId
+                  ? {
+                      ...f,
+                      status: "processing",
+                      progress: {
+                        doc_id: docId,
+                        step: step === "procesando" ? "detectando_tipo" : "subiendo",
+                        percentage: step === "procesando" ? 15 : 10,
+                        mensaje:
+                          step === "subiendo_storage"
+                            ? "Subiendo a Storage (archivo grande)..."
+                            : step === "subiendo_archivo"
+                            ? "Subiendo archivo a Storage..."
+                            : "Enviado al pipeline, procesando...",
+                        error: null,
+                        updated_at: null,
+                      },
+                    }
+                  : f
+              )
+            );
+          },
         });
-        if (res.ok) {
+
+        if (result.ok) {
           successCount++;
           setUploadFiles((prev) =>
             prev.map((f) =>
-              f.progress?.doc_id === fileState.progress?.doc_id
+              f.progress?.doc_id === docId
                 ? {
                     ...f,
                     status: "done",
                     progress: {
-                      doc_id: fileState.progress?.doc_id || "",
+                      doc_id: docId,
                       step: "completado",
                       percentage: 100,
                       mensaje: "Completado",
@@ -689,20 +682,19 @@ export default function KnowledgeBasePage() {
           );
         } else {
           errorCount++;
-          const errorData = await res.json().catch(() => ({}));
           setUploadFiles((prev) =>
             prev.map((f) =>
-              f.progress?.doc_id === fileState.progress?.doc_id
+              f.progress?.doc_id === docId
                 ? {
                     ...f,
                     status: "error",
-                    error: errorData?.error || errorData?.detail || "Error al procesar",
+                    error: result.error || "Error al procesar",
                     progress: {
-                      doc_id: fileState.progress?.doc_id || "",
+                      doc_id: docId,
                       step: "error",
                       percentage: 0,
                       mensaje: null,
-                      error: errorData?.error || "Error",
+                      error: result.error || "Error",
                       updated_at: null,
                     },
                   }
@@ -714,7 +706,7 @@ export default function KnowledgeBasePage() {
         errorCount++;
         setUploadFiles((prev) =>
           prev.map((f) =>
-            f.progress?.doc_id === fileState.progress?.doc_id
+            f.progress?.doc_id === docId
               ? {
                   ...f,
                   status: "error",
@@ -827,20 +819,33 @@ export default function KnowledgeBasePage() {
       )
     );
 
-    const retryBase64 = await fileToBase64(fileState.file);
-
     try {
-      const res = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_base64: retryBase64,
-          file_name: fileState.file.name,
-          file_type: fileState.file.type,
-          rag_scope: "general",
-        }),
+      const result = await uploadAndIngest({
+        file: fileState.file,
+        rag_scope: "general",
+        onProgress: (step) => {
+          setUploadFiles((prev) =>
+            prev.map((f) =>
+              f.progress?.doc_id === docId
+                ? {
+                    ...f,
+                    status: "processing",
+                    progress: {
+                      doc_id: docId,
+                      step: step === "procesando" ? "detectando_tipo" : "subiendo",
+                      percentage: step === "procesando" ? 15 : 10,
+                      mensaje: "Reintentando...",
+                      error: null,
+                      updated_at: null,
+                    },
+                  }
+                : f
+            )
+          );
+        },
       });
-      if (res.ok) {
+
+      if (result.ok) {
         setUploadFiles((prev) =>
           prev.map((f) =>
             f.progress?.doc_id === docId
@@ -862,20 +867,19 @@ export default function KnowledgeBasePage() {
         setLoadingDocs(true);
         await Promise.all([loadDocuments(), loadStats(), loadHealth()]);
       } else {
-        const errorData = await res.json().catch(() => ({}));
         setUploadFiles((prev) =>
           prev.map((f) =>
             f.progress?.doc_id === docId
               ? {
                   ...f,
                   status: "error",
-                  error: errorData?.error || "Error al reprocesar",
+                  error: result.error || "Error al reprocesar",
                   progress: {
                     doc_id: docId,
                     step: "error",
                     percentage: 0,
                     mensaje: null,
-                    error: errorData?.error || "Error",
+                    error: result.error || "Error",
                     updated_at: null,
                   },
                 }
