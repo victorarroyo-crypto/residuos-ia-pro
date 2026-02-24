@@ -131,6 +131,8 @@ const knowledgeTypeLabels: Record<string, string> = {
 const ACCEPTED_EXTENSIONS =
   ".pdf,.docx,.doc,.txt,.html,.htm,.md,.xlsx,.xls,.csv";
 
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB per file
+
 // fileToBase64 and upload logic moved to @/lib/upload
 
 const stepOrder = [
@@ -599,9 +601,21 @@ export default function KnowledgeBasePage() {
     setUploading(true);
     setUploadResult(null);
 
+    // Validate file sizes before starting
+    const selectedFiles = Array.from(files);
+    const oversized = selectedFiles.filter((f) => f.size > MAX_FILE_SIZE);
+    if (oversized.length > 0) {
+      setUploading(false);
+      setUploadResult({
+        success: false,
+        message: `${oversized.length} archivo${oversized.length > 1 ? "s" : ""} superan el limite de 100 MB: ${oversized.map((f) => f.name).join(", ")}`,
+      });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
     let successCount = 0;
     let errorCount = 0;
-    const selectedFiles = Array.from(files);
 
     const initialStates: UploadFileState[] = await Promise.all(
       selectedFiles.map(async (file) => {
@@ -702,15 +716,28 @@ export default function KnowledgeBasePage() {
             )
           );
         }
-      } catch {
+      } catch (err) {
         errorCount++;
+        const detail = err instanceof Error ? err.message : String(err);
         setUploadFiles((prev) =>
           prev.map((f) =>
             f.progress?.doc_id === docId
               ? {
                   ...f,
                   status: "error",
-                  error: "Error de conexion con el pipeline",
+                  error: detail.includes("Failed to fetch") || detail.includes("NetworkError")
+                    ? "Error de red. Verifica tu conexion y que el servidor esta activo."
+                    : detail.includes("413")
+                    ? "Archivo demasiado grande para el servidor."
+                    : detail || "Error de conexion con el pipeline",
+                  progress: {
+                    doc_id: docId,
+                    step: "error",
+                    percentage: 0,
+                    mensaje: null,
+                    error: detail || "Error",
+                    updated_at: null,
+                  },
                 }
               : f
           )

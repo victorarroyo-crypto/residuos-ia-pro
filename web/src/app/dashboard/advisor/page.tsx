@@ -188,7 +188,10 @@ export default function AdvisorPage() {
     setUrlInput("");
 
     try {
-      const conversationHistory = messages.map((m) => ({
+      // Truncate to last 10 messages to avoid 413 Payload Too Large.
+      // Python already truncates to 10, but the JSON must fit within
+      // Vercel's 4.5MB limit *before* reaching the backend.
+      const conversationHistory = messages.slice(-10).map((m) => ({
         role: m.role,
         content: m.content,
       }));

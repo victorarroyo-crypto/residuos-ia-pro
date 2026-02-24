@@ -6,6 +6,9 @@
   "installCommand": "npm install",
   "regions": ["cdg1"],
   "functions": {
+    "src/app/api/advisor/route.ts": {
+      "maxDuration": 120
+    },
     "src/app/api/advisor/chat/route.ts": {
       "maxDuration": 120
     },
