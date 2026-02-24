@@ -706,7 +706,7 @@ async def _run_advisor(
 
     response = await claude.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=16000,
+        max_tokens=32000,
         thinking={
             "type": "enabled",
             "budget_tokens": 24000,
