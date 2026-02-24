@@ -14,7 +14,9 @@ Supabase: Dos RAGs separados:
 
 import hashlib
 import logging
+import math
 import re
+import unicodedata
 from datetime import datetime
 from typing import Optional
 
@@ -76,15 +78,33 @@ class StorageService:
     # SUPABASE STORAGE (archivos originales)
     # ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """Elimina tildes, reemplaza espacios y caracteres no válidos para Supabase Storage."""
+        name, _, ext = filename.rpartition(".")
+        if not name:
+            name, ext = ext, ""
+        # Quitar tildes: Análisis → Analisis
+        nfkd = unicodedata.normalize("NFKD", name)
+        ascii_name = nfkd.encode("ascii", "ignore").decode("ascii")
+        # Espacios → guiones bajos
+        ascii_name = ascii_name.replace(" ", "_")
+        # Solo alfanuméricos, guiones, guiones bajos y puntos
+        ascii_name = re.sub(r"[^\w.\-]", "", ascii_name)
+        if not ascii_name:
+            ascii_name = "archivo"
+        return f"{ascii_name}.{ext}" if ext else ascii_name
+
     def _build_storage_path(
         self, filename: str, project_id: str, doc_type: DocType
     ) -> str:
         folder = DOC_TYPE_FOLDERS.get(doc_type, "_Sin_Clasificar")
+        safe_name = self._sanitize_filename(filename)
 
         if doc_type in KNOWLEDGE_DOC_TYPES:
-            return f"general/{folder}/{filename}"
+            return f"general/{folder}/{safe_name}"
 
-        return f"{project_id}/{folder}/{filename}"
+        return f"{project_id}/{folder}/{safe_name}"
 
     async def upload_file(
         self,

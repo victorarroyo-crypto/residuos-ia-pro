@@ -306,6 +306,21 @@ class UnifiedIngestionService:
             if project_id:
                 chunk.metadata["project_id"] = project_id
 
+    @staticmethod
+    def _clean_for_json(data: dict) -> dict:
+        """Limpia un dict para que sea JSON-serializable: NaN→None, numpy→nativo, luego quita None."""
+        import math
+        clean = {}
+        for k, v in data.items():
+            if hasattr(v, "item"):  # numpy scalar (int64, float64, etc.)
+                v = v.item()
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                continue
+            if v is None or v == "":
+                continue
+            clean[k] = v
+        return clean
+
     async def _populate_structured_tables(self, sb, result, project_id):
         """
         Desde los datos estructurados del Excel, pobla tablas de Supabase
@@ -319,7 +334,7 @@ class UnifiedIngestionService:
                     continue
 
                 # Poblar waste_inventory con datos de coste reales
-                inventory_data = {
+                inventory_data = self._clean_for_json({
                     "project_id": project_id,
                     "codigo_ler": row.get("codigo_ler"),
                     "descripcion": row.get("descripcion"),
@@ -327,16 +342,14 @@ class UnifiedIngestionService:
                     "precio_actual_eur_ton": row.get("precio_eur_ton"),
                     "fuente_doc_id": result.doc_id,
                     "año": row.get("año"),
-                }
-                # Quitar None values
-                inventory_data = {k: v for k, v in inventory_data.items() if v is not None}
+                })
 
                 if inventory_data.get("codigo_ler") or inventory_data.get("descripcion"):
                     await sb.table("waste_inventory").upsert(inventory_data).execute()
 
                 # Si hay importe total, también a invoice_lines para tracking financiero
                 if row.get("importe_eur"):
-                    await sb.table("invoice_lines").upsert({
+                    invoice_data = self._clean_for_json({
                         "project_id": project_id,
                         "doc_id": result.doc_id,
                         "codigo_ler": row.get("codigo_ler"),
@@ -344,6 +357,7 @@ class UnifiedIngestionService:
                         "cantidad_toneladas": row.get("cantidad_ton"),
                         "precio_unitario": row.get("precio_eur_ton"),
                         "importe_eur": row.get("importe_eur"),
-                    }).execute()
+                    })
+                    await sb.table("invoice_lines").upsert(invoice_data).execute()
 
         logger.info(f"Tablas estructuradas pobladas desde Excel: {result.filename}")
