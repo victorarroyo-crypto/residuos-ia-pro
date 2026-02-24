@@ -100,7 +100,7 @@ export interface Project {
   contacto_email: string | null;
   contacto_telefono: string | null;
   notas: string | null;
-  tipo_relacion: "retainer" | "auditoria" | "diagnostico" | null;
+  tipo: "retainer" | "auditoria" | "diagnostico" | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;

@@ -79,7 +79,7 @@ export default function ProjectsPage() {
       p.comunidad_autonoma?.toLowerCase().includes(search.toLowerCase()) ||
       p.cif?.toLowerCase().includes(search.toLowerCase());
     const matchRelacion =
-      filterRelacion === "todos" || p.tipo_relacion === filterRelacion;
+      filterRelacion === "todos" || p.tipo === filterRelacion;
     return matchSearch && matchRelacion;
   });
 
@@ -198,9 +198,9 @@ export default function ProjectsPage() {
                       )}
                     </TableCell>
                     <TableCell>
-                      {project.tipo_relacion ? (
+                      {project.tipo ? (
                         <Badge variant="outline" className="capitalize">
-                          {project.tipo_relacion}
+                          {project.tipo}
                         </Badge>
                       ) : (
                         <span className="text-muted-foreground">—</span>

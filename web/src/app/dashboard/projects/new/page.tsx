@@ -35,7 +35,7 @@ export default function NewProjectPage() {
       contacto_email: (form.get("contacto_email") as string) || null,
       contacto_telefono: (form.get("contacto_telefono") as string) || null,
       notas: (form.get("notas") as string) || null,
-      tipo_relacion: (form.get("tipo_relacion") as string) || null,
+      tipo: (form.get("tipo") as string) || null,
       consultant_id: user?.id ?? null,
     });
 
@@ -106,7 +106,7 @@ export default function NewProjectPage() {
             </div>
             <div>
               <label className="text-sm font-medium">Tipo de relacion</label>
-              <select name="tipo_relacion" className={inputClass}>
+              <select name="tipo" className={inputClass}>
                 <option value="retainer">Retainer (seguimiento continuo)</option>
                 <option value="auditoria">Auditoria (puntual)</option>
                 <option value="diagnostico">Diagnostico inicial</option>
