@@ -13,6 +13,7 @@ import {
   Database,
   X,
   AlertCircle,
+  AlertTriangle,
   FolderOpen,
   ChevronRight,
   HardDrive,
@@ -26,6 +27,8 @@ import {
   ToggleRight,
   Activity,
   File,
+  RotateCcw,
+  Heart,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -122,6 +125,20 @@ interface DriveIngestProgress {
   fileName: string;
   status: "queued" | "downloading" | "processing" | "done" | "error";
   message: string;
+}
+
+interface KBHealthData {
+  ok: boolean;
+  supabase_connected: boolean;
+  total_documents: number;
+  documents_by_status: Record<string, number>;
+  chunks: {
+    total: number;
+    with_embedding: number;
+    without_embedding: number;
+    expected_from_docs: number;
+  };
+  diagnosis: string;
 }
 
 const knowledgeTypeLabels: Record<string, string> = {
@@ -239,6 +256,12 @@ export default function KnowledgeBasePage() {
 
   // Delete state
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  // Health state
+  const [health, setHealth] = useState<KBHealthData | null>(null);
+
+  // Reprocess state
+  const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
 
   // Drive browser state
   const [driveItems, setDriveItems] = useState<DriveItem[]>([]);
@@ -361,10 +384,22 @@ export default function KnowledgeBasePage() {
     }
   }, []);
 
+  const loadHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/knowledge-base/health");
+      if (res.ok) {
+        setHealth(await res.json());
+      }
+    } catch {
+      // API not available
+    }
+  }, []);
+
   useEffect(() => {
     loadDocuments();
     loadStats();
-  }, [loadDocuments, loadStats]);
+    loadHealth();
+  }, [loadDocuments, loadStats, loadHealth]);
 
   // ─── Drive browser ────────────────────────────────────────
   const browseDriveFolder = useCallback(
@@ -733,6 +768,142 @@ export default function KnowledgeBasePage() {
       // Silently fail
     } finally {
       setDeleting(null);
+    }
+  }
+
+  // ─── Reprocess handler ──────────────────────────────────────
+  async function handleReprocess(docIds: string[]) {
+    const newSet = new Set(reprocessing);
+    docIds.forEach((id) => newSet.add(id));
+    setReprocessing(newSet);
+
+    try {
+      const res = await fetch("/api/knowledge-base/reprocess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_ids: docIds, scope: "knowledge" }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setUploadResult({
+          success: data.failed === 0,
+          message:
+            data.failed === 0
+              ? `${data.success} documento${data.success !== 1 ? "s" : ""} reprocesado${data.success !== 1 ? "s" : ""} correctamente.`
+              : `${data.success} reprocesados, ${data.failed} con error.`,
+        });
+        // Refresh data
+        setLoadingDocs(true);
+        await Promise.all([loadDocuments(), loadStats(), loadHealth()]);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setUploadResult({
+          success: false,
+          message: err.error || "Error al reprocesar documentos.",
+        });
+      }
+    } catch {
+      setUploadResult({
+        success: false,
+        message: "Pipeline API no disponible para reprocesamiento.",
+      });
+    } finally {
+      const cleared = new Set(reprocessing);
+      docIds.forEach((id) => cleared.delete(id));
+      setReprocessing(cleared);
+    }
+  }
+
+  // ─── Upload retry handler ──────────────────────────────────
+  async function handleRetryUpload(fileState: UploadFileState) {
+    const docId = fileState.progress?.doc_id;
+    if (!docId) return;
+
+    setUploadFiles((prev) =>
+      prev.map((f) =>
+        f.progress?.doc_id === docId
+          ? {
+              ...f,
+              status: "uploading",
+              error: null,
+              progress: {
+                doc_id: docId,
+                step: "subiendo",
+                percentage: 5,
+                mensaje: "Reintentando...",
+                error: null,
+                updated_at: null,
+              },
+            }
+          : f
+      )
+    );
+
+    const formData = new FormData();
+    formData.append("file", fileState.file);
+    formData.append("rag_scope", "general");
+
+    try {
+      const res = await fetch("/api/ingest", {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        setUploadFiles((prev) =>
+          prev.map((f) =>
+            f.progress?.doc_id === docId
+              ? {
+                  ...f,
+                  status: "done",
+                  progress: {
+                    doc_id: docId,
+                    step: "completado",
+                    percentage: 100,
+                    mensaje: "Completado",
+                    error: null,
+                    updated_at: null,
+                  },
+                }
+              : f
+          )
+        );
+        setLoadingDocs(true);
+        await Promise.all([loadDocuments(), loadStats(), loadHealth()]);
+      } else {
+        const errorData = await res.json().catch(() => ({}));
+        setUploadFiles((prev) =>
+          prev.map((f) =>
+            f.progress?.doc_id === docId
+              ? {
+                  ...f,
+                  status: "error",
+                  error: errorData?.error || "Error al reprocesar",
+                  progress: {
+                    doc_id: docId,
+                    step: "error",
+                    percentage: 0,
+                    mensaje: null,
+                    error: errorData?.error || "Error",
+                    updated_at: null,
+                  },
+                }
+              : f
+          )
+        );
+      }
+    } catch {
+      setUploadFiles((prev) =>
+        prev.map((f) =>
+          f.progress?.doc_id === docId
+            ? {
+                ...f,
+                status: "error",
+                error: "Error de conexion con el pipeline (reintento)",
+              }
+            : f
+        )
+      );
     }
   }
 
@@ -1150,7 +1321,18 @@ export default function KnowledgeBasePage() {
                       </>
                     )}
                     {fileState.error && (
-                      <p className="mt-1 text-xs text-destructive">{fileState.error}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <p className="text-xs text-destructive flex-1">{fileState.error}</p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleRetryUpload(fileState)}
+                          className="h-6 px-2 text-xs shrink-0"
+                        >
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                          Reintentar
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1374,6 +1556,78 @@ export default function KnowledgeBasePage() {
         </Card>
       </div>
 
+      {/* RAG Health Alert */}
+      {health && !health.ok && (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardContent className="flex items-start gap-3 py-3">
+            <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-amber-900">
+                Problemas detectados en la Base de Conocimiento
+              </p>
+              <p className="text-xs text-amber-800 mt-1">
+                {health.diagnosis}
+              </p>
+              <div className="flex items-center gap-4 mt-2 text-xs text-amber-700">
+                <span>{health.total_documents} docs</span>
+                <span>{health.chunks.total} chunks</span>
+                <span>{health.chunks.with_embedding} con embedding</span>
+                {health.chunks.without_embedding > 0 && (
+                  <span className="font-medium text-amber-900">
+                    {health.chunks.without_embedding} sin embedding
+                  </span>
+                )}
+              </div>
+              {health.documents_by_status["error"] && (
+                <div className="mt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs border-amber-300 text-amber-900 hover:bg-amber-100"
+                    onClick={() => {
+                      const errorDocs = documents.filter((d) => d.estado === "error");
+                      if (errorDocs.length > 0) {
+                        handleReprocess(errorDocs.map((d) => d.id));
+                      }
+                    }}
+                    disabled={reprocessing.size > 0}
+                  >
+                    {reprocessing.size > 0 ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-3 w-3 mr-1" />
+                    )}
+                    Reprocesar documentos con error ({health.documents_by_status["error"]})
+                  </Button>
+                </div>
+              )}
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={loadHealth}
+              className="shrink-0 h-7 w-7 p-0"
+              title="Actualizar diagnostico"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {health && health.ok && health.chunks.without_embedding > 0 && (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="flex items-center gap-3 py-3">
+            <Heart className="h-5 w-5 text-blue-600 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm text-blue-900">
+                RAG operativo. <span className="font-medium">{health.chunks.without_embedding} chunk{health.chunks.without_embedding !== 1 ? "s" : ""} sin embedding</span> (no afecta busqueda pero reduce cobertura).
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tab navigation */}
       <div className="flex gap-1 rounded-lg bg-muted p-1">
         <button
@@ -1433,7 +1687,9 @@ export default function KnowledgeBasePage() {
           setSearch={setSearch}
           loading={loadingDocs}
           deleting={deleting}
+          reprocessing={reprocessing}
           onDelete={handleDelete}
+          onReprocess={handleReprocess}
           onSearch={() => {
             setLoadingDocs(true);
             loadDocuments();
@@ -1704,7 +1960,9 @@ function DocumentsTab({
   setSearch,
   loading,
   deleting,
+  reprocessing,
   onDelete,
+  onReprocess,
   onSearch,
 }: {
   documents: KBDocument[];
@@ -1712,9 +1970,28 @@ function DocumentsTab({
   setSearch: (s: string) => void;
   loading: boolean;
   deleting: string | null;
+  reprocessing: Set<string>;
   onDelete: (id: string) => void;
+  onReprocess: (ids: string[]) => void;
   onSearch: () => void;
 }) {
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  const filteredDocs =
+    statusFilter === "all"
+      ? documents
+      : statusFilter === "sin_chunks"
+        ? documents.filter(
+            (d) => d.estado === "indexado" && (!d.total_chunks || d.total_chunks === 0)
+          )
+        : documents.filter((d) => d.estado === statusFilter);
+
+  const docsWithIssues = documents.filter(
+    (d) =>
+      d.estado === "error" ||
+      (d.estado === "indexado" && (!d.total_chunks || d.total_chunks === 0))
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -1734,6 +2011,51 @@ function DocumentsTab({
             <Search className="h-4 w-4" />
           </Button>
         </div>
+        {/* Status filter + bulk reprocess */}
+        {documents.length > 0 && (
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            {[
+              { key: "all", label: "Todos", count: documents.length },
+              { key: "indexado", label: "Indexados", count: documents.filter((d) => d.estado === "indexado").length },
+              { key: "error", label: "Con error", count: documents.filter((d) => d.estado === "error").length },
+              { key: "sin_chunks", label: "Sin chunks", count: documents.filter((d) => d.estado === "indexado" && (!d.total_chunks || d.total_chunks === 0)).length },
+            ]
+              .filter((f) => f.count > 0 || f.key === "all")
+              .map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setStatusFilter(f.key)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
+                    statusFilter === f.key
+                      ? f.key === "error"
+                        ? "bg-red-100 border-red-300 text-red-800"
+                        : f.key === "sin_chunks"
+                          ? "bg-amber-100 border-amber-300 text-amber-800"
+                          : "bg-vandarum-teal/10 border-vandarum-teal/30 text-vandarum-teal"
+                      : "bg-background hover:bg-muted"
+                  }`}
+                >
+                  {f.label} ({f.count})
+                </button>
+              ))}
+            {docsWithIssues.length > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto h-7 text-xs"
+                onClick={() => onReprocess(docsWithIssues.map((d) => d.id))}
+                disabled={reprocessing.size > 0}
+              >
+                {reprocessing.size > 0 ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-3 w-3 mr-1" />
+                )}
+                Reprocesar problematicos ({docsWithIssues.length})
+              </Button>
+            )}
+          </div>
+        )}
       </CardHeader>
       <CardContent>
         {loading ? (
@@ -1748,6 +2070,12 @@ function DocumentsTab({
             </p>
             <p className="text-sm text-muted-foreground mt-1">
               Sube documentos o indexa archivos desde Google Drive.
+            </p>
+          </div>
+        ) : filteredDocs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <p className="text-muted-foreground text-sm">
+              Ningun documento coincide con el filtro seleccionado.
             </p>
           </div>
         ) : (
@@ -1765,62 +2093,112 @@ function DocumentsTab({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {documents.map((doc) => (
-                <TableRow key={doc.id}>
-                  <TableCell className="max-w-[300px] truncate font-medium">
-                    {doc.titulo || "Sin titulo"}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">
-                      {doc.tipo
-                        ? knowledgeTypeLabels[doc.tipo] ?? doc.tipo
+              {filteredDocs.map((doc) => {
+                const hasChunkIssue =
+                  doc.estado === "indexado" &&
+                  (!doc.total_chunks || doc.total_chunks === 0);
+                const isError = doc.estado === "error";
+                const canReprocess = hasChunkIssue || isError;
+                const isReprocessing = reprocessing.has(doc.id);
+
+                return (
+                  <TableRow
+                    key={doc.id}
+                    className={
+                      hasChunkIssue
+                        ? "bg-amber-50/50"
+                        : isError
+                          ? "bg-red-50/50"
+                          : undefined
+                    }
+                  >
+                    <TableCell className="max-w-[300px] truncate font-medium">
+                      {doc.titulo || "Sin titulo"}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {doc.tipo
+                          ? knowledgeTypeLabels[doc.tipo] ?? doc.tipo
+                          : "---"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {doc.naturaleza_pdf || "---"}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          doc.estado === "indexado"
+                            ? hasChunkIssue
+                              ? "secondary"
+                              : "success"
+                            : doc.estado === "error"
+                              ? "destructive"
+                              : "secondary"
+                        }
+                      >
+                        {doc.estado || "---"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {doc.total_paginas ?? "---"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {hasChunkIssue && (
+                          <AlertTriangle
+                            className="h-3.5 w-3.5 text-amber-500"
+                            title="Documento sin chunks - no buscable por RAG"
+                          />
+                        )}
+                        <span className={hasChunkIssue ? "text-amber-600 font-medium" : ""}>
+                          {doc.total_chunks ?? "---"}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {doc.fecha_ingesta
+                        ? new Date(doc.fecha_ingesta).toLocaleDateString(
+                            "es-ES"
+                          )
                         : "---"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {doc.naturaleza_pdf || "---"}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        doc.estado === "indexado"
-                          ? "success"
-                          : doc.estado === "error"
-                            ? "destructive"
-                            : "secondary"
-                      }
-                    >
-                      {doc.estado || "---"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {doc.total_paginas ?? "---"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {doc.total_chunks ?? "---"}
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {doc.fecha_ingesta
-                      ? new Date(doc.fecha_ingesta).toLocaleDateString("es-ES")
-                      : "---"}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onDelete(doc.id)}
-                      disabled={deleting === doc.id}
-                      className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                    >
-                      {deleting === doc.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        {canReprocess && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onReprocess([doc.id])}
+                            disabled={isReprocessing}
+                            className="text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                            title="Reprocesar documento"
+                          >
+                            {isReprocessing ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <RotateCcw className="h-4 w-4" />
+                            )}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onDelete(doc.id)}
+                          disabled={deleting === doc.id}
+                          className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                        >
+                          {deleting === doc.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}

@@ -50,6 +50,8 @@ class RAGSearchResult:
     rag_scope: RAGScope
     storage_path: Optional[str]
     metadata: dict
+    text_rank: float = 0.0
+    hybrid_score: float = 0.0
 
 
 @dataclass
@@ -106,6 +108,7 @@ class RAGScopingService:
         if RAGScope.GENERAL in scopes:
             general_results = await self._search_knowledge(
                 query_embedding=query_embedding,
+                query_text=query,
                 doc_type_filter=doc_type_filter,
                 top_k=top_k_per_scope,
                 threshold=similarity_threshold,
@@ -115,13 +118,18 @@ class RAGScopingService:
         if RAGScope.PROJECT in scopes and project_id:
             project_results = await self._search_project(
                 query_embedding=query_embedding,
+                query_text=query,
                 project_id=project_id,
                 doc_type_filter=doc_type_filter,
                 top_k=top_k_per_scope,
                 threshold=similarity_threshold,
             )
 
-        all_results = general_results + project_results
+        all_results = sorted(
+            general_results + project_results,
+            key=lambda r: r.hybrid_score,
+            reverse=True,
+        )
         context_text = self._build_context(query, general_results, project_results)
 
         return RAGResponse(
@@ -135,11 +143,12 @@ class RAGScopingService:
     async def _search_knowledge(
         self,
         query_embedding: list[float],
+        query_text: str,
         doc_type_filter: Optional[str],
         top_k: int,
         threshold: float,
     ) -> list[RAGSearchResult]:
-        """Búsqueda en knowledge_chunks (RAG General)."""
+        """Búsqueda híbrida en knowledge_chunks (vector + full-text)."""
         sb = await self._get_supabase()
 
         try:
@@ -150,6 +159,7 @@ class RAGScopingService:
                     "doc_type_filter": doc_type_filter,
                     "match_threshold": threshold,
                     "match_count": top_k,
+                    "query_text": query_text,
                 }
             ).execute()
 
@@ -165,6 +175,8 @@ class RAGScopingService:
                     rag_scope=RAGScope.GENERAL,
                     storage_path=row.get("storage_path"),
                     metadata=row.get("doc_metadata", {}),
+                    text_rank=row.get("text_rank", 0.0),
+                    hybrid_score=row.get("hybrid_score", row["similarity"]),
                 )
                 for row in (result.data or [])
             ]
@@ -175,12 +187,13 @@ class RAGScopingService:
     async def _search_project(
         self,
         query_embedding: list[float],
+        query_text: str,
         project_id: str,
         doc_type_filter: Optional[str],
         top_k: int,
         threshold: float,
     ) -> list[RAGSearchResult]:
-        """Búsqueda en project_chunks (RAG Proyecto)."""
+        """Búsqueda híbrida en project_chunks (vector + full-text)."""
         sb = await self._get_supabase()
 
         try:
@@ -192,6 +205,7 @@ class RAGScopingService:
                     "doc_type_filter": doc_type_filter,
                     "match_threshold": threshold,
                     "match_count": top_k,
+                    "query_text": query_text,
                 }
             ).execute()
 
@@ -207,6 +221,8 @@ class RAGScopingService:
                     rag_scope=RAGScope.PROJECT,
                     storage_path=row.get("storage_path"),
                     metadata=row.get("doc_metadata", {}),
+                    text_rank=row.get("text_rank", 0.0),
+                    hybrid_score=row.get("hybrid_score", row["similarity"]),
                 )
                 for row in (result.data or [])
             ]
@@ -229,7 +245,7 @@ class RAGScopingService:
             sections.append("=" * 60)
             for r in project_results:
                 sections.append(
-                    f"\n[{r.doc_type.upper()} | {r.doc_title} | Relevancia: {r.similarity:.2f}]\n"
+                    f"\n[{r.doc_type.upper()} | {r.doc_title} | Relevancia: {r.hybrid_score:.2f}]\n"
                     f"{r.content}\n"
                 )
 
@@ -239,7 +255,7 @@ class RAGScopingService:
             sections.append("=" * 60)
             for r in general_results:
                 sections.append(
-                    f"\n[{r.doc_type.upper()} | {r.doc_title} | Relevancia: {r.similarity:.2f}]\n"
+                    f"\n[{r.doc_type.upper()} | {r.doc_title} | Relevancia: {r.hybrid_score:.2f}]\n"
                     f"{r.content}\n"
                 )
 

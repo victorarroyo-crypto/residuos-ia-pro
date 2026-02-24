@@ -8,13 +8,14 @@ type RpcChunk = {
   contenido: string;
   chunk_type: string;
   similarity: number;
+  text_rank: number;
+  hybrid_score: number;
   doc_titulo: string;
   doc_tipo: string;
   source?: string;
 };
 
 type RankedChunk = RpcChunk & {
-  lexicalScore: number;
   finalScore: number;
   sourceScope: "general" | "project";
 };
@@ -45,13 +46,6 @@ async function embedQuery(query: string, openaiKey: string): Promise<number[] | 
 
 function cSourceToScope(source?: string): "general" | "project" {
   return source === "project" ? "project" : "general";
-}
-
-function lexicalScore(text: string, terms: string[]): number {
-  if (terms.length === 0) return 0;
-  const lower = (text || "").toLowerCase();
-  const hits = terms.filter((t) => lower.includes(t)).length;
-  return hits / terms.length;
 }
 
 export async function POST(request: NextRequest) {
@@ -94,12 +88,6 @@ export async function POST(request: NextRequest) {
     }
 
     const sb = admin.client;
-    const searchTerms = query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((t) => t.length > 2)
-      .slice(0, 10);
-
     let rpcRows: RpcChunk[] = [];
     const candidateLimit = Math.max(topK * 8, 20);
     const threshold = 0.5;
@@ -117,6 +105,7 @@ export async function POST(request: NextRequest) {
         doc_type_filter: null,
         match_threshold: threshold,
         match_count: candidateLimit,
+        query_text: query,
       });
       if (error) throw new Error(error.message);
       rpcRows = (data || []) as RpcChunk[];
@@ -128,6 +117,7 @@ export async function POST(request: NextRequest) {
         match_threshold: threshold,
         match_count_kb: candidateLimit,
         match_count_project: candidateLimit,
+        query_text: query,
       });
       if (error) throw new Error(error.message);
       rpcRows = (data || []) as RpcChunk[];
@@ -137,6 +127,7 @@ export async function POST(request: NextRequest) {
         doc_type_filter: null,
         match_threshold: threshold,
         match_count: candidateLimit,
+        query_text: query,
       });
       if (error) throw new Error(error.message);
       rpcRows = (data || []) as RpcChunk[];
@@ -150,20 +141,20 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Re-ranking ligero: mezcla de score semántico (vector) + score léxico (términos).
-    const ranked: RankedChunk[] = rpcRows.map((row) => {
-      const lex = lexicalScore(row.contenido || "", searchTerms);
-      const sem = Number.isFinite(row.similarity) ? row.similarity : 0;
-      return {
-        ...row,
-        lexicalScore: lex,
-        finalScore: sem * 0.8 + lex * 0.2,
-        sourceScope:
-          scope === "combined"
-            ? cSourceToScope(row.source)
-            : scope,
-      };
-    });
+    // Usar hybrid_score de PostgreSQL (vector + full-text con stemming español).
+    // Ya viene ordenado por hybrid_score DESC desde SQL, pero re-sort por seguridad.
+    const ranked: RankedChunk[] = rpcRows.map((row) => ({
+      ...row,
+      finalScore: Number.isFinite(row.hybrid_score)
+        ? row.hybrid_score
+        : Number.isFinite(row.similarity)
+          ? row.similarity
+          : 0,
+      sourceScope:
+        scope === "combined"
+          ? cSourceToScope(row.source)
+          : scope,
+    }));
 
     ranked.sort((a, b) => b.finalScore - a.finalScore);
     const topChunks = ranked.slice(0, topK);
@@ -182,7 +173,7 @@ export async function POST(request: NextRequest) {
       chunk_type: c.chunk_type || "texto",
       similarity: c.finalScore,
       semantic_similarity: c.similarity,
-      lexical_similarity: c.lexicalScore,
+      text_rank: c.text_rank || 0,
       scope: c.sourceScope,
       excerpt:
         (c.contenido || "").substring(0, 200) +
@@ -220,7 +211,7 @@ export async function POST(request: NextRequest) {
           answer: gptData.choices[0].message.content,
           sources,
           retrieval: {
-            mode: "semantic_with_rerank",
+            mode: "hybrid_vector_fulltext",
             candidates: rpcRows.length,
             top_k: topK,
           },
@@ -234,7 +225,7 @@ export async function POST(request: NextRequest) {
       answer: `Basado en los documentos indexados, encontre la siguiente informacion relevante:\n\n${topChunks.map((c, i) => `**[Fuente ${i + 1}]** ${(c.contenido || "").substring(0, 300)}...`).join("\n\n")}`,
       sources,
       retrieval: {
-        mode: "semantic_with_rerank",
+        mode: "hybrid_vector_fulltext",
         candidates: rpcRows.length,
         top_k: topK,
       },

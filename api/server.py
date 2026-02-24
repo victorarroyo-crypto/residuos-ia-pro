@@ -1909,6 +1909,97 @@ async def gdrive_disconnect(consultant_id: str = Query(...)):
     return {"success": True}
 
 
+# ─── RAG Health Check ──────────────────────────────────────────────
+@app.get("/api/rag/health")
+async def rag_health():
+    """Diagnóstico del sistema RAG: docs sin chunks, estadísticas."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    result = await sb.rpc("rag_health_check").execute()
+    return {"status": "ok", "scopes": result.data or []}
+
+
+# ─── Re-process documents ─────────────────────────────────────────
+class ReprocessRequest(BaseModel):
+    doc_ids: list[str]
+    scope: str = "knowledge"  # "knowledge" or "project"
+
+@app.post("/api/reprocess")
+async def reprocess_documents(req: ReprocessRequest):
+    """Re-procesa documentos que no tienen chunks (o los tienen con error)."""
+    if service is None or rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    results = []
+
+    for doc_id in req.doc_ids:
+        try:
+            # Obtener el documento original
+            if req.scope == "knowledge":
+                doc_result = await sb.table("knowledge_documents").select(
+                    "id, titulo, storage_path, tipo"
+                ).eq("id", doc_id).execute()
+            else:
+                doc_result = await sb.table("project_documents").select(
+                    "id, titulo, storage_path, tipo, project_id"
+                ).eq("id", doc_id).execute()
+
+            if not doc_result.data:
+                results.append({"doc_id": doc_id, "status": "not_found"})
+                continue
+
+            doc = doc_result.data[0]
+            storage_path = doc.get("storage_path")
+
+            if not storage_path:
+                results.append({"doc_id": doc_id, "status": "no_storage_path"})
+                continue
+
+            # Descargar archivo desde Supabase Storage
+            try:
+                file_bytes = await sb.storage.from_("documentos").download(storage_path)
+            except Exception as e:
+                results.append({"doc_id": doc_id, "status": "download_error", "error": str(e)})
+                continue
+
+            filename = doc.get("titulo", "document.pdf")
+            project_id = doc.get("project_id")
+            rag_scope = "general" if req.scope == "knowledge" else "project"
+
+            # Borrar chunks viejos antes de reprocesar
+            chunk_table = "knowledge_chunks" if req.scope == "knowledge" else "project_chunks"
+            await sb.table(chunk_table).delete().eq("document_id", doc_id).execute()
+
+            # Re-ingestar usando la pipeline normal
+            ingestion_result = await service.ingest(
+                file_bytes=file_bytes,
+                filename=filename,
+                project_id=project_id,
+                rag_scope=rag_scope,
+            )
+
+            results.append({
+                "doc_id": doc_id,
+                "status": "ok" if ingestion_result.success else "error",
+                "num_chunks": ingestion_result.num_chunks,
+                "error": ingestion_result.error,
+            })
+        except Exception as e:
+            logger.exception(f"Error reprocesando {doc_id}: {e}")
+            results.append({"doc_id": doc_id, "status": "error", "error": str(e)})
+
+    success_count = sum(1 for r in results if r["status"] == "ok")
+    return {
+        "total": len(req.doc_ids),
+        "success": success_count,
+        "failed": len(req.doc_ids) - success_count,
+        "results": results,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

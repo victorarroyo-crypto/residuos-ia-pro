@@ -12,6 +12,7 @@ Supabase: Dos RAGs separados:
   project_documents   + project_chunks    (docs de proyecto)
 """
 
+import hashlib
 import logging
 import re
 from datetime import datetime
@@ -143,6 +144,11 @@ class StorageService:
         else:
             return await self._save_project_doc(sb, doc)
 
+    def _compute_content_hash(self, doc: ProcessedDocument) -> str:
+        """Hash del contenido para detectar duplicados."""
+        text = "".join(c.content for c in doc.chunks)
+        return hashlib.sha256(text.encode()).hexdigest()[:32]
+
     async def _save_knowledge_doc(self, sb: AsyncClient, doc: ProcessedDocument) -> str:
         """Guarda en knowledge_documents (RAG General)."""
         data = {
@@ -160,6 +166,7 @@ class StorageService:
             "advertencias": doc.extraction_warnings,
             "metadata": doc.metadata,
             "estado": "indexado",
+            "content_hash": self._compute_content_hash(doc),
             "fecha_ingesta": datetime.utcnow().isoformat(),
             "fecha_documento": doc.metadata.get("fecha_concesion")
                 or doc.metadata.get("fecha_inicio"),
@@ -195,6 +202,7 @@ class StorageService:
             "advertencias": doc.extraction_warnings,
             "metadata": doc.metadata,
             "estado": "indexado",
+            "content_hash": self._compute_content_hash(doc),
             "fecha_ingesta": datetime.utcnow().isoformat(),
             "fecha_documento": doc.metadata.get("fecha_concesion")
                 or doc.metadata.get("fecha_factura")
@@ -224,6 +232,11 @@ class StorageService:
             data = []
             for chunk in batch:
                 if chunk.embedding is None:
+                    continue
+                # Filtro de calidad: descartar chunks demasiado cortos o ruidosos
+                content_stripped = chunk.content.strip()
+                if len(content_stripped) < 50:
+                    logger.debug(f"Chunk {chunk.chunk_id} descartado: muy corto ({len(content_stripped)} chars)")
                     continue
                 row = {
                     "id": chunk.chunk_id,
