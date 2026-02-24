@@ -6,6 +6,7 @@ normativa aplicable al sector y CCAA del proyecto.
 """
 
 import logging
+from openai import OpenAI
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_NORMATIVO
 from .llm import call_claude
@@ -44,36 +45,70 @@ def _build_rag_queries(state: AnalysisState) -> list[str]:
 
 
 def _search_knowledge_text(state: AnalysisState, queries: list[str]) -> str:
-    """Busca en knowledge_chunks por texto (sin embeddings)."""
+    """Busca en knowledge_chunks via búsqueda semántica (fallback léxico si falla)."""
     from supabase import create_client
 
     sb = create_client(state["supabase_url"], state["supabase_key"])
     all_chunks = []
     seen_ids = set()
 
+    openai_key = state.get("openai_api_key", "")
+
     for query in queries:
-        terms = [t for t in query.lower().split() if len(t) > 3][:5]
-        if not terms:
-            continue
+        chunks_for_query = []
 
-        or_filters = ",".join(f"contenido.ilike.%{t}%" for t in terms)
-        try:
-            result = sb.table("knowledge_chunks").select(
-                "id, document_id, contenido, chunk_type"
-            ).or_(or_filters).limit(5).execute()
+        # Intento semántico primero
+        if openai_key:
+            try:
+                client = OpenAI(api_key=openai_key)
+                emb = client.embeddings.create(
+                    model="text-embedding-3-large",
+                    input=query,
+                    dimensions=1536,
+                )
+                query_embedding = emb.data[0].embedding
+                result = sb.rpc(
+                    "search_knowledge",
+                    {
+                        "query_embedding": query_embedding,
+                        "doc_type_filter": None,
+                        "match_threshold": 0.5,
+                        "match_count": 5,
+                    },
+                ).execute()
+                chunks_for_query = result.data or []
+            except Exception as e:
+                logger.warning(f"Error en búsqueda semántica para '{query}': {e}")
 
-            for chunk in (result.data or []):
-                if chunk["id"] not in seen_ids:
-                    seen_ids.add(chunk["id"])
-                    all_chunks.append(chunk)
-        except Exception as e:
-            logger.warning(f"Error buscando knowledge para '{query}': {e}")
+        # Fallback léxico si no hay resultados o no hay key
+        if not chunks_for_query:
+            terms = [t for t in query.lower().split() if len(t) > 3][:5]
+            if terms:
+                or_filters = ",".join(f"contenido.ilike.%{t}%" for t in terms)
+                try:
+                    result = sb.table("knowledge_chunks").select(
+                        "id, document_id, contenido, chunk_type"
+                    ).or_(or_filters).limit(5).execute()
+                    chunks_for_query = result.data or []
+                except Exception as e:
+                    logger.warning(f"Error en fallback léxico para '{query}': {e}")
+
+        for chunk in chunks_for_query:
+            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            if not chunk_id or chunk_id in seen_ids:
+                continue
+            seen_ids.add(chunk_id)
+            all_chunks.append({
+                "id": chunk_id,
+                "document_id": chunk.get("document_id"),
+                "contenido": chunk.get("contenido", ""),
+                "chunk_type": chunk.get("chunk_type"),
+            })
 
     if not all_chunks:
         return "No se encontro normativa relevante en la base de conocimiento."
 
-    # Obtener titulos de documentos
-    doc_ids = list({c["document_id"] for c in all_chunks})
+    doc_ids = list({c["document_id"] for c in all_chunks if c.get("document_id")})
     try:
         docs_res = sb.table("knowledge_documents").select("id, titulo, tipo").in_("id", doc_ids).execute()
         doc_map = {d["id"]: d for d in (docs_res.data or [])}
@@ -81,7 +116,7 @@ def _search_knowledge_text(state: AnalysisState, queries: list[str]) -> str:
         doc_map = {}
 
     sections = [f"=== BASE DE CONOCIMIENTO NORMATIVA ({len(all_chunks)} fragmentos) ==="]
-    for chunk in all_chunks[:15]:  # Limitar contexto
+    for chunk in all_chunks[:15]:
         doc = doc_map.get(chunk["document_id"], {})
         sections.append(
             f"\n[{doc.get('tipo', 'N/A')} | {doc.get('titulo', 'Doc sin titulo')}]\n"

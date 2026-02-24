@@ -135,6 +135,7 @@ class PDFPipeline:
         self.embedder    = EmbeddingService(config)
         self.storage     = StorageService(config)
         self.metadata_ex = MetadataExtractor(config)
+        self._last_progress_by_doc: dict[str, tuple[str, int]] = {}
 
     async def process(
         self,
@@ -243,14 +244,25 @@ class PDFPipeline:
         return f"doc_{h}"
 
     async def _emit_progress(self, doc_id: str, step: str, pct: int):
-        """Emite progreso via Supabase Realtime para actualizar la UI en tiempo real."""
+        """Emite progreso con throttling para reducir writes innecesarios en Supabase."""
         try:
+            last = self._last_progress_by_doc.get(doc_id)
+            is_terminal = step in {"completado", "error"}
+            if last and not is_terminal:
+                last_step, last_pct = last
+                # Evita escribir actualizaciones muy cercanas en porcentaje
+                if step == last_step or abs(pct - last_pct) < 15:
+                    return
+
             sb = await self.storage._get_supabase()
             await sb.table("pipeline_progress").upsert({
                 "doc_id": doc_id,
                 "step": step,
                 "percentage": pct,
             }).execute()
+            self._last_progress_by_doc[doc_id] = (step, pct)
+            if is_terminal:
+                self._last_progress_by_doc.pop(doc_id, None)
         except Exception as e:
             logger.warning(f"No se pudo emitir progreso: {e}")
 
