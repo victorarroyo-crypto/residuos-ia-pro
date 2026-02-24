@@ -774,6 +774,7 @@ async def _run_advisor(
     response = await claude.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=32000,
+        stream=True,
         thinking={
             "type": "enabled",
             "budget_tokens": 24000,
@@ -783,11 +784,14 @@ async def _run_advisor(
         messages=messages,
     )
 
+    # Accumulate streamed response
+    final_response = await response.get_final_message()
+
     # Parse response: extract answer text and web search results
     answer = ""
     web_sources: list[dict] = []
 
-    for block in response.content:
+    for block in final_response.content:
         if block.type == "text":
             answer = block.text  # Last text block is the final answer
         elif block.type == "web_search_tool_result":
