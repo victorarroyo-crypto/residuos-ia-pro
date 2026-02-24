@@ -54,6 +54,19 @@ interface FileUploadState {
 }
 
 
+// Helper: read a File as base64 (bypasses Vercel's 4.5MB FormData limit)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(",")[1] || "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 async function computeDocId(file: File, projectId: string): Promise<string> {
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -209,9 +222,8 @@ export default function UploadPage({
         )
       );
 
-      const formData = new FormData();
-      formData.append("file", fileState.file);
-      formData.append("project_id", id);
+      // Convert to base64 to bypass Vercel's 4.5MB FormData limit
+      const base64Data = await fileToBase64(fileState.file);
 
       try {
         setFiles((prev) =>
@@ -235,7 +247,13 @@ export default function UploadPage({
 
         const response = await fetch("/api/ingest", {
           method: "POST",
-          body: formData,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            file_base64: base64Data,
+            file_name: fileState.file.name,
+            file_type: fileState.file.type,
+            project_id: id,
+          }),
         });
 
         const result = await response.json();

@@ -155,6 +155,19 @@ const knowledgeTypeLabels: Record<string, string> = {
 const ACCEPTED_EXTENSIONS =
   ".pdf,.docx,.doc,.txt,.html,.htm,.md,.xlsx,.xls,.csv";
 
+// Helper: read a File as base64 (bypasses Vercel's 4.5MB FormData limit)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(",")[1] || "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 const stepOrder = [
   "subiendo",
   "detectando_tipo",
@@ -652,9 +665,8 @@ export default function KnowledgeBasePage() {
     setUploadFiles(initialStates);
 
     for (const fileState of initialStates) {
-      const formData = new FormData();
-      formData.append("file", fileState.file);
-      formData.append("rag_scope", "general");
+      // Convert file to base64 to bypass Vercel's 4.5MB FormData limit
+      const base64Data = await fileToBase64(fileState.file);
 
       setUploadFiles((prev) =>
         prev.map((f) =>
@@ -678,7 +690,13 @@ export default function KnowledgeBasePage() {
       try {
         const res = await fetch("/api/ingest", {
           method: "POST",
-          body: formData,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            file_base64: base64Data,
+            file_name: fileState.file.name,
+            file_type: fileState.file.type,
+            rag_scope: "general",
+          }),
         });
         if (res.ok) {
           successCount++;
@@ -840,14 +858,18 @@ export default function KnowledgeBasePage() {
       )
     );
 
-    const formData = new FormData();
-    formData.append("file", fileState.file);
-    formData.append("rag_scope", "general");
+    const retryBase64 = await fileToBase64(fileState.file);
 
     try {
       const res = await fetch("/api/ingest", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_base64: retryBase64,
+          file_name: fileState.file.name,
+          file_type: fileState.file.type,
+          rag_scope: "general",
+        }),
       });
       if (res.ok) {
         setUploadFiles((prev) =>

@@ -1,11 +1,11 @@
 # CLAUDE.md - ResidusIA Pro
 
-## Reglas de trabajo
+## Reglas de comportamiento (OBLIGATORIAS)
 
-1. **La fuente de verdad es Supabase, no los archivos SQL del repo.** Los archivos en `supabase/` son scripts históricos. Pueden no coincidir con lo que hay desplegado. Antes de actuar, verificar el estado real consultando la base de datos.
-2. **No adivinar.** Si no se tiene información, preguntar al usuario o generar el SQL necesario para obtenerla de Supabase.
-3. **No ejecutar sin orden explícita.** Esperar confirmación del usuario antes de hacer cambios.
-4. **Análisis integral.** No resolver un síntoma sin entender el problema completo. Leer todo el contexto antes de proponer soluciones.
+1. **NUNCA implementar sin aprobación de Víctor.** Antes de escribir o modificar cualquier archivo de código, presentar el plan completo y esperar aprobación explícita. Esto incluye: nuevos archivos, ediciones de archivos existentes, migraciones SQL, y cambios de configuración. Solo investigar, leer y analizar está permitido sin aprobación.
+2. **Análisis integral antes de proponer.** Ante cualquier problema o solicitud, hacer primero un análisis profesional, serio y exhaustivo: leer todos los archivos relevantes, entender el flujo completo end-to-end, identificar todas las dependencias y posibles efectos secundarios. Solo después de tener el panorama completo, presentar el diagnóstico y la propuesta a Víctor.
+3. **La fuente de verdad es Supabase, no los archivos SQL del repo.** Los archivos en `supabase/` son scripts históricos. Pueden no coincidir con lo que hay desplegado. Antes de actuar, verificar el estado real consultando la base de datos.
+4. **No adivinar.** Si no se tiene información, preguntar al usuario o generar el SQL necesario para obtenerla de Supabase.
 5. **Una cosa a la vez.** No bombardear al usuario con múltiples preguntas o acciones simultáneas.
 6. **SQL que funcione.** No usar `DO $$` en Supabase SQL Editor (inyecta comentarios y rompe). Usar queries simples y directas.
 7. **No sacar conclusiones precipitadas.** Verificar antes de afirmar.

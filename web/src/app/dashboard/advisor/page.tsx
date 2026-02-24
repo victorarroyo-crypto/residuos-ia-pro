@@ -29,6 +29,20 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB per file
 const ACCEPTED_EXTENSIONS =
   ".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif";
 
+// Helper: read a File as base64 string (data only, no prefix)
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Strip "data:...;base64," prefix
+      resolve(result.split(",")[1] || "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 // ─── Types ──────────────────────────────────────────────────────
 
 interface Source {
@@ -181,21 +195,26 @@ export default function AdvisorPage() {
       let res: Response;
 
       if (hasFileAttachments) {
-        // ── FormData: send files through Next.js proxy ──
-        const formData = new FormData();
-        formData.append("query", query);
-        formData.append("conversation_history", JSON.stringify(conversationHistory));
-        if (currentUrls.length > 0) {
-          formData.append("urls", JSON.stringify(currentUrls));
-        }
-        for (const file of currentFiles) {
-          formData.append("files", file);
-        }
+        // ── JSON with base64 files: bypasses Vercel's 4.5MB FormData limit ──
+        // Each file is converted to base64 and sent as JSON through the proxy.
+        // The proxy reconstructs FormData server-side for the pipeline.
+        const base64Files = await Promise.all(
+          currentFiles.map(async (file) => ({
+            name: file.name,
+            type: file.type,
+            base64: await fileToBase64(file),
+          }))
+        );
 
         res = await fetch("/api/advisor/chat", {
           method: "POST",
-          body: formData,
-          // No Content-Type header - browser sets it with boundary for multipart
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            conversation_history: conversationHistory,
+            urls: currentUrls.length > 0 ? currentUrls : undefined,
+            files: base64Files,
+          }),
         });
       } else {
         // ── JSON: text-only queries through Next.js proxy ──
