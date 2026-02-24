@@ -11,6 +11,11 @@ loadEnvConfig(new URL('..', import.meta.url).pathname);
 const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '4mb',
+    },
+  },
   images: {
     remotePatterns: [
       {
