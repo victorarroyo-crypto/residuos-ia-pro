@@ -1,8 +1,7 @@
 "use client";
 
-import { Sparkles, Trash2 } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { AdvisorChat } from "@/components/advisor-chat";
 
 export default function AdvisorPage() {

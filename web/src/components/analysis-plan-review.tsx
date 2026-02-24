@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   CheckCircle2,
-  XCircle,
   Edit3,
   Sparkles,
   AlertTriangle,

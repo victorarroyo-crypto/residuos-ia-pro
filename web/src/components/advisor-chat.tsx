@@ -155,6 +155,7 @@ const DEFAULT_SUGGESTIONS = [
 // ─── Component ──────────────────────────────────────────────────
 
 export function AdvisorChat({
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   projectId,
   analysisContext,
   compact = false,

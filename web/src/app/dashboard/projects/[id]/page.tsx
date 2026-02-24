@@ -168,10 +168,7 @@ export default function ProjectDetailPage({
   const [managers, setManagers] = useState<WasteManager[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Analysis state (legacy - kept for backwards compat)
-  const [selectedAgents, setSelectedAgents] = useState<Set<AgentId>>(
-    new Set(AVAILABLE_AGENTS.map((a) => a.id))
-  );
+  // Analysis state
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -337,18 +334,6 @@ export default function ProjectDetailPage({
 
   function toggleExpandedAgent(agentId: string) {
     setExpandedAgents((prev) => {
-      const next = new Set(prev);
-      if (next.has(agentId)) {
-        next.delete(agentId);
-      } else {
-        next.add(agentId);
-      }
-      return next;
-    });
-  }
-
-  function toggleAgent(agentId: AgentId) {
-    setSelectedAgents((prev) => {
       const next = new Set(prev);
       if (next.has(agentId)) {
         next.delete(agentId);
