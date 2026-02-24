@@ -3,6 +3,7 @@ ResidusIA Pro - API Server
 Expone el pipeline de procesamiento de documentos via HTTP.
 """
 
+import json
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -407,6 +409,63 @@ Cuando uses resultados web, indica la fuente.
 Responde siempre en español."""
 
 
+def _build_analysis_context_addendum(ctx: dict) -> str:
+    """Build a system prompt addendum with the HITL analysis context."""
+    parts = ["\n\n## CONTEXTO DEL ANALISIS EN CURSO"]
+    phase = ctx.get("phase", "")
+    project_name = ctx.get("projectName", "")
+
+    if project_name:
+        parts.append(f"Estas asistiendo a un consultor que analiza el proyecto **{project_name}**.")
+
+    if phase == "plan_review":
+        parts.append("El consultor esta revisando el PLAN DE ANALISIS propuesto por el coordinador IA.")
+        parts.append("Ayudale a decidir que agentes activar, que foco dar a cada uno, y que instrucciones escribir.")
+
+        plan = ctx.get("plan", {})
+        if plan:
+            agents = plan.get("agents", [])
+            if agents:
+                parts.append("\n### Agentes propuestos:")
+                for a in agents:
+                    status = "ACTIVADO" if a.get("enabled") else "desactivado"
+                    parts.append(f"- **{a.get('id', '?')}** [{status}]: {a.get('reason', '')}")
+                    if a.get("focus"):
+                        parts.append(f"  Foco sugerido: {a['focus']}")
+
+            gaps = plan.get("data_gaps", [])
+            if gaps:
+                parts.append("\n### Carencias de datos:")
+                for g in gaps:
+                    parts.append(f"- {g}")
+
+            summary = plan.get("data_summary", {})
+            if summary:
+                parts.append(f"\n### Datos del proyecto: {summary.get('total_documents', 0)} docs, "
+                             f"{summary.get('inventory_items', 0)} residuos, "
+                             f"{summary.get('contracts', 0)} contratos, "
+                             f"{summary.get('invoice_lines', 0)} lineas factura")
+
+    elif phase == "results_review":
+        parts.append("El consultor esta revisando los RESULTADOS del analisis y decidiendo si lanzar una 2a vuelta.")
+        parts.append("Ayudale a interpretar los hallazgos y decidir que profundizar.")
+
+        findings = ctx.get("findings", [])
+        if findings:
+            critical = [f for f in findings if f.get("severidad") == "critica"]
+            high = [f for f in findings if f.get("severidad") == "alta"]
+            parts.append(f"\n### Hallazgos: {len(findings)} total, {len(critical)} criticos, {len(high)} altos")
+
+            for f in (critical + high)[:10]:
+                ahorro = f.get("ahorro_eur_ano", 0)
+                ahorro_str = f" ({ahorro:,.0f} EUR/a)" if ahorro else ""
+                parts.append(f"- [{f.get('severidad', '?').upper()}] [{f.get('agente', '?')}] "
+                             f"{f.get('descripcion', '')}{ahorro_str}")
+
+    parts.append("\nResponde en el contexto de este analisis. Se concreto y util para las decisiones del consultor.")
+    return "\n".join(parts)
+
+
 class AdvisorMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
@@ -427,6 +486,8 @@ class AdvisorRequest(BaseModel):
     # Multi-file support (up to 6)
     files: Optional[list[FileAttachment]] = None
     urls: Optional[list[str]] = None
+    # HITL: analysis context when advisor is embedded in plan review or results
+    analysis_context: Optional[dict] = None
     # Legacy single-file support (backward compatibility)
     file_content: Optional[str] = None
     file_name: Optional[str] = None
@@ -617,6 +678,7 @@ async def _run_advisor(
     processed_docs: list[tuple[str, str]],
     image_blocks: list[dict],
     url_list: list[str],
+    analysis_context: Optional[dict] = None,
 ) -> dict:
     """
     Core advisor logic: RAG search → build prompt → Claude with thinking.
@@ -704,6 +766,11 @@ async def _run_advisor(
         "max_uses": 3,
     }
 
+    # Build system prompt, injecting analysis context if available
+    system_prompt = ADVISOR_SYSTEM_PROMPT
+    if analysis_context:
+        system_prompt += _build_analysis_context_addendum(analysis_context)
+
     response = await claude.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=32000,
@@ -712,7 +779,7 @@ async def _run_advisor(
             "budget_tokens": 24000,
         },
         tools=[web_search_tool],
-        system=ADVISOR_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=messages,
     )
 
@@ -829,6 +896,7 @@ async def advisor_query(request: AdvisorRequest):
             processed_docs=processed_docs,
             image_blocks=image_blocks,
             url_list=request.urls or [],
+            analysis_context=request.analysis_context,
         )
         return result
 
@@ -848,6 +916,7 @@ async def advisor_chat(
     project_id: Optional[str] = Form(default=None),
     urls: str = Form(default="[]"),
     storage_files: str = Form(default="[]"),
+    analysis_context: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
 ):
     """
@@ -966,6 +1035,14 @@ async def advisor_chat(
                     )
                     logger.warning("Advisor: extraction failed for %s: %s", upload.filename, e)
 
+        # Parse analysis_context
+        parsed_analysis_context = None
+        if analysis_context:
+            try:
+                parsed_analysis_context = json.loads(analysis_context)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         result = await _run_advisor(
             query=query,
             conversation_history=history,
@@ -973,6 +1050,7 @@ async def advisor_chat(
             processed_docs=processed_docs,
             image_blocks=image_blocks,
             url_list=url_list,
+            analysis_context=parsed_analysis_context,
         )
         return result
 
@@ -1020,8 +1098,115 @@ async def analyze_project(request: AnalyzeRequest):
 
 
 # ═══════════════════════════════════════════════════════════════
-# ANALISIS HITL - Plan + Execute + Round2
+# ANALISIS HITL - Sesiones + Plan + Execute + Round2
 # ═══════════════════════════════════════════════════════════════
+
+class SessionUpdate(BaseModel):
+    phase: Optional[str] = None
+    proposed_plan: Optional[dict] = None
+    approved_plan: Optional[dict] = None
+    consultant_instructions: Optional[str] = None
+    agent_focus: Optional[dict] = None
+    round1_results: Optional[dict] = None
+    round2_results: Optional[dict] = None
+
+
+@app.post("/api/analyze/session")
+async def create_session(project_id: str = Form(...), consultant_id: str = Form(...)):
+    """Create a new HITL analysis session."""
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from supabase._async.client import create_client as acreate_client
+    sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
+
+    result = await sb.table("analysis_sessions").insert({
+        "project_id": project_id,
+        "consultant_id": consultant_id,
+        "phase": "planning",
+    }).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Error creating session")
+
+    return result.data[0]
+
+
+@app.get("/api/analyze/session/{project_id}")
+async def get_session(project_id: str):
+    """Get the latest active session for a project."""
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from supabase._async.client import create_client as acreate_client
+    sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
+
+    result = await (
+        sb.table("analysis_sessions")
+        .select("*")
+        .eq("project_id", project_id)
+        .neq("phase", "complete")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return {"session": None}
+    return {"session": result.data[0]}
+
+
+@app.patch("/api/analyze/session/{session_id}")
+async def update_session(session_id: str, request: SessionUpdate):
+    """Update a session's state (phase, plan, results, etc.)."""
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from supabase._async.client import create_client as acreate_client
+    sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
+
+    updates = {k: v for k, v in request.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    result = await (
+        sb.table("analysis_sessions")
+        .update(updates)
+        .eq("id", session_id)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return result.data[0]
+
+
+@app.get("/api/analyze/progress/{project_id}")
+async def stream_analysis_progress(project_id: str):
+    """SSE endpoint that streams real-time progress events during analysis."""
+    from pipeline.agents.graph import get_progress_events
+
+    async def event_stream():
+        last_idx = 0
+        while True:
+            events = get_progress_events(project_id, last_idx)
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n"
+                last_idx += 1
+                if event.get("type") == "complete":
+                    return
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 class PlanRequest(BaseModel):
     project_id: str
@@ -1070,6 +1255,7 @@ async def analyze_execute(request: ExecuteRequest):
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     from pipeline.agents import run_project_analysis
+    from pipeline.agents.graph import clear_progress
 
     try:
         result = await run_project_analysis(
@@ -1082,8 +1268,12 @@ async def analyze_execute(request: ExecuteRequest):
             consultant_instructions=request.consultant_instructions,
             agent_focus=request.agent_focus,
         )
+        # Delay cleanup so SSE clients can read the "complete" event
+        await asyncio.sleep(5)
+        clear_progress(request.project_id)
         return result
     except Exception as e:
+        clear_progress(request.project_id)
         logger.error(f"Error ejecutando analisis {request.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1095,6 +1285,7 @@ async def analyze_round2(request: Round2Request):
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     from pipeline.agents import run_project_analysis
+    from pipeline.agents.graph import clear_progress
 
     try:
         result = await run_project_analysis(
@@ -1109,8 +1300,11 @@ async def analyze_round2(request: Round2Request):
             round_number=2,
             previous_findings=request.previous_findings,
         )
+        await asyncio.sleep(5)
+        clear_progress(request.project_id)
         return result
     except Exception as e:
+        clear_progress(request.project_id)
         logger.error(f"Error en 2a vuelta {request.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

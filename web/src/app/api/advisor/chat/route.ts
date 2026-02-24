@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
     const fileBlobs: { blob: Blob; name: string }[] = [];
 
     let storageFiles: string | undefined;
+    let analysisContextStr: string | undefined;
 
     if (contentType.includes("application/json")) {
       // ── JSON mode: files arrive as base64 strings (or storage_paths for large files) ──
@@ -63,6 +64,11 @@ export async function POST(request: NextRequest) {
       // Large files: already in Storage, pass paths to Python
       if (Array.isArray(body.storage_files) && body.storage_files.length > 0) {
         storageFiles = JSON.stringify(body.storage_files);
+      }
+
+      // Analysis context for HITL-embedded advisor
+      if (body.analysis_context) {
+        analysisContextStr = JSON.stringify(body.analysis_context);
       }
     } else {
       // ── FormData mode (small files, < 4MB) ──
@@ -97,6 +103,7 @@ export async function POST(request: NextRequest) {
     if (projectId) pipelineForm.append("project_id", projectId);
     if (urls) pipelineForm.append("urls", urls);
     if (storageFiles) pipelineForm.append("storage_files", storageFiles);
+    if (analysisContextStr) pipelineForm.append("analysis_context", analysisContextStr);
     for (const { blob, name } of fileBlobs) {
       pipelineForm.append("files", blob, name);
     }

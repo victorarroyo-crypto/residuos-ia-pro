@@ -180,6 +180,10 @@ export default function ProjectDetailPage({
   const [executingAgents, setExecutingAgents] = useState<string[]>([]);
   const [executingInstructions, setExecutingInstructions] = useState("");
 
+  // Session persistence
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [consultantId, setConsultantId] = useState<string | null>(null);
+
   // Edit state
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Project>>({});
@@ -232,6 +236,61 @@ export default function ProjectDetailPage({
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // ─── Get authenticated user ─────────────────────────────────────────
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) setConsultantId(data.user.id);
+    });
+  }, []);
+
+  // ─── Restore session on mount ───────────────────────────────────────
+
+  useEffect(() => {
+    if (!consultantId) return;
+    async function restoreSession() {
+      try {
+        const res = await fetch(`/api/analyze-project/session?project_id=${id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const session = data.session;
+        if (!session) return;
+
+        setSessionId(session.id);
+
+        // Restore state based on session phase
+        if (session.phase === "plan_review" && session.proposed_plan) {
+          setAnalysisPlan(session.proposed_plan);
+          setAnalysisPhase("plan_review");
+          setActiveTab("analisis");
+        } else if (session.phase === "results" && session.round1_results) {
+          setAnalysisResult(session.round1_results);
+          setAnalysisPhase("results");
+          setActiveTab("analisis");
+        }
+      } catch {
+        // Session restore is best-effort
+      }
+    }
+    restoreSession();
+  }, [consultantId, id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Session helper ─────────────────────────────────────────────────
+
+  async function updateSession(updates: Record<string, unknown>) {
+    if (!sessionId) return;
+    try {
+      await fetch(`/api/analyze-project/session/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+    } catch {
+      // Session updates are best-effort
+    }
+  }
 
   // ─── Delete document handler ────────────────────────────────────────
 
@@ -359,6 +418,23 @@ export default function ProjectDetailPage({
     setActiveTab("analisis");
 
     try {
+      // Create session
+      if (consultantId) {
+        try {
+          const sessionRes = await fetch("/api/analyze-project/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project_id: id, consultant_id: consultantId }),
+          });
+          if (sessionRes.ok) {
+            const sessionData = await sessionRes.json();
+            setSessionId(sessionData.id);
+          }
+        } catch {
+          // Session creation is best-effort
+        }
+      }
+
       const response = await fetch("/api/analyze-project/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -374,6 +450,11 @@ export default function ProjectDetailPage({
 
       setAnalysisPlan(data.analysis_plan);
       setAnalysisPhase("plan_review");
+
+      // Persist proposed plan
+      if (sessionId || consultantId) {
+        updateSession({ phase: "plan_review", proposed_plan: data.analysis_plan });
+      }
     } catch (err) {
       setAnalysisError(
         err instanceof Error ? err.message : "Error de conexion con el pipeline"
@@ -393,6 +474,14 @@ export default function ProjectDetailPage({
     setExecuteStartTime(Date.now());
     setExecutingAgents(agents);
     setExecutingInstructions(instructions);
+
+    // Persist approved plan
+    updateSession({
+      phase: "executing",
+      approved_plan: { agents, agent_focus: agentFocus },
+      consultant_instructions: instructions,
+      agent_focus: agentFocus,
+    });
 
     try {
       const response = await fetch("/api/analyze-project/execute", {
@@ -415,6 +504,9 @@ export default function ProjectDetailPage({
 
       setAnalysisResult(data);
       setAnalysisPhase("results");
+
+      // Persist results
+      updateSession({ phase: "results", round1_results: data });
     } catch (err) {
       setAnalysisError(
         err instanceof Error ? err.message : "Error de conexion con el pipeline"
@@ -439,6 +531,8 @@ export default function ProjectDetailPage({
     setExecutingAgents(agents);
     setExecutingInstructions(instructions);
 
+    updateSession({ phase: "round2_executing" });
+
     try {
       const response = await fetch("/api/analyze-project/round2", {
         method: "POST",
@@ -461,6 +555,9 @@ export default function ProjectDetailPage({
 
       setAnalysisResult(data);
       setAnalysisPhase("results");
+
+      // Persist round2 results
+      updateSession({ phase: "results", round2_results: data });
     } catch (err) {
       setAnalysisError(
         err instanceof Error ? err.message : "Error de conexion con el pipeline"
@@ -1423,6 +1520,7 @@ export default function ProjectDetailPage({
                   instructions={executingInstructions}
                   startTime={executeStartTime}
                   isComplete={!analysisRunning}
+                  projectId={id}
                 />
               </CardContent>
             </Card>
