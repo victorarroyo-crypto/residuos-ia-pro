@@ -11,6 +11,7 @@ Estructura completa en Drive: ver FOLDER_STRUCTURE
 """
 
 import logging
+import time
 from typing import Optional
 
 from google.oauth2.credentials import Credentials
@@ -19,8 +20,13 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 import io
 from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
+
+# Retry config for Google API calls
+_RETRY_DELAYS = [1, 2, 4, 8]  # seconds — exponential backoff
+_RETRYABLE_CODES = {500, 502, 503, 429}  # Google transient errors + rate limit
 
 # Full Drive access needed to browse user-uploaded files
 SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -533,23 +539,43 @@ class GoogleDriveService:
 
     def list_folder(self, folder_id: str, page_token: Optional[str] = None) -> dict:
         """
-        List contents of a folder.
+        List contents of a folder with retry on transient Google errors.
         Returns {items: [{id, name, mimeType, size, modifiedTime, isFolder}], nextPageToken?}
         """
         q = f"'{folder_id}' in parents and trashed=false"
         fields = "nextPageToken, files(id, name, mimeType, size, modifiedTime)"
 
-        result = (
-            self.service.files()
-            .list(
-                q=q,
-                fields=fields,
-                pageSize=100,
-                orderBy="folder,name",
-                pageToken=page_token or None,
-            )
-            .execute()
-        )
+        last_error: Exception | None = None
+        for attempt, delay in enumerate(_RETRY_DELAYS, 1):
+            try:
+                result = (
+                    self.service.files()
+                    .list(
+                        q=q,
+                        fields=fields,
+                        pageSize=100,
+                        orderBy="folder,name",
+                        pageToken=page_token or None,
+                    )
+                    .execute()
+                )
+                break  # success
+            except HttpError as e:
+                last_error = e
+                if e.resp.status in _RETRYABLE_CODES and attempt < len(_RETRY_DELAYS):
+                    logger.warning("list_folder(%s): HTTP %s on attempt %d, retrying in %ds", folder_id, e.resp.status, attempt, delay)
+                    time.sleep(delay)
+                else:
+                    raise
+            except Exception as e:
+                last_error = e
+                if attempt < len(_RETRY_DELAYS):
+                    logger.warning("list_folder(%s): %s on attempt %d, retrying in %ds", folder_id, type(e).__name__, attempt, delay)
+                    time.sleep(delay)
+                else:
+                    raise
+        else:
+            raise last_error  # type: ignore[misc]
 
         items = []
         for f in result.get("files", []):
@@ -575,10 +601,15 @@ class GoogleDriveService:
         _path: str = "",
     ) -> list[dict]:
         """
-        Recursively list ALL files under a folder.
+        Iteratively (BFS) list ALL files under a folder.
         Returns flat list of {id, name, mimeType, size, modifiedTime, path}.
-        Skips Google Docs/Sheets/Slides (native format, not downloadable as-is).
+
+        Uses a queue instead of deep recursion to avoid stack overflow on
+        large Drive structures.  Pauses 0.3s between folder scans to stay
+        well within Google Drive API rate limits.
         """
+        from collections import deque
+
         if supported_extensions is None:
             supported_extensions = {
                 ".pdf", ".docx", ".doc", ".xlsx", ".xls",
@@ -586,56 +617,102 @@ class GoogleDriveService:
             }
 
         all_files: list[dict] = []
-        page_token: str | None = None
+        # BFS queue: (folder_id, path_prefix)
+        folder_queue: deque[tuple[str, str]] = deque()
+        folder_queue.append((folder_id, _path))
+        folders_scanned = 0
 
-        while True:
-            listing = self.list_folder(folder_id, page_token)
+        while folder_queue:
+            current_folder_id, current_path = folder_queue.popleft()
+            page_token: str | None = None
 
-            for item in listing["items"]:
-                item_path = f"{_path}/{item['name']}" if _path else item["name"]
+            while True:
+                listing = self.list_folder(current_folder_id, page_token)
 
-                if item["isFolder"]:
-                    # Recurse into subfolder
-                    all_files.extend(
-                        self.list_all_files_recursive(
-                            item["id"], supported_extensions, item_path
-                        )
-                    )
-                else:
-                    # Check extension
-                    name_lower = item["name"].lower()
-                    ext = "." + name_lower.rsplit(".", 1)[-1] if "." in name_lower else ""
-                    if ext in supported_extensions:
-                        item["path"] = item_path
-                        all_files.append(item)
+                for item in listing["items"]:
+                    item_path = f"{current_path}/{item['name']}" if current_path else item["name"]
 
-            page_token = listing.get("nextPageToken")
-            if not page_token:
-                break
+                    if item["isFolder"]:
+                        folder_queue.append((item["id"], item_path))
+                    else:
+                        name_lower = item["name"].lower()
+                        ext = "." + name_lower.rsplit(".", 1)[-1] if "." in name_lower else ""
+                        if ext in supported_extensions:
+                            item["path"] = item_path
+                            all_files.append(item)
 
+                page_token = listing.get("nextPageToken")
+                if not page_token:
+                    break
+
+            folders_scanned += 1
+            # Throttle: pause between folders to avoid Google API rate limits
+            if folder_queue:
+                time.sleep(0.3)
+
+            # Log progress every 20 folders
+            if folders_scanned % 20 == 0:
+                logger.info("Drive scan: %d folders scanned, %d files found so far, %d folders queued", folders_scanned, len(all_files), len(folder_queue))
+
+        logger.info("Drive scan complete: %d folders scanned, %d files found", folders_scanned, len(all_files))
         return all_files
 
     def download_file(self, file_id: str) -> tuple[bytes, str, str]:
         """
-        Download a file from Drive.
+        Download a file from Drive with retry on transient errors.
         Returns (file_bytes, filename, mime_type).
         """
-        # Get file metadata first
-        meta = (
-            self.service.files()
-            .get(fileId=file_id, fields="name, mimeType, size")
-            .execute()
-        )
+        # Get file metadata first (with retry)
+        meta = None
+        last_error: Exception | None = None
+        for attempt, delay in enumerate(_RETRY_DELAYS, 1):
+            try:
+                meta = (
+                    self.service.files()
+                    .get(fileId=file_id, fields="name, mimeType, size")
+                    .execute()
+                )
+                break
+            except HttpError as e:
+                last_error = e
+                if e.resp.status in _RETRYABLE_CODES and attempt < len(_RETRY_DELAYS):
+                    logger.warning("download_file(%s) meta: HTTP %s on attempt %d, retrying in %ds", file_id, e.resp.status, attempt, delay)
+                    time.sleep(delay)
+                else:
+                    raise
+            except Exception as e:
+                last_error = e
+                if attempt < len(_RETRY_DELAYS):
+                    time.sleep(delay)
+                else:
+                    raise
+        if meta is None:
+            raise last_error  # type: ignore[misc]
+
         filename = meta["name"]
         mime_type = meta.get("mimeType", "application/octet-stream")
 
-        # Download content
-        request = self.service.files().get_media(fileId=file_id)
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
+        # Download content (with retry)
+        for attempt, delay in enumerate(_RETRY_DELAYS, 1):
+            try:
+                request = self.service.files().get_media(fileId=file_id)
+                buffer = io.BytesIO()
+                downloader = MediaIoBaseDownload(buffer, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                buffer.seek(0)
+                return buffer.read(), filename, mime_type
+            except HttpError as e:
+                if e.resp.status in _RETRYABLE_CODES and attempt < len(_RETRY_DELAYS):
+                    logger.warning("download_file(%s) content: HTTP %s on attempt %d, retrying in %ds", file_id, e.resp.status, attempt, delay)
+                    time.sleep(delay)
+                else:
+                    raise
+            except Exception:
+                if attempt < len(_RETRY_DELAYS):
+                    time.sleep(delay)
+                else:
+                    raise
 
-        buffer.seek(0)
-        return buffer.read(), filename, mime_type
+        raise RuntimeError(f"download_file({file_id}): all retries exhausted")
