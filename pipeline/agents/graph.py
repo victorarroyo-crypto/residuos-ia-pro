@@ -22,8 +22,11 @@ Optimizador y Redactor siempre se ejecutan.
 """
 
 import asyncio
+import json
 import logging
-from typing import Any
+import time
+from collections import defaultdict
+from typing import Any, Callable
 
 from langgraph.graph import StateGraph, END
 
@@ -51,6 +54,27 @@ AGENT_MAP = {
 
 ALL_AGENT_IDS = list(AGENT_MAP.keys())
 
+# ─── Progress tracking (in-memory, per project) ─────────────────────
+
+_progress_events: dict[str, list[dict]] = defaultdict(list)
+_progress_callbacks: dict[str, Callable] = {}
+
+
+def emit_progress(project_id: str, event: dict):
+    """Push a progress event for an analysis run."""
+    event.setdefault("ts", time.time())
+    _progress_events[project_id].append(event)
+
+
+def get_progress_events(project_id: str, since_idx: int = 0) -> list[dict]:
+    """Get progress events from a given index onwards."""
+    return _progress_events.get(project_id, [])[since_idx:]
+
+
+def clear_progress(project_id: str):
+    """Clean up progress events after analysis is done."""
+    _progress_events.pop(project_id, None)
+
 
 # ─── Wrappers sync para nodos que son async ─────────────────────────
 
@@ -70,15 +94,27 @@ def _run_async(coro):
 
 
 def _node_load(state: AnalysisState) -> dict:
-    return load_project_data(state)
+    project_id = state.get("project_id", "")
+    emit_progress(project_id, {"type": "load_start"})
+    result = load_project_data(state)
+    emit_progress(project_id, {"type": "load_done"})
+    return result
 
 
 def _node_optimizador(state: AnalysisState) -> dict:
-    return _run_async(agent_optimizador(state))
+    project_id = state.get("project_id", "")
+    emit_progress(project_id, {"type": "agent_start", "agent": "optimizador"})
+    result = _run_async(agent_optimizador(state))
+    emit_progress(project_id, {"type": "agent_done", "agent": "optimizador"})
+    return result
 
 
 def _node_redactor(state: AnalysisState) -> dict:
-    return _run_async(agent_redactor(state))
+    project_id = state.get("project_id", "")
+    emit_progress(project_id, {"type": "agent_start", "agent": "redactor"})
+    result = _run_async(agent_redactor(state))
+    emit_progress(project_id, {"type": "agent_done", "agent": "redactor"})
+    return result
 
 
 def _should_continue_after_load(state: AnalysisState) -> str:
@@ -95,8 +131,9 @@ def _make_parallel_node(agent_ids: list[str]):
     """Crea un nodo que ejecuta solo los agentes seleccionados en paralelo."""
 
     def _node_parallel_analysis(state: AnalysisState) -> dict:
+        project_id = state.get("project_id", "")
         selected = [
-            (key, fn)
+            (aid, key, fn)
             for aid in agent_ids
             if aid in AGENT_MAP
             for key, fn in [AGENT_MAP[aid]]
@@ -105,8 +142,21 @@ def _make_parallel_node(agent_ids: list[str]):
         if not selected:
             return {"errors": list(state.get("errors", [])) + ["No hay agentes seleccionados"]}
 
+        # Emit agent start events
+        for aid, _, _ in selected:
+            emit_progress(project_id, {"type": "agent_start", "agent": aid})
+
+        async def _run_agent(aid: str, fn):
+            result = await fn(state)
+            emit_progress(project_id, {
+                "type": "agent_done",
+                "agent": aid,
+                "findings_count": len(result.get(AGENT_MAP[aid][0], [])) if isinstance(result, dict) else 0,
+            })
+            return result
+
         async def _run_all():
-            tasks = [fn(state) for _, fn in selected]
+            tasks = [_run_agent(aid, fn) for aid, _, fn in selected]
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         results = _run_async(_run_all())
@@ -123,7 +173,7 @@ def _make_parallel_node(agent_ids: list[str]):
             merged[findings_key] = []
 
         # Rellenar con resultados reales
-        for i, (findings_key, _) in enumerate(selected):
+        for i, (_, findings_key, _) in enumerate(selected):
             result = results[i]
             if isinstance(result, Exception):
                 merged["errors"].append(f"Error en agente {findings_key}: {result}")
@@ -300,5 +350,8 @@ async def run_project_analysis(
         f"{len(result['opportunities'])} oportunidades, "
         f"{len(result['errors'])} errores"
     )
+
+    # Emit completion event
+    emit_progress(project_id, {"type": "complete"})
 
     return result
