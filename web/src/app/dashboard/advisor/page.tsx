@@ -29,9 +29,6 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB per file
 const ACCEPTED_EXTENSIONS =
   ".pdf,.xlsx,.xls,.csv,.txt,.json,.xml,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tiff,.tif";
 
-// Pipeline API URL for direct file uploads (bypasses Vercel 4.5MB limit)
-const PIPELINE_URL = process.env.NEXT_PUBLIC_PIPELINE_API_URL || "";
-
 // ─── Types ──────────────────────────────────────────────────────
 
 interface Source {
@@ -183,9 +180,8 @@ export default function AdvisorPage() {
 
       let res: Response;
 
-      if (hasFileAttachments && PIPELINE_URL) {
-        // ── FormData: send files directly to Python backend ──
-        // Bypasses Vercel's 4.5MB serverless function payload limit.
+      if (hasFileAttachments) {
+        // ── FormData: send files through Next.js proxy ──
         const formData = new FormData();
         formData.append("query", query);
         formData.append("conversation_history", JSON.stringify(conversationHistory));
@@ -196,13 +192,13 @@ export default function AdvisorPage() {
           formData.append("files", file);
         }
 
-        res = await fetch(`${PIPELINE_URL}/api/advisor/chat`, {
+        res = await fetch("/api/advisor/chat", {
           method: "POST",
           body: formData,
           // No Content-Type header - browser sets it with boundary for multipart
         });
       } else {
-        // ── JSON: text-only queries through Vercel proxy ──
+        // ── JSON: text-only queries through Next.js proxy ──
         res = await fetch("/api/advisor", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -235,17 +231,9 @@ export default function AdvisorPage() {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
 
-      // Provide helpful error messages
-      if (hasFileAttachments && !PIPELINE_URL) {
+      if (detail.includes("Failed to fetch") || detail.includes("NetworkError")) {
         setError(
-          "Para subir archivos necesitas configurar NEXT_PUBLIC_PIPELINE_API_URL en las variables de entorno. " +
-            "Sin ella, solo se pueden hacer consultas de texto."
-        );
-      } else if (detail.includes("Failed to fetch") || detail.includes("NetworkError")) {
-        setError(
-          hasFileAttachments
-            ? `No se pudo conectar con el servidor de procesamiento (${PIPELINE_URL}). Verifica que esta corriendo.`
-            : "Error de red. Verifica tu conexion."
+          "Error de red. Verifica tu conexion y que el servidor esta activo."
         );
       } else {
         setError(detail);
@@ -258,15 +246,6 @@ export default function AdvisorPage() {
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
-
-    // Check if pipeline URL is configured for file support
-    if (!PIPELINE_URL) {
-      setError(
-        "Subida de archivos no disponible: falta NEXT_PUBLIC_PIPELINE_API_URL en la configuracion."
-      );
-      e.target.value = "";
-      return;
-    }
 
     const remaining = MAX_FILES - totalAttachments;
     if (remaining <= 0) {
