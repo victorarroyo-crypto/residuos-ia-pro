@@ -16,10 +16,12 @@ import {
   FileSpreadsheet,
   File,
   Globe,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { exportToWord } from "@/lib/export-word";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -530,7 +532,7 @@ export default function AdvisorPage() {
                   </div>
                 )}
 
-                {/* Context indicators */}
+                {/* Context indicators + download button */}
                 {msg.role === "assistant" && (
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs opacity-60">
                     {msg.ragUsed === false && !msg.webSearchUsed && (
@@ -545,6 +547,20 @@ export default function AdvisorPage() {
                         Busqueda web utilizada
                       </span>
                     )}
+                    <button
+                      onClick={() => {
+                        // Find the user message that triggered this response
+                        const userQuery = i > 0 && messages[i - 1]?.role === "user"
+                          ? messages[i - 1].content
+                          : "Consulta del asesor";
+                        exportToWord(msg.content, userQuery, msg.sources);
+                      }}
+                      className="flex items-center gap-1 hover:opacity-100 opacity-60 transition-opacity ml-auto text-vandarum-teal"
+                      title="Descargar como Word"
+                    >
+                      <Download className="h-3 w-3" />
+                      Word
+                    </button>
                   </div>
                 )}
               </div>
