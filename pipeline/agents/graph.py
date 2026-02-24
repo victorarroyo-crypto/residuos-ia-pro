@@ -36,6 +36,7 @@ from .agent_registro import agent_registro
 from .agent_normativo import agent_normativo
 from .agent_optimizador import agent_optimizador
 from .agent_redactor import agent_redactor
+from .agent_coordinador import agent_coordinador
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,50 @@ def build_analysis_graph(agent_ids: list[str] | None = None) -> StateGraph:
     return graph.compile()
 
 
+async def plan_analysis(
+    project_id: str,
+    supabase_url: str,
+    supabase_key: str,
+    anthropic_api_key: str,
+) -> dict:
+    """Fase 0: Carga datos + coordinador genera plan inteligente.
+
+    Retorna dict con:
+      - analysis_plan: AnalysisPlan
+      - data_summary: dict
+      - errors: list[str]
+    """
+    state: AnalysisState = {
+        "project_id": project_id,
+        "supabase_url": supabase_url,
+        "supabase_key": supabase_key,
+        "anthropic_api_key": anthropic_api_key,
+        "errors": [],
+    }
+
+    logger.info(f"Planificando analisis para proyecto {project_id}")
+
+    # Paso 1: Cargar datos
+    load_result = load_project_data(state)
+    state.update(load_result)
+
+    pd = state.get("project_data", {})
+    if not pd.get("project"):
+        return {"analysis_plan": {}, "errors": state.get("errors", ["Proyecto no encontrado"])}
+
+    # Paso 2: Coordinador genera plan
+    coord_result = _run_async(agent_coordinador(state))
+    state.update(coord_result)
+
+    plan = state.get("analysis_plan", {})
+
+    return {
+        "analysis_plan": plan,
+        "project_name": pd.get("project", {}).get("nombre", ""),
+        "errors": state.get("errors", []),
+    }
+
+
 async def run_project_analysis(
     project_id: str,
     supabase_url: str,
@@ -184,12 +229,19 @@ async def run_project_analysis(
     anthropic_api_key: str,
     openai_api_key: str = "",
     agents: list[str] | None = None,
+    consultant_instructions: str = "",
+    agent_focus: dict[str, str] | None = None,
+    round_number: int = 1,
+    previous_findings: list[dict] | None = None,
 ) -> dict:
     """Ejecuta el analisis de un proyecto con los agentes seleccionados.
 
     Args:
         agents: Lista de agentes a ejecutar. None = todos.
-                Valores: "aai", "contratos", "facturas", "registro", "normativo"
+        consultant_instructions: Instrucciones libres del consultor (HITL).
+        agent_focus: {agent_id: "foco especifico"} del consultor (HITL).
+        round_number: 1 = primera vuelta, 2 = segunda vuelta.
+        previous_findings: Hallazgos de ronda anterior (para 2a vuelta).
 
     Retorna dict con:
       - report: str (informe Markdown)
@@ -208,10 +260,18 @@ async def run_project_analysis(
         "supabase_key": supabase_key,
         "anthropic_api_key": anthropic_api_key,
         "openai_api_key": openai_api_key,
+        "consultant_instructions": consultant_instructions,
+        "agent_focus": agent_focus or {},
+        "round_number": round_number,
+        "previous_findings": previous_findings or [],
         "errors": [],
     }
 
-    logger.info(f"Iniciando analisis del proyecto {project_id} con agentes: {used_agents}")
+    logger.info(
+        f"Iniciando analisis del proyecto {project_id} con agentes: {used_agents}"
+        f" | ronda: {round_number}"
+        f" | instrucciones: {'si' if consultant_instructions else 'no'}"
+    )
 
     # Invoke el grafo sincronamente (LangGraph maneja internamente)
     final_state = graph.invoke(initial_state)
@@ -227,6 +287,7 @@ async def run_project_analysis(
         "opportunities": final_state.get("opportunities", []),
         "errors": final_state.get("errors", []),
         "agents_used": used_agents,
+        "round_number": round_number,
         "aai_findings": final_state.get("aai_findings", []),
         "contratos_findings": final_state.get("contratos_findings", []),
         "facturas_findings": final_state.get("facturas_findings", []),

@@ -35,6 +35,22 @@ class Finding(TypedDict, total=False):
     datos: dict             # datos de soporte
 
 
+class AgentPlan(TypedDict, total=False):
+    """Plan propuesto por el coordinador para un agente."""
+    id: str                    # aai | contratos | facturas | registro | normativo
+    enabled: bool              # si se recomienda ejecutar
+    reason: str                # por que si/no
+    focus: str                 # foco sugerido para el agente
+    data_available: dict       # resumen de datos disponibles
+
+
+class AnalysisPlan(TypedDict, total=False):
+    """Plan completo generado por el coordinador."""
+    agents: list[AgentPlan]
+    data_summary: dict         # resumen de datos del proyecto
+    data_gaps: list[str]       # carencias de datos detectadas
+
+
 class AnalysisState(TypedDict, total=False):
     """Estado completo del grafo de analisis."""
     # Input
@@ -44,8 +60,17 @@ class AnalysisState(TypedDict, total=False):
     anthropic_api_key: str
     openai_api_key: str
 
+    # HITL: instrucciones del consultor y foco por agente
+    consultant_instructions: str       # instrucciones libres del consultor
+    agent_focus: dict[str, str]        # {agent_id: "foco especifico"}
+    round_number: int                  # 1 = primera vuelta, 2 = segunda
+    previous_findings: list[Finding]   # hallazgos de ronda anterior (para 2a vuelta)
+
     # Datos del proyecto (cargados por load_project_data)
     project_data: ProjectData
+
+    # Plan del coordinador
+    analysis_plan: AnalysisPlan
 
     # Hallazgos por agente
     aai_findings: list[Finding]

@@ -1020,6 +1020,102 @@ async def analyze_project(request: AnalyzeRequest):
 
 
 # ═══════════════════════════════════════════════════════════════
+# ANALISIS HITL - Plan + Execute + Round2
+# ═══════════════════════════════════════════════════════════════
+
+class PlanRequest(BaseModel):
+    project_id: str
+
+
+class ExecuteRequest(BaseModel):
+    project_id: str
+    agents: list[str]
+    consultant_instructions: str = ""
+    agent_focus: dict[str, str] = {}
+
+
+class Round2Request(BaseModel):
+    project_id: str
+    agents: list[str]
+    consultant_instructions: str = ""
+    agent_focus: dict[str, str] = {}
+    previous_findings: list[dict] = []
+
+
+@app.post("/api/analyze/plan")
+async def analyze_plan(request: PlanRequest):
+    """Fase 0: Carga datos del proyecto y genera un plan de analisis inteligente."""
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.agents import plan_analysis
+
+    try:
+        result = await plan_analysis(
+            project_id=request.project_id,
+            supabase_url=_config.supabase_url,
+            supabase_key=_config.supabase_service_key,
+            anthropic_api_key=_config.anthropic_api_key,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error planificando analisis {request.project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/analyze/execute")
+async def analyze_execute(request: ExecuteRequest):
+    """Fase 2: Ejecuta el analisis con instrucciones del consultor."""
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.agents import run_project_analysis
+
+    try:
+        result = await run_project_analysis(
+            project_id=request.project_id,
+            supabase_url=_config.supabase_url,
+            supabase_key=_config.supabase_service_key,
+            anthropic_api_key=_config.anthropic_api_key,
+            openai_api_key=_config.openai_api_key,
+            agents=request.agents,
+            consultant_instructions=request.consultant_instructions,
+            agent_focus=request.agent_focus,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error ejecutando analisis {request.project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/analyze/round2")
+async def analyze_round2(request: Round2Request):
+    """Fase 3: Segunda vuelta con hallazgos previos como contexto."""
+    if _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.agents import run_project_analysis
+
+    try:
+        result = await run_project_analysis(
+            project_id=request.project_id,
+            supabase_url=_config.supabase_url,
+            supabase_key=_config.supabase_service_key,
+            anthropic_api_key=_config.anthropic_api_key,
+            openai_api_key=_config.openai_api_key,
+            agents=request.agents,
+            consultant_instructions=request.consultant_instructions,
+            agent_focus=request.agent_focus,
+            round_number=2,
+            previous_findings=request.previous_findings,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error en 2a vuelta {request.project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE - Gestión de documentos normativos generales
 # ═══════════════════════════════════════════════════════════════
 
