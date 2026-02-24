@@ -22,6 +22,7 @@ import {
   Sparkles,
   ChevronDown,
   ChevronRight,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -160,8 +161,9 @@ export default function ProjectDetailPage({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Document filter
+  // Document filter & delete
   const [docTypeFilter, setDocTypeFilter] = useState("todos");
+  const [deletingDoc, setDeletingDoc] = useState<string | null>(null);
 
   // Alert filters
   const [alertSeverityFilter, setAlertSeverityFilter] = useState("todos");
@@ -205,6 +207,25 @@ export default function ProjectDetailPage({
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // ─── Delete document handler ────────────────────────────────────────
+
+  async function handleDeleteDoc(docId: string) {
+    if (!confirm("Eliminar este documento y sus chunks del RAG de proyecto?")) return;
+    setDeletingDoc(docId);
+    try {
+      const res = await fetch(`/api/projects/${id}/documents/${docId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setDocuments((prev) => prev.filter((d) => d.id !== docId));
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setDeletingDoc(null);
+    }
+  }
 
   // ─── Edit handlers ──────────────────────────────────────────────────
 
@@ -868,6 +889,7 @@ export default function ProjectDetailPage({
                     <TableHead className="text-right">Pags</TableHead>
                     <TableHead className="text-right">Chunks</TableHead>
                     <TableHead>Fecha</TableHead>
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -902,6 +924,22 @@ export default function ProjectDetailPage({
                       <TableCell className="text-right">{doc.total_paginas ?? "—"}</TableCell>
                       <TableCell className="text-right">{doc.total_chunks ?? "—"}</TableCell>
                       <TableCell className="text-sm">{doc.fecha_documento ?? "—"}</TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteDoc(doc.id)}
+                          disabled={deletingDoc === doc.id}
+                          className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                          title="Eliminar documento y chunks"
+                        >
+                          {deletingDoc === doc.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

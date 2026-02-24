@@ -306,9 +306,15 @@ class UnifiedIngestionService:
             if project_id:
                 chunk.metadata["project_id"] = project_id
 
-    @staticmethod
-    def _clean_for_json(data: dict) -> dict:
-        """Limpia un dict para que sea JSON-serializable: NaN→None, numpy→nativo, luego quita None."""
+    # Campos que son numeric en Supabase — si llegan como string, se descartan
+    _NUMERIC_FIELDS = {
+        "cantidad_anual_ton", "precio_actual_eur_ton", "cantidad_toneladas",
+        "precio_unitario", "importe_eur", "año",
+    }
+
+    @classmethod
+    def _clean_for_json(cls, data: dict) -> dict:
+        """Limpia un dict para que sea JSON-serializable y valida tipos numéricos."""
         import math
         clean = {}
         for k, v in data.items():
@@ -318,6 +324,15 @@ class UnifiedIngestionService:
                 continue
             if v is None or v == "":
                 continue
+            # Campos numéricos: rechazar si no es número
+            if k in cls._NUMERIC_FIELDS:
+                if isinstance(v, str):
+                    try:
+                        v = float(v.replace(",", "."))
+                    except ValueError:
+                        continue  # descartar string no numérico
+                if not isinstance(v, (int, float)):
+                    continue
             clean[k] = v
         return clean
 
