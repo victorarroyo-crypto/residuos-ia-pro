@@ -3,6 +3,7 @@ ResidusIA Pro - API Server
 Expone el pipeline de procesamiento de documentos via HTTP.
 """
 
+import gc
 import json
 import os
 import sys
@@ -2379,7 +2380,7 @@ async def _run_sync_job(
         failed = 0
         details: list[dict] = []
         _sync_lock = asyncio.Lock()
-        _sem = asyncio.Semaphore(3)  # max 3 concurrent ingestions
+        _sem = asyncio.Semaphore(1)  # sequential to avoid memory crash (free(): invalid size)
 
         async def _ingest_one(file_info: dict) -> None:
             nonlocal ingested, failed, skipped
@@ -2434,6 +2435,7 @@ async def _run_sync_job(
                     details.append({"file": fname, "path": fpath, "status": "ingested", "document_id": doc_id, "chunks": result.num_chunks})
                     logger.info("Sync %s: ingested %s (%d chunks)", sync_id, fname, result.num_chunks or 0)
                     await _update_sync_progress(files_ingested=ingested)
+                gc.collect()
 
             except (asyncio.TimeoutError, TimeoutError):
                 async with _sync_lock:
@@ -2441,12 +2443,14 @@ async def _run_sync_job(
                     details.append({"file": fname, "path": fpath, "status": "error", "error": "Timeout: >5 min"})
                     logger.warning("Sync %s: TIMEOUT processing %s (>5 min), skipping", sync_id, fname)
                     await _update_sync_progress(files_failed=failed)
+                gc.collect()
             except Exception as e:
                 async with _sync_lock:
                     failed += 1
                     details.append({"file": fname, "path": fpath, "status": "error", "error": str(e)[:200]})
                     logger.warning("Sync %s: failed %s: %s", sync_id, fname, e)
                     await _update_sync_progress(files_failed=failed)
+                gc.collect()
 
         # Process files in concurrent batches
         for batch_start in range(0, len(new_files), 10):
