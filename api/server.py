@@ -2073,13 +2073,13 @@ async def gdrive_sync(request: GDriveSyncRequest):
         logger.error("Sync: error checking running sync: %s", e)
         raise HTTPException(status_code=500, detail=f"Error consultando estado de sync: {e}")
     if running_check.data:
-        # Auto-expire syncs that have been running for more than 30 minutes
+        # Auto-expire syncs that have been running for more than 120 minutes
         from datetime import datetime, timezone, timedelta
         started_at_str = running_check.data[0].get("started_at", "")
         stale_sync = False
         try:
             started_at = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - started_at > timedelta(minutes=30):
+            if datetime.now(timezone.utc) - started_at > timedelta(minutes=120):
                 stale_sync = True
         except (ValueError, TypeError):
             stale_sync = True  # Can't parse date — treat as stale
@@ -2093,7 +2093,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
                     .update({
                         "status": "error",
                         "completed_at": datetime.now(timezone.utc).isoformat(),
-                        "error_message": "Sync expirado: superó el límite de 30 minutos. Posible caída del servidor.",
+                        "error_message": "Sync expirado: superó el límite de 120 minutos. Posible caída del servidor.",
                     })
                     .eq("id", stale_id)
                     .execute()
@@ -2408,54 +2408,6 @@ async def gdrive_sync_toggle(request: GDriveAutoSyncToggle):
         .execute()
     )
     return {"success": True, "auto_sync_enabled": request.enabled}
-
-
-@app.post("/api/gdrive/sync-all")
-async def gdrive_sync_all():
-    """
-    Sync ALL consultants with auto_sync_enabled=true.
-    Called by cron job.
-    """
-    if service is None or rag_service is None:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-
-    # Verify cron secret
-    # (In production, check Authorization header against CRON_SECRET)
-
-    sb = await rag_service._get_supabase()
-
-    # Get all consultants with auto-sync enabled
-    result = await (
-        sb.table("consultant_gdrive")
-        .select("consultant_id, root_folder_id")
-        .eq("auto_sync_enabled", True)
-        .execute()
-    )
-
-    results = []
-    for row in result.data or []:
-        cid = row["consultant_id"]
-        try:
-            sync_result = await gdrive_sync(GDriveSyncRequest(
-                consultant_id=cid,
-                folder_id=row.get("root_folder_id"),
-            ))
-            results.append({
-                "consultant_id": cid,
-                "status": "completed",
-                "files_ingested": sync_result.get("files_ingested", 0),
-            })
-        except Exception as e:
-            results.append({
-                "consultant_id": cid,
-                "status": "error",
-                "error": str(e)[:200],
-            })
-
-    return {
-        "consultants_synced": len(results),
-        "results": results,
-    }
 
 
 @app.delete("/api/gdrive/disconnect")

@@ -217,3 +217,178 @@ Las tablas del esquema antiguo ya NO existen (migración 004 ejecutada correctam
 3. ~~**Limpiar archivos SQL obsoletos del repo**~~ ✅ HECHO - Todos los migration files eliminados
 4. **Evaluar FK faltantes** en gdrive_sync_log y consultant_gdrive hacia auth.users
 5. **Evaluar RLS en pipeline_progress** si se quiere aislar por consultor
+
+---
+
+## Changelog
+
+### 24 febrero 2026
+
+#### Mejora calidad Asesor IA
+
+| Parámetro | Antes | Después |
+|-----------|-------|---------|
+| System prompt | Instrucciones básicas | + sección de profundidad: exhaustivo, calidad profesional, 500-1000 palabras mínimo, anticipar preguntas de seguimiento |
+| Extended thinking budget | 10,000 tokens | 24,000 tokens |
+| RAG top_k por scope | 8 | 12 |
+| RAG similarity threshold | 0.60 | 0.65 |
+| Método de razonamiento | 5 pasos básicos | 7 pasos con análisis de alternativas y recomendaciones |
+
+**Archivos modificados:** `api/server.py` (ADVISOR_SYSTEM_PROMPT, parámetros RAG, thinking budget)
+
+#### Exportar respuestas a Word (.docx)
+
+Nuevo botón "Word" en cada respuesta del asesor que genera un documento .docx con marca Vandarum:
+- Header: barra teal con "VANDARUM" + "Informe del Asesor IA"
+- Secciones: Consulta, Análisis y Recomendaciones, Fuentes Consultadas
+- Conversión de markdown a formato Word (negritas, cursivas, listas, encabezados)
+- Footer: "Generado por ResidusIA Pro — vandarum.com"
+- Disclaimer legal
+
+**Archivos creados:** `web/src/lib/export-word.ts`
+**Archivos modificados:** `web/src/app/dashboard/advisor/page.tsx` (botón Download, import lucide-react)
+**Dependencias añadidas:** `docx`, `file-saver`, `@types/file-saver`
+
+#### Google Drive Sync resiliente
+
+**Problema:** El sync de 799 archivos fallaba por HttpError 500 de Google y timeout de 30 min.
+
+**Cambios en `pipeline/google_drive.py`:**
+
+| Función | Antes | Después |
+|---------|-------|---------|
+| `list_folder()` | Sin retry, falla al primer error | 4 intentos con backoff exponencial (1s, 2s, 4s, 8s) en HTTP 500/502/503/429 |
+| `download_file()` | Sin retry | 4 intentos con backoff en metadata y descarga |
+| `list_all_files_recursive()` | Recursión profunda, sin pausa, sin logging | BFS iterativo con `deque`, pausa 0.3s entre carpetas, log cada 20 carpetas |
+
+**Cambios en `api/server.py`:**
+
+| Parámetro | Antes | Después |
+|-----------|-------|---------|
+| Stale sync timeout | 30 minutos | 120 minutos |
+| Endpoint `POST /api/gdrive/sync-all` | Existía (cron no configurado) | Eliminado |
+
+---
+
+## Mapa técnico del proyecto
+
+### Endpoints Python (FastAPI — `api/server.py`)
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/api/ingest` | Ingestion de documentos (file, URL, storage_path) |
+| POST | `/api/rag/query` | Búsqueda RAG + generación de respuesta |
+| GET | `/api/rag/health` | Health check del RAG |
+| POST | `/api/advisor` | Asesor IA (texto) |
+| POST | `/api/advisor/chat` | Asesor IA (multi-turn con adjuntos) |
+| POST | `/api/analyze-project` | Análisis multi-agente de proyecto |
+| GET | `/api/knowledge-base` | Listar documentos KB |
+| GET | `/api/knowledge-base/stats` | Estadísticas KB |
+| DELETE | `/api/knowledge-base/{doc_id}` | Eliminar documento KB |
+| POST | `/api/knowledge-base/reprocess` | Reprocesar documentos KB |
+| GET | `/api/gdrive/auth-url` | URL OAuth Google Drive |
+| POST | `/api/gdrive/exchange` | Intercambiar código OAuth |
+| GET | `/api/gdrive/picker-token` | Token para Google Picker |
+| POST | `/api/gdrive/setup-folders` | Crear estructura carpetas en Drive |
+| GET | `/api/gdrive/status` | Estado conexión Drive |
+| GET | `/api/gdrive/browse` | Navegar archivos/carpetas Drive |
+| POST | `/api/gdrive/ingest-file` | Ingestar archivo individual de Drive |
+| POST | `/api/gdrive/sync` | Sincronizar carpeta completa de Drive |
+| GET | `/api/gdrive/sync-status` | Estado/historial sync |
+| POST | `/api/gdrive/sync-toggle` | Activar/desactivar auto-sync |
+| DELETE | `/api/gdrive/disconnect` | Desconectar Google Drive |
+
+### API Routes Next.js (`web/src/app/api/`)
+
+Todas actúan como proxy al backend Python, usando `getAdminClient()` (service_role).
+
+| Ruta | Método | Proxy a |
+|------|--------|---------|
+| `/api/knowledge-base` | GET | Supabase directo |
+| `/api/knowledge-base/[docId]` | DELETE | Supabase directo |
+| `/api/knowledge-base/stats` | GET | Supabase directo |
+| `/api/knowledge-base/health` | GET | Supabase directo |
+| `/api/knowledge-base/reprocess` | POST | Python `/api/knowledge-base/reprocess` |
+| `/api/rag` | POST | Supabase RPC (search_knowledge, search_project) |
+| `/api/rag/health` | GET | Python `/api/rag/health` |
+| `/api/ingest` | POST | Python `/api/ingest` |
+| `/api/upload-signed-url` | POST | Supabase Storage (signed URL) |
+| `/api/advisor` | POST | Python `/api/advisor` |
+| `/api/advisor/chat` | POST | Python `/api/advisor/chat` |
+| `/api/analyze-project` | POST | Python `/api/analyze-project` |
+| `/api/gdrive/auth-url` | GET | Python `/api/gdrive/auth-url` |
+| `/api/gdrive/callback` | GET | Python `/api/gdrive/exchange` |
+| `/api/gdrive/status` | GET | Python `/api/gdrive/status` |
+| `/api/gdrive/picker-token` | GET | Python `/api/gdrive/picker-token` |
+| `/api/gdrive/browse` | GET | Python `/api/gdrive/browse` |
+| `/api/gdrive/setup-folders` | POST | Python `/api/gdrive/setup-folders` |
+| `/api/gdrive/ingest-file` | POST | Python `/api/gdrive/ingest-file` |
+| `/api/gdrive/sync` | POST | Python `/api/gdrive/sync` |
+| `/api/gdrive/sync-status` | GET | Python `/api/gdrive/sync-status` |
+| `/api/gdrive/sync-toggle` | POST | Python `/api/gdrive/sync-toggle` |
+| `/api/gdrive/disconnect` | DELETE | Python `/api/gdrive/disconnect` |
+| `/api/projects/[projectId]/documents/[docId]` | DELETE | Supabase directo |
+
+### Páginas Frontend (`web/src/app/`)
+
+| Ruta | Descripción |
+|------|-------------|
+| `/` | Landing page pública |
+| `/login` | Login (email/password) |
+| `/register` | Registro de usuario |
+| `/dashboard` | Dashboard: KPIs, alertas urgentes, documentos recientes |
+| `/dashboard/advisor` | Asesor IA: chat multi-turn + adjuntos + exportar Word |
+| `/dashboard/knowledge-base` | Base de Conocimiento: docs normativos, Drive sync, navegador |
+| `/dashboard/projects` | Lista de proyectos con búsqueda/filtro |
+| `/dashboard/projects/new` | Crear nuevo proyecto |
+| `/dashboard/projects/[id]` | Detalle proyecto: 7 tabs (resumen, docs, inventario, contratos, alertas, ahorros, análisis IA) |
+| `/dashboard/projects/[id]/upload` | Subir documentos al proyecto |
+| `/dashboard/settings` | Ajustes: perfil, Google Drive, carpeta raíz |
+
+### Pipeline de Procesamiento (`pipeline/`)
+
+| Módulo | Función |
+|--------|---------|
+| `unified_ingestion.py` | Punto de entrada: detecta formato → enruta al procesador |
+| `pdf_pipeline.py` | PDFs: digital, escaneado (OCR via Claude vision), híbrido, encriptado |
+| `excel_processor.py` | Excel/CSV: extracción de tablas |
+| `text_processor.py` | DOCX/TXT/HTML: extracción de texto |
+| `classifier_chunker.py` | Clasificación de tipo doc + chunking semántico |
+| `metadata_extractor.py` | Extracción: códigos LER, fechas, precios, gestores |
+| `storage.py` | Persistencia: Supabase DB (docs + chunks) + Storage (archivos) |
+| `rag_scoping.py` | RAG dual: búsqueda semántica en General y/o Proyecto |
+| `config.py` | Config: API keys, EmbeddingService (OpenAI) |
+| `google_drive.py` | Google Drive: OAuth, listado BFS con retry, descarga con retry, sync |
+
+### Agentes LangGraph (`pipeline/agents/`)
+
+Ejecución paralela de 5 agentes analistas + 1 optimizador + 1 redactor:
+
+| Agente | Qué analiza | Tipos de hallazgo |
+|--------|-------------|-------------------|
+| `agent_aai.py` | Autorización Ambiental Integrada | ler_no_autorizado, limite_excedido, condicion_incumplida |
+| `agent_contratos.py` | Contratos con gestores | contrato_vencido, precio_alto, sin_contrato, gestor_no_autorizado |
+| `agent_facturas.py` | Facturas de gestión | price_anomaly, quantity_mismatch, trend_alert |
+| `agent_registro.py` | Registro producción/cronológico | Consistencia LER, entradas faltantes |
+| `agent_normativo.py` | Cumplimiento normativo | Riesgos vs Ley 7/2022, RD 553/2020, Directiva 2008/98/CE |
+| `agent_optimizador.py` | Priorización | Severidad + ROI, deduplicación |
+| `agent_redactor.py` | Informe final | Resumen ejecutivo + secciones detalladas |
+
+### Flujo de sincronización Google Drive
+
+```
+1. Consultor conecta Drive (OAuth2) → consultant_gdrive
+2. Auto-sync: cada 6h si página KB abierta y auto_sync_enabled=true
+   └─ O manual: botón "Sincronizar ahora"
+3. POST /api/gdrive/sync → crea gdrive_sync_log (status=running)
+4. Background task (_run_sync_job):
+   a. BFS iterativo de carpetas (con retry + pausa 0.3s entre carpetas)
+   b. Deduplicación: consulta drive_file_id en knowledge_documents
+   c. Para cada archivo nuevo:
+      ├─ download_file() con retry
+      ├─ service.ingest() con timeout 5min
+      └─ Actualizar progreso en gdrive_sync_log
+   d. Final: status=completed + conteos
+5. Stale sync: si lleva >120 min running → marcar como error
+```
