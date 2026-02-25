@@ -20,10 +20,14 @@ Plataforma SaaS de consultoría ambiental para gestión de residuos industriales
 │   ├── text_processor.py      ← DOCX/TXT/HTML
 │   ├── storage.py             ← Supabase Storage + PostgreSQL
 │   ├── rag_scoping.py         ← búsqueda RAG dual
-│   └── unified_ingestion.py   ← punto de entrada único
+│   ├── unified_ingestion.py   ← punto de entrada único
+│   └── agents/                ← análisis multi-agente (LangGraph)
+│       ├── graph.py           ← grafo dirigido + progreso vía Supabase Realtime
+│       ├── agent_*.py         ← agentes especializados (aai, contratos, facturas, etc.)
+│       └── state.py           ← estado compartido del grafo
 ├── supabase/
-│   ├── setup.sql              ← esquema completo
-│   └── verify_data.sql        ← diagnóstico
+│   ├── setup.sql              ← esquema base
+│   └── verify_data.sql        ← queries de diagnóstico
 └── web/                       ← Next.js frontend
 ```
 
@@ -36,7 +40,11 @@ Dos RAGs separados:
 Tablas de negocio: waste_inventory, invoice_lines, compliance_alerts,
 savings_opportunities, contracts, waste_managers.
 
-Ver `CLAUDE.md` para la auditoría completa y `CLAUDE_CODE_BRIEFING.md` para el contexto.
+Progreso en tiempo real vía Supabase Realtime:
+- **pipeline_progress** — progreso de ingesta de documentos
+- **analysis_progress** — progreso del análisis multi-agente
+
+Ver `CLAUDE.md` para la auditoría completa.
 
 ## Setup
 
