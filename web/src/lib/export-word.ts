@@ -317,8 +317,6 @@ function markdownToDocxElements(text: string): (Paragraph | Table)[] {
 // ─── Build header with logo ──────────────────────────────────────
 
 function buildHeader(reportType: string): Header {
-  const logoBuffer = getLogoBuffer();
-
   return new Header({
     children: [
       new Paragraph({
@@ -328,10 +326,12 @@ function buildHeader(reportType: string): Header {
         },
         spacing: { after: 200 },
         children: [
-          new ImageRun({
-            data: logoBuffer,
-            transformation: { width: 100, height: 69 },
-            type: "png",
+          new TextRun({
+            text: "VANDARUM",
+            font: FONT.titleBold,
+            size: 20,
+            bold: true,
+            color: BRAND.verdeOscuro,
           }),
           new TextRun({ children: [new Tab()] }),
           new TextRun({
@@ -417,7 +417,7 @@ function buildCoverPage(
       children: [
         new ImageRun({
           data: logoBuffer,
-          transformation: { width: 200, height: 138 },
+          transformation: { width: 220, height: 172 },
           type: "png",
         }),
       ],
