@@ -748,10 +748,8 @@ async def _run_advisor(
         "text": "\n---\n".join(text_parts),
     })
 
-    # 5. Build messages
-    messages = []
-    for msg in conversation_history[-10:]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
+    # 5. Build messages (truncate old assistant responses to save tokens)
+    messages = _truncate_history(conversation_history)
     messages.append({"role": "user", "content": user_content_blocks})
 
     # 6. Call Claude with extended thinking + web search
@@ -771,12 +769,15 @@ async def _run_advisor(
     if analysis_context:
         system_prompt += _build_analysis_context_addendum(analysis_context)
 
+    # Adaptive thinking: less budget on follow-ups (context already established)
+    thinking_budget = 10000 if conversation_history else 24000
+
     async with claude.messages.stream(
         model="claude-sonnet-4-20250514",
         max_tokens=32000,
         thinking={
             "type": "enabled",
-            "budget_tokens": 24000,
+            "budget_tokens": thinking_budget,
         },
         tools=[web_search_tool],
         system=system_prompt,
@@ -841,6 +842,27 @@ async def _run_advisor(
         "rag_context_used": has_rag_context,
         "web_search_used": web_search_used,
     }
+
+
+# ─── Advisor helpers ─────────────────────────────────────────────
+
+MAX_HISTORY_MSG_CHARS = 1500
+
+
+def _truncate_history(history: list[dict], max_msgs: int = 10) -> list[dict]:
+    """Truncate old assistant messages to reduce token count on follow-ups."""
+    truncated = []
+    for msg in history[-max_msgs:]:
+        content = msg.get("content", "")
+        if msg.get("role") == "assistant" and len(content) > MAX_HISTORY_MSG_CHARS:
+            content = content[:MAX_HISTORY_MSG_CHARS] + "\n\n[... respuesta anterior truncada por longitud ...]"
+        truncated.append({"role": msg["role"], "content": content})
+    return truncated
+
+
+def _sse_event(event_type: str, data) -> str:
+    """Format a Server-Sent Event."""
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 # ─── Advisor endpoint: JSON (text-only, through Vercel proxy) ────
@@ -1060,6 +1082,152 @@ async def advisor_chat(
     except Exception as e:
         logger.error(f"Error en advisor (FormData): {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Advisor endpoint: SSE streaming (no timeout) ────────────
+
+@app.post("/api/advisor/stream")
+async def advisor_stream(request: AdvisorRequest):
+    """
+    SSE streaming endpoint for the advisor.
+    Returns Server-Sent Events instead of a single JSON response.
+    This eliminates timeout issues because the connection stays alive
+    as text is generated incrementally.
+
+    Events emitted:
+      - sources: RAG sources found (sent first)
+      - text_delta: incremental text chunks
+      - done: final metadata (web_search_used, web_sources)
+      - error: if something fails
+    """
+    if rag_service is None or _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    async def generate():
+        try:
+            from anthropic import AsyncAnthropic
+
+            # 1. RAG search
+            scopes = [RAGScope.GENERAL]
+            if request.project_id:
+                scopes.append(RAGScope.PROJECT)
+
+            rag_response = await rag_service.search(
+                query=request.query,
+                project_id=request.project_id,
+                scopes=scopes,
+                top_k_per_scope=12,
+                similarity_threshold=0.65,
+            )
+            has_rag_context = bool(rag_response.results)
+
+            # Emit sources immediately
+            sources = [
+                {
+                    "document_id": r.document_id,
+                    "title": r.doc_title,
+                    "doc_type": r.doc_type,
+                    "similarity": round(r.similarity, 3),
+                    "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
+                    "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
+                }
+                for r in rag_response.results
+            ]
+            yield _sse_event("sources", {"sources": sources, "rag_context_used": has_rag_context})
+
+            # 2. Build text context
+            text_parts: list[str] = []
+            if has_rag_context:
+                text_parts.append(
+                    "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
+                    f"{rag_response.context_text}\n"
+                )
+            text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+
+            user_content = "\n---\n".join(text_parts)
+
+            # 3. Build messages with truncated history
+            history = [{"role": m.role, "content": m.content} for m in request.conversation_history]
+            messages = _truncate_history(history)
+            messages.append({"role": "user", "content": user_content})
+
+            # 4. Adaptive thinking budget
+            thinking_budget = 10000 if request.conversation_history else 24000
+
+            # 5. Stream Claude response
+            claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+
+            web_search_tool = {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3,
+            }
+
+            system_prompt = ADVISOR_SYSTEM_PROMPT
+            if request.analysis_context:
+                system_prompt += _build_analysis_context_addendum(request.analysis_context)
+
+            async with claude.messages.stream(
+                model="claude-sonnet-4-20250514",
+                max_tokens=32000,
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                },
+                tools=[web_search_tool],
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield _sse_event("text_delta", {"text": text})
+
+                final = await stream.get_final_message()
+
+            # 6. Extract web sources from final message
+            web_sources: list[dict] = []
+            for block in final.content:
+                if block.type == "web_search_tool_result":
+                    for item in getattr(block, "content", []):
+                        if getattr(item, "type", None) == "web_search_result":
+                            web_sources.append({
+                                "title": getattr(item, "title", ""),
+                                "url": getattr(item, "url", ""),
+                            })
+
+            seen_urls: set[str] = set()
+            web_source_list = []
+            for ws in web_sources:
+                if ws["url"] and ws["url"] not in seen_urls:
+                    seen_urls.add(ws["url"])
+                    web_source_list.append({
+                        "document_id": ws["url"],
+                        "title": ws["title"],
+                        "doc_type": "web",
+                        "similarity": 0,
+                        "scope": "web",
+                        "excerpt": ws["url"],
+                    })
+
+            logger.info(
+                "Advisor stream: RAG=%s, web=%s (%d), history=%d msgs",
+                has_rag_context, bool(web_sources), len(web_sources),
+                len(request.conversation_history),
+            )
+
+            yield _sse_event("done", {
+                "web_search_used": len(web_sources) > 0,
+                "web_sources": web_source_list,
+            })
+
+        except Exception as e:
+            logger.error(f"Error in advisor stream: {e}")
+            yield _sse_event("error", {"message": str(e)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════

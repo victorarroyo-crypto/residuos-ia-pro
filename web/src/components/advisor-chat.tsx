@@ -55,7 +55,7 @@ interface Source {
   excerpt: string;
 }
 
-interface ChatMessage {
+export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
@@ -88,6 +88,10 @@ export interface AdvisorChatProps {
   emptyMessage?: string;
   /** CSS class */
   className?: string;
+  /** Controlled messages (for chat history management) */
+  messages?: ChatMessage[];
+  /** Callback when messages change */
+  onMessagesChange?: (messages: ChatMessage[]) => void;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -103,6 +107,34 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ─── SSE parser ─────────────────────────────────────────────────
+
+interface SSEEvent {
+  event: string;
+  data: string;
+}
+
+function parseSSEEvents(buffer: string): { events: SSEEvent[]; remaining: string } {
+  const events: SSEEvent[] = [];
+  const chunks = buffer.split("\n\n");
+  const remaining = chunks.pop() || "";
+
+  for (const chunk of chunks) {
+    if (!chunk.trim()) continue;
+    let event = "";
+    let data = "";
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("event: ")) event = line.slice(7);
+      else if (line.startsWith("data: ")) data = line.slice(6);
+    }
+    if (event && data) {
+      events.push({ event, data });
+    }
+  }
+
+  return { events, remaining };
 }
 
 // renderMarkdown imported from @/lib/render-markdown
@@ -151,10 +183,26 @@ export function AdvisorChat({
   suggestions,
   emptyMessage,
   className = "",
+  messages: controlledMessages,
+  onMessagesChange,
 }: AdvisorChatProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [internalMessages, setInternalMessages] = useState<ChatMessage[]>([]);
+  const messages = controlledMessages ?? internalMessages;
+  const setMessages = useCallback(
+    (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+      if (onMessagesChange) {
+        const newVal = typeof updater === "function" ? updater(controlledMessages ?? []) : updater;
+        onMessagesChange(newVal);
+      } else {
+        setInternalMessages(updater as React.SetStateAction<ChatMessage[]>);
+      }
+    },
+    [onMessagesChange, controlledMessages]
+  );
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -164,10 +212,11 @@ export function AdvisorChat({
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, streaming]);
 
   useEffect(() => {
     if (!compact) inputRef.current?.focus();
@@ -179,9 +228,11 @@ export function AdvisorChat({
   const effectivePlaceholder = placeholder ?? "Pregunta sobre residuos, normativa, clasificacion, LER, desclasificacion...";
   const effectiveEmpty = emptyMessage ?? "Como puedo ayudarte?";
 
+  // ─── Send message with SSE streaming ─────────────────────────
+
   const sendMessage = useCallback(async () => {
     const query = input.trim();
-    if (!query || loading) return;
+    if (!query || loading || streaming) return;
 
     setError(null);
 
@@ -215,8 +266,7 @@ export function AdvisorChat({
         content: m.content,
       }));
 
-      let res: Response;
-
+      // If files attached, use the existing non-streaming endpoint
       if (hasFileAttachments) {
         const base64Files: { name: string; type: string; base64: string }[] = [];
         const storagePaths: { name: string; type: string; storage_path: string }[] = [];
@@ -254,7 +304,7 @@ export function AdvisorChat({
           }
         }
 
-        res = await fetch("/api/advisor/chat", {
+        const res = await fetch("/api/advisor/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -266,37 +316,126 @@ export function AdvisorChat({
             analysis_context: analysisContext ?? undefined,
           }),
         });
-      } else {
-        res = await fetch("/api/advisor", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query,
-            conversation_history: conversationHistory,
-            urls: currentUrls.length > 0 ? currentUrls : undefined,
-            analysis_context: analysisContext ?? undefined,
-          }),
-        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null);
+          throw new Error(errData?.error || errData?.detail || `Error ${res.status}`);
+        }
+
+        const data = await res.json();
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.answer,
+            sources: data.sources,
+            ragUsed: data.rag_context_used,
+            webSearchUsed: data.web_search_used,
+          },
+        ]);
+        return;
       }
+
+      // ─── SSE streaming for text-only queries ───────────────
+
+      const abort = new AbortController();
+      abortRef.current = abort;
+      setStreaming(true);
+
+      const res = await fetch("/api/advisor/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          conversation_history: conversationHistory,
+          urls: currentUrls.length > 0 ? currentUrls : undefined,
+          analysis_context: analysisContext ?? undefined,
+        }),
+        signal: abort.signal,
+      });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        const errMsg = errData?.error || errData?.detail || `Error ${res.status}`;
-        throw new Error(errMsg);
+        throw new Error(errData?.error || errData?.detail || `Error ${res.status}`);
       }
 
-      const data = await res.json();
+      // Start with an empty assistant message that we'll update progressively
+      let accumulatedText = "";
+      let ragSources: Source[] = [];
+      let ragUsed = false;
+      let webSearchUsed = false;
 
-      const assistantMsg: ChatMessage = {
-        role: "assistant",
-        content: data.answer,
-        sources: data.sources,
-        ragUsed: data.rag_context_used,
-        webSearchUsed: data.web_search_used,
-      };
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "" },
+      ]);
 
-      setMessages((prev) => [...prev, assistantMsg]);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const { events, remaining } = parseSSEEvents(buffer);
+        buffer = remaining;
+
+        for (const sse of events) {
+          try {
+            const data = JSON.parse(sse.data);
+
+            if (sse.event === "text_delta") {
+              accumulatedText += data.text;
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === "assistant") {
+                  updated[updated.length - 1] = { ...last, content: accumulatedText };
+                }
+                return updated;
+              });
+            } else if (sse.event === "sources") {
+              ragSources = data.sources || [];
+              ragUsed = data.rag_context_used || false;
+            } else if (sse.event === "done") {
+              webSearchUsed = data.web_search_used || false;
+              const webSources: Source[] = data.web_sources || [];
+              const allSources = [...ragSources, ...webSources];
+
+              // Final update with sources and metadata
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === "assistant") {
+                  updated[updated.length - 1] = {
+                    ...last,
+                    content: accumulatedText,
+                    sources: allSources.length > 0 ? allSources : undefined,
+                    ragUsed: ragUsed,
+                    webSearchUsed: webSearchUsed,
+                  };
+                }
+                return updated;
+              });
+            } else if (sse.event === "error") {
+              throw new Error(data.message || "Error del servidor");
+            }
+          } catch (parseErr) {
+            // Ignore malformed events
+            if (parseErr instanceof Error && parseErr.message !== "Error del servidor") {
+              console.warn("SSE parse error:", parseErr);
+            } else {
+              throw parseErr;
+            }
+          }
+        }
+      }
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       const detail = err instanceof Error ? err.message : String(err);
       if (detail.includes("Failed to fetch") || detail.includes("NetworkError")) {
         setError("Error de red. Verifica tu conexion y que el servidor esta activo.");
@@ -305,8 +444,10 @@ export function AdvisorChat({
       }
     } finally {
       setLoading(false);
+      setStreaming(false);
+      abortRef.current = null;
     }
-  }, [input, loading, attachedFiles, urls, messages, analysisContext]);
+  }, [input, loading, streaming, attachedFiles, urls, messages, analysisContext, setMessages]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || []);
@@ -471,10 +612,18 @@ export function AdvisorChat({
               {msg.role === "assistant" ? (
                 <div
                   className="prose prose-sm max-w-none dark:prose-invert text-sm"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content || "") }}
                 />
               ) : (
                 <div className="text-sm whitespace-pre-wrap">{msg.content}</div>
+              )}
+
+              {/* Streaming indicator */}
+              {msg.role === "assistant" && streaming && i === messages.length - 1 && !msg.content && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
+                  Pensando...
+                </div>
               )}
 
               {msg.sources && msg.sources.length > 0 && (
@@ -510,7 +659,7 @@ export function AdvisorChat({
                 </div>
               )}
 
-              {msg.role === "assistant" && (
+              {msg.role === "assistant" && msg.content && !(streaming && i === messages.length - 1) && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs opacity-60">
                   {msg.ragUsed === false && !msg.webSearchUsed && (
                     <span className="flex items-center gap-1">
@@ -543,7 +692,7 @@ export function AdvisorChat({
           </div>
         ))}
 
-        {loading && (
+        {loading && !streaming && (
           <div className="flex justify-start">
             <div className="bg-muted rounded-lg px-3 py-2 text-sm flex items-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
@@ -627,7 +776,7 @@ export function AdvisorChat({
             size="icon"
             className={compact ? "h-8 w-8" : ""}
             onClick={() => fileInputRef.current?.click()}
-            disabled={loading || totalAttachments >= MAX_FILES}
+            disabled={loading || streaming || totalAttachments >= MAX_FILES}
             title={`Adjuntar archivos (${totalAttachments}/${MAX_FILES})`}
           >
             <Paperclip className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
@@ -637,7 +786,7 @@ export function AdvisorChat({
             size="icon"
             className={compact ? "h-8 w-8" : ""}
             onClick={() => setShowUrlInput(!showUrlInput)}
-            disabled={loading || totalAttachments >= MAX_FILES}
+            disabled={loading || streaming || totalAttachments >= MAX_FILES}
             title="Adjuntar URL"
           >
             <LinkIcon className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
@@ -652,11 +801,11 @@ export function AdvisorChat({
             }}
             placeholder={effectivePlaceholder}
             className={`flex-1 rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-vandarum-teal/20 ${compact ? "py-1.5" : "py-2"}`}
-            disabled={loading}
+            disabled={loading || streaming}
           />
           <Button
             onClick={sendMessage}
-            disabled={loading || !input.trim()}
+            disabled={loading || streaming || !input.trim()}
             className={`bg-vandarum-teal hover:bg-vandarum-teal/90 ${compact ? "h-8 w-8 p-0" : ""}`}
             size={compact ? "icon" : "default"}
           >

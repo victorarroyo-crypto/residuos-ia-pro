@@ -12,6 +12,9 @@
     "src/app/api/advisor/chat/route.ts": {
       "maxDuration": 120
     },
+    "src/app/api/advisor/stream/route.ts": {
+      "maxDuration": 300
+    },
     "src/app/api/ingest/route.ts": {
       "maxDuration": 120
     }
