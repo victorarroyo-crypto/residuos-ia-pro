@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { exportToWord } from "@/lib/export-word";
+import { renderMarkdown } from "@/lib/render-markdown";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -104,20 +105,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderMarkdown(text: string): string {
-  return text
-    .replace(/^#### (.*$)/gm, '<h4 class="text-sm font-semibold mt-3 mb-1">$1</h4>')
-    .replace(/^### (.*$)/gm, '<h3 class="text-base font-semibold mt-4 mb-1.5">$1</h3>')
-    .replace(/^## (.*$)/gm, '<h2 class="text-lg font-bold mt-5 mb-2">$1</h2>')
-    .replace(/^# (.*$)/gm, '<h1 class="text-xl font-bold mt-5 mb-2">$1</h1>')
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.*?)\*/g, "<em>$1</em>")
-    .replace(/`(.*?)`/g, '<code class="bg-muted px-1 py-0.5 rounded text-xs">$1</code>')
-    .replace(/^- (.*$)/gm, '<li class="ml-4 list-disc">$1</li>')
-    .replace(/^(\d+)\. (.*$)/gm, '<li class="ml-4 list-decimal"><strong>$1.</strong> $2</li>')
-    .replace(/\n\n/g, "<br/><br/>")
-    .replace(/\n/g, "<br/>");
-}
+// renderMarkdown imported from @/lib/render-markdown
 
 // ─── Default suggestions ────────────────────────────────────────
 
