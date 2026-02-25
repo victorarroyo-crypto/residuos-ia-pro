@@ -13,7 +13,7 @@
 
 ---
 
-## Auditoría de Supabase - 23 febrero 2026
+## Auditoría de Supabase - 25 febrero 2026
 
 ### Fuente de verdad: estado real de la base de datos
 
@@ -21,7 +21,7 @@ Datos obtenidos directamente de Supabase mediante consultas a `information_schem
 
 ---
 
-### 1. Tablas existentes (16)
+### 1. Tablas existentes (18)
 
 | Tabla | Tipo | PK | Descripción |
 |-------|------|-----|-------------|
@@ -36,7 +36,9 @@ Datos obtenidos directamente de Supabase mediante consultas a `information_schem
 | `waste_managers` | tabla | uuid | Gestores de residuos autorizados |
 | `invoice_lines` | tabla | uuid | Líneas de facturas de gestión |
 | `contracts` | tabla | uuid | Contratos con gestores |
-| `pipeline_progress` | tabla | text (doc_id) | Progreso en tiempo real del pipeline de ingesta |
+| `pipeline_progress` | tabla | text (doc_id) | Progreso en tiempo real del pipeline de ingesta (Supabase Realtime) |
+| `analysis_progress` | tabla | uuid | Progreso en tiempo real del análisis multi-agente (Supabase Realtime) |
+| `analysis_sessions` | tabla | uuid | Estado de sesiones HITL (plan → execute → results → round2) |
 | `consultant_gdrive` | tabla | uuid | Tokens OAuth de Google Drive por consultor |
 | `gdrive_sync_log` | tabla | uuid | Log de sincronizaciones con Google Drive |
 | `knowledge_stats` | vista | - | Estadísticas agregadas del RAG General |
@@ -52,6 +54,8 @@ projects (uuid)
 ├── invoice_lines (uuid)
 ├── waste_inventory (uuid)
 ├── contracts (uuid) ──→ waste_managers (uuid)
+├── analysis_progress (uuid) [Realtime: progreso de análisis multi-agente]
+├── analysis_sessions (uuid) [HITL: estado entre fases del análisis]
 └── project_chunks (uuid ref)
 
 knowledge_documents (text) ──→ knowledge_chunks (text) [RAG General]
@@ -59,7 +63,7 @@ knowledge_documents (text) ──→ knowledge_chunks (text) [RAG General]
 
 consultant_gdrive (uuid) ──→ auth.users
 gdrive_sync_log (uuid) ──→ consultant_id (sin FK explícita)
-pipeline_progress (text) ──→ sin FK
+pipeline_progress (text) ──→ sin FK [Realtime: progreso de ingesta de docs]
 ```
 
 ### 3. Foreign keys verificadas
@@ -80,6 +84,8 @@ pipeline_progress (text) ──→ sin FK
 | waste_inventory | fuente_doc_id | project_documents |
 | contracts | project_id | projects |
 | contracts | manager_id | waste_managers |
+| analysis_progress | project_id | projects |
+| analysis_sessions | project_id | projects |
 
 ### 4. Políticas RLS
 
@@ -98,6 +104,9 @@ pipeline_progress (text) ──→ sin FK
 | `invoice_lines` | user_own_invoice_lines | ALL | `project_id IN (projects del consultor)` |
 | `contracts` | user_own_contracts | ALL | `project_id IN (projects del consultor)` |
 | `waste_managers` | authenticated_read_managers | SELECT | `auth.role() = 'authenticated'` |
+| `analysis_progress` | user_own_analysis_progress | ALL | `project_id IN (projects del consultor)` |
+| `analysis_progress` | service_write_analysis_progress | ALL | `auth.role() = 'service_role'` |
+| `analysis_sessions` | consultant_own_sessions | ALL | `consultant_id = auth.uid()` |
 | `consultant_gdrive` | user_own_gdrive | ALL | `consultant_id = auth.uid()` |
 | `gdrive_sync_log` | user_own_sync_log | ALL | `consultant_id = auth.uid()` |
 
@@ -149,12 +158,9 @@ Las tablas del esquema antiguo ya NO existen (migración 004 ejecutada correctam
 - Esto indica que la mayoría de documentos se registraron pero NO se particionaron correctamente
 - Los documentos sin chunks no son buscables por RAG
 
-**P6: Archivos SQL del repo desactualizados**
-- `schema_legacy_base.sql` referencia tablas `clients` y `client_documents` que ya no existen
-- `schema_legacy_scoping.sql` referencia `document_chunks` y `clients` que ya no existen
-- `migration_001_complete_schema.sql` referencia tabla `clients` que ya no existe
-- `migration_002_google_drive.sql` añade columna a `client_documents` que ya no existe
-- Estos archivos son confusos porque no reflejan el estado actual
+**P6: Archivos SQL del repo desactualizados** ✅ RESUELTO
+- Todos los archivos de migración antiguos han sido eliminados del repo
+- Solo quedan `setup.sql` (esquema base) y `verify_data.sql` (queries de diagnóstico)
 
 #### SIN PROBLEMAS
 
@@ -195,9 +201,10 @@ Las tablas del esquema antiguo ya NO existen (migración 004 ejecutada correctam
 
 | Módulo | Tablas | Operaciones |
 |--------|--------|-------------|
-| `api/server.py` | knowledge_documents, knowledge_chunks, consultant_gdrive, gdrive_sync_log | SELECT, UPSERT, UPDATE, DELETE |
+| `api/server.py` | knowledge_documents, knowledge_chunks, consultant_gdrive, gdrive_sync_log, analysis_sessions, analysis_progress | SELECT, UPSERT, UPDATE, DELETE |
 | `pipeline/storage.py` | knowledge_documents, knowledge_chunks, project_documents, project_chunks, waste_inventory, invoice_lines, compliance_alerts | UPSERT |
 | `pipeline/pdf_pipeline.py` | pipeline_progress | UPSERT |
+| `pipeline/agents/graph.py` | analysis_progress | INSERT (vía Supabase Realtime) |
 | `pipeline/rag_scoping.py` | (vía RPC) search_knowledge, search_project | RPC |
 | `pipeline/unified_ingestion.py` | knowledge_documents, knowledge_chunks, project_documents, project_chunks, waste_inventory, invoice_lines | UPSERT |
 
@@ -207,7 +214,7 @@ Las tablas del esquema antiguo ya NO existen (migración 004 ejecutada correctam
 
 1. **Verificar si PGRST205 persiste** - Recargar la página tras el NOTIFY pgrst
 2. **Investigar por qué 33 docs pero solo 9 chunks** - Los documentos sin chunks no funcionan en el RAG
-3. **Limpiar archivos SQL obsoletos del repo** - Eliminar o marcar como legacy los scripts que referencian tablas eliminadas
+3. ~~**Limpiar archivos SQL obsoletos del repo**~~ ✅ HECHO - Todos los migration files eliminados
 4. **Evaluar FK faltantes** en gdrive_sync_log y consultant_gdrive hacia auth.users
 5. **Evaluar RLS en pipeline_progress** si se quiere aislar por consultor
 
