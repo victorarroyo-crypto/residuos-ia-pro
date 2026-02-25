@@ -28,7 +28,6 @@ import {
   PageNumber,
   NumberFormat,
   SectionType,
-  PageBreak,
   ShadingType,
   VerticalAlign,
   TableLayoutType,
