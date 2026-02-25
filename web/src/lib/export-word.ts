@@ -4,7 +4,7 @@
  * Based on the Manual de Marca Vandarum (Oct 2025):
  *  - Brand colors: Verde Oscuro #307177, Verde Claro #8cb63c, Azul #32b4cd, Naranja #ffa720
  *  - Typography: Calibri Light (titles), Calibri (body) — closest system fonts to Helvetica Neue / Proxima Nova
- *  - Professional layout: cover page, logo header, page numbers, branded tables
+ *  - Professional layout: cover page, page numbers, branded tables
  */
 
 import {
@@ -12,7 +12,6 @@ import {
   Packer,
   Paragraph,
   TextRun,
-  ImageRun,
   HeadingLevel,
   AlignmentType,
   BorderStyle,
@@ -33,8 +32,6 @@ import {
   TableLayoutType,
 } from "docx";
 import { saveAs } from "file-saver";
-import { VANDARUM_LOGO_BASE64 } from "./vandarum-logo-data";
-
 // ─── Brand constants from Manual de Marca ────────────────────────
 
 const BRAND = {
@@ -55,12 +52,6 @@ const FONT = {
   body: "Calibri",          // Closest to Proxima Nova Regular
   code: "Consolas",
 } as const;
-
-// ─── Logo helper ─────────────────────────────────────────────────
-
-function getLogoBuffer(): Buffer {
-  return Buffer.from(VANDARUM_LOGO_BASE64, "base64");
-}
 
 // ─── Markdown → Paragraphs converter ─────────────────────────────
 
@@ -314,41 +305,6 @@ function markdownToDocxElements(text: string): (Paragraph | Table)[] {
   return elements;
 }
 
-// ─── Build header with logo ──────────────────────────────────────
-
-function buildHeader(reportType: string): Header {
-  return new Header({
-    children: [
-      new Paragraph({
-        alignment: AlignmentType.LEFT,
-        border: {
-          bottom: { style: BorderStyle.SINGLE, size: 6, color: BRAND.verdeOscuro },
-        },
-        spacing: { after: 200 },
-        children: [
-          new TextRun({
-            text: "VANDARUM",
-            font: FONT.titleBold,
-            size: 20,
-            bold: true,
-            color: BRAND.verdeOscuro,
-          }),
-          new TextRun({ children: [new Tab()] }),
-          new TextRun({
-            text: reportType,
-            font: FONT.title,
-            size: 20,
-            color: BRAND.grisMedio,
-          }),
-        ],
-        tabStops: [
-          { type: TabStopType.RIGHT, position: TabStopPosition.MAX },
-        ],
-      }),
-    ],
-  });
-}
-
 // ─── Build footer with page numbers ──────────────────────────────
 
 function buildFooter(): Footer {
@@ -403,26 +359,10 @@ function buildCoverPage(
   dateStr: string,
   projectName?: string
 ): Paragraph[] {
-  const logoBuffer = getLogoBuffer();
   const children: Paragraph[] = [];
 
   // Spacing at top
-  children.push(new Paragraph({ spacing: { before: 1600 } }));
-
-  // Logo centered
-  children.push(
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 600 },
-      children: [
-        new ImageRun({
-          data: logoBuffer,
-          transformation: { width: 220, height: 172 },
-          type: "png",
-        }),
-      ],
-    })
-  );
+  children.push(new Paragraph({ spacing: { before: 2200 } }));
 
   // Main title
   children.push(
@@ -606,7 +546,6 @@ export async function exportToWord(
   });
 
   const title = reportTitle || "Informe Tecnico";
-  const headerLabel = "Informe del Asesor IA";
 
   // ─── Build content paragraphs ────────────────────────────────
 
@@ -810,7 +749,7 @@ export async function exportToWord(
             pageNumbers: { start: 1 },
           },
         },
-        headers: { default: buildHeader(headerLabel) },
+        headers: { default: new Header({ children: [new Paragraph({})] }) },
         footers: { default: buildFooter() },
         children: contentElements as Paragraph[],
       },
