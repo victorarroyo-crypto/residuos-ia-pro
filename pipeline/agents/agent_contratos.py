@@ -8,7 +8,8 @@ fuera de mercado y gestores no autorizados.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_CONTRATOS, build_instructions_block, build_agent_focus_block, build_previous_findings_block
-from .llm import call_claude
+from .llm import call_claude_with_tools
+from .tools import CONTRATOS_TOOLS, ToolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,12 @@ def _build_contratos_context(state: AnalysisState) -> str:
         sections.append("NO HAY CONTRATOS INDEXADOS PARA ESTE PROYECTO.")
         sections.append("Analiza el inventario de residuos para detectar residuos sin contrato visible.")
 
+    sections.append("")
+    sections.append(
+        "Puedes usar search_project_docs para buscar cláusulas específicas en contratos "
+        "y search_knowledge para consultar benchmarks de precios y normativa de gestores."
+    )
+
     # Inyectar instrucciones HITL
     hitl = build_instructions_block(state) + build_agent_focus_block(state, "contratos") + build_previous_findings_block(state, "contratos")
     if hitl:
@@ -81,15 +88,24 @@ def _build_contratos_context(state: AnalysisState) -> str:
 
 
 async def agent_contratos(state: AnalysisState) -> dict:
-    """Nodo del agente de contratos."""
+    """Nodo del agente de contratos con tool use."""
     errors = list(state.get("errors", []))
     context = _build_contratos_context(state)
 
+    executor = ToolExecutor(
+        supabase_url=state["supabase_url"],
+        supabase_key=state["supabase_key"],
+        openai_api_key=state.get("openai_api_key", ""),
+        project_id=state.get("project_id", ""),
+    )
+
     try:
-        result = await call_claude(
+        result = await call_claude_with_tools(
             api_key=state["anthropic_api_key"],
             system_prompt=SYSTEM_CONTRATOS,
             user_message=context,
+            tools=CONTRATOS_TOOLS,
+            tool_executor=executor,
         )
 
         findings: list[Finding] = []
