@@ -15,6 +15,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 1536
 EMBED_BATCH_SIZE = 50  # OpenAI permite hasta 2048
 EMBED_RETRIES = 3
+MAX_EMBED_WORDS = 6000  # ~8000 tokens; límite OpenAI es 8192 tokens
 
 # Reranking con Claude Haiku (post-retrieval)
 RERANK_MODEL = "claude-haiku-4-5-20251001"
@@ -41,7 +42,16 @@ class EmbeddingService:
         """Genera embeddings para todos los chunks en lotes."""
         for i in range(0, len(chunks), EMBED_BATCH_SIZE):
             batch = chunks[i:i + EMBED_BATCH_SIZE]
-            texts = [c.content for c in batch]
+            texts = []
+            for c in batch:
+                words = c.content.split()
+                if len(words) > MAX_EMBED_WORDS:
+                    logger.warning(
+                        f"Chunk {c.chunk_id} truncado: {len(words)} palabras → {MAX_EMBED_WORDS}"
+                    )
+                    texts.append(" ".join(words[:MAX_EMBED_WORDS]))
+                else:
+                    texts.append(c.content)
 
             response = await self._embed_with_retry(texts, i)
             if response is None:
