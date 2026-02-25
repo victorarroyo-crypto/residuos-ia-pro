@@ -26,6 +26,7 @@ RERANK_CANDIDATE_MULTIPLIER = 3  # Pedir 3x más candidatos del SQL para reranki
 class PipelineConfigImpl(PipelineConfig):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    gemini_api_key: str = ""
     supabase_url: str = ""
     supabase_service_key: str = ""
 

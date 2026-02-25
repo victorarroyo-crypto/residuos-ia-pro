@@ -68,9 +68,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"Supabase URL: {supabase_url[:40]}...")
     logger.info("Supabase service key: configurada ✓")
 
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        logger.warning("GEMINI_API_KEY no configurada — fallback a Gemini deshabilitado")
+
     _config = PipelineConfigImpl(
         anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         openai_api_key=os.environ["OPENAI_API_KEY"],
+        gemini_api_key=gemini_key,
         supabase_url=supabase_url,
         supabase_service_key=supabase_key,
     )
@@ -302,14 +307,33 @@ async def rag_query(request: RAGQueryRequest):
             f"{request.query}"
         )
 
-        message = await claude.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-
-        answer = message.content[0].text
+        try:
+            message = await claude.messages.create(
+                model="claude-opus-4-20250514",
+                max_tokens=2000,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            answer = message.content[0].text
+        except Exception as claude_err:
+            is_overloaded = "overloaded" in str(claude_err).lower()
+            if is_overloaded and _config.gemini_api_key:
+                logger.warning("Claude overloaded in rag/query, falling back to Gemini 2.5 Pro")
+                from google import genai
+                from google.genai import types as genai_types
+                gemini_client = genai.Client(api_key=_config.gemini_api_key)
+                response = await gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-pro",
+                    contents=[user_prompt],
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        max_output_tokens=2000,
+                        temperature=0.7,
+                    ),
+                )
+                answer = response.text or ""
+            else:
+                raise
 
         # Preparar fuentes
         sources = [
@@ -773,35 +797,79 @@ async def _run_advisor(
     # Adaptive thinking: less budget on follow-ups (context already established)
     thinking_budget = 10000 if conversation_history else 24000
 
-    async with claude.messages.stream(
-        model="claude-sonnet-4-20250514",
-        max_tokens=32000,
-        thinking={
-            "type": "enabled",
-            "budget_tokens": thinking_budget,
-        },
-        tools=[web_search_tool],
-        system=system_prompt,
-        messages=messages,
-    ) as stream:
-        final_response = await stream.get_final_message()
-
-    # Parse response: extract answer text and web search results
     answer = ""
     web_sources: list[dict] = []
+    model_used = "claude-opus-4"
 
-    for block in final_response.content:
-        if block.type == "text":
-            answer = block.text  # Last text block is the final answer
-        elif block.type == "web_search_tool_result":
-            # Extract web search results for source display
-            for item in getattr(block, "content", []):
-                if getattr(item, "type", None) == "web_search_result":
-                    web_sources.append({
-                        "title": getattr(item, "title", ""),
-                        "url": getattr(item, "url", ""),
-                        "scope": "web",
-                    })
+    try:
+        async with claude.messages.stream(
+            model="claude-opus-4-20250514",
+            max_tokens=32000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": thinking_budget,
+            },
+            tools=[web_search_tool],
+            system=system_prompt,
+            messages=messages,
+        ) as stream:
+            final_response = await stream.get_final_message()
+
+        for block in final_response.content:
+            if block.type == "text":
+                answer = block.text
+            elif block.type == "web_search_tool_result":
+                for item in getattr(block, "content", []):
+                    if getattr(item, "type", None) == "web_search_result":
+                        web_sources.append({
+                            "title": getattr(item, "title", ""),
+                            "url": getattr(item, "url", ""),
+                            "scope": "web",
+                        })
+
+    except Exception as claude_err:
+        is_overloaded = "overloaded" in str(claude_err).lower()
+        if is_overloaded and _config.gemini_api_key:
+            logger.warning("Claude overloaded in advisor/chat, falling back to Gemini 2.5 Pro")
+            model_used = "gemini-2.5-pro"
+
+            from google import genai
+            from google.genai import types as genai_types
+
+            gemini_client = genai.Client(api_key=_config.gemini_api_key)
+
+            gemini_contents = []
+            for msg in messages:
+                role = "user" if msg["role"] == "user" else "model"
+                content = msg["content"]
+                if isinstance(content, list):
+                    text = " ".join(
+                        b["text"] for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                    content = text if text else str(content)
+                gemini_contents.append(
+                    genai_types.Content(
+                        role=role,
+                        parts=[genai_types.Part(text=content)],
+                    )
+                )
+
+            response = await gemini_client.aio.models.generate_content(
+                model="gemini-2.5-pro",
+                contents=gemini_contents,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=32000,
+                    temperature=0.7,
+                    thinking_config=genai_types.ThinkingConfig(
+                        include_thoughts=True,
+                    ),
+                ),
+            )
+            answer = response.text or ""
+        else:
+            raise
 
     # 7. Combine RAG sources + web sources
     sources = [
@@ -1168,77 +1236,132 @@ async def advisor_stream(request: AdvisorRequest):
             if request.analysis_context:
                 system_prompt += _build_analysis_context_addendum(request.analysis_context)
 
-            # 5b. Stream with event iteration (keeps connection alive
-            #     during thinking/web-search phases that can last 30-90 s).
-            #     The high-level .stream() yields SDK-extended events:
-            #       "text"  → text deltas  (event.text)
-            #       "content_block_start" → raw block start (event.content_block)
-            text_streamed = False
-            last_keepalive = time.monotonic()
-            async with claude.messages.stream(
-                model="claude-sonnet-4-20250514",
-                max_tokens=32000,
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": thinking_budget,
-                },
-                tools=[web_search_tool],
-                system=system_prompt,
-                messages=messages,
-            ) as stream:
-                async for event in stream:
-                    # SDK "text" event → stream to client
-                    if event.type == "text":
-                        text_streamed = True
-                        last_keepalive = time.monotonic()
-                        yield _sse_event("text_delta", {"text": event.text})
-                    # Raw content_block_start → detect phase for keepalive
-                    elif event.type == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        if block:
-                            btype = getattr(block, "type", None)
-                            if btype == "thinking":
-                                yield _sse_event("status", {"phase": "thinking"})
-                            elif btype in ("server_tool_use", "web_search_tool_result"):
-                                yield _sse_event("status", {"phase": "web_search"})
-                        last_keepalive = time.monotonic()
-                    else:
-                        # Keepalive: SSE comment every 5s during silent phases
-                        # (thinking deltas, content_block_stop, etc.)
-                        # SSE comments are ignored by the frontend parser.
-                        now = time.monotonic()
-                        if now - last_keepalive >= 5:
-                            yield ": keepalive\n\n"
-                            last_keepalive = now
+            # 5b. Try Claude first, fallback to Gemini on overloaded
+            use_gemini_fallback = False
 
-                final = await stream.get_final_message()
+            try:
+                text_streamed = False
+                last_keepalive = time.monotonic()
+                async with claude.messages.stream(
+                    model="claude-opus-4-20250514",
+                    max_tokens=32000,
+                    thinking={
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget,
+                    },
+                    tools=[web_search_tool],
+                    system=system_prompt,
+                    messages=messages,
+                ) as stream:
+                    async for event in stream:
+                        if event.type == "text":
+                            text_streamed = True
+                            last_keepalive = time.monotonic()
+                            yield _sse_event("text_delta", {"text": event.text})
+                        elif event.type == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            if block:
+                                btype = getattr(block, "type", None)
+                                if btype == "thinking":
+                                    yield _sse_event("status", {"phase": "thinking"})
+                                elif btype in ("server_tool_use", "web_search_tool_result"):
+                                    yield _sse_event("status", {"phase": "web_search"})
+                            last_keepalive = time.monotonic()
+                        else:
+                            now = time.monotonic()
+                            if now - last_keepalive >= 5:
+                                yield ": keepalive\n\n"
+                                last_keepalive = now
+
+                    final = await stream.get_final_message()
+
+            except Exception as claude_err:
+                is_overloaded = "overloaded" in str(claude_err).lower()
+                if is_overloaded and _config.gemini_api_key:
+                    logger.warning("Claude overloaded, switching to Gemini 2.5 Pro fallback")
+                    use_gemini_fallback = True
+                    text_streamed = False
+                    final = None
+                else:
+                    raise
+
+            # 5c. Gemini 2.5 Pro fallback (streaming)
+            if use_gemini_fallback:
+                from google import genai
+                from google.genai import types as genai_types
+
+                yield _sse_event("status", {"phase": "fallback_gemini"})
+
+                gemini_client = genai.Client(api_key=_config.gemini_api_key)
+
+                # Build Gemini contents from messages
+                gemini_contents = []
+                for msg in messages:
+                    role = "user" if msg["role"] == "user" else "model"
+                    content = msg["content"]
+                    if isinstance(content, list):
+                        # Extract text from content blocks
+                        text = " ".join(
+                            b["text"] for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                        content = text if text else str(content)
+                    gemini_contents.append(
+                        genai_types.Content(
+                            role=role,
+                            parts=[genai_types.Part(text=content)],
+                        )
+                    )
+
+                gemini_config = genai_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=32000,
+                    temperature=0.7,
+                    thinking_config=genai_types.ThinkingConfig(
+                        include_thoughts=True,
+                    ),
+                )
+
+                async for chunk in await gemini_client.aio.models.generate_content_stream(
+                    model="gemini-2.5-pro",
+                    contents=gemini_contents,
+                    config=gemini_config,
+                ):
+                    if chunk.candidates and chunk.candidates[0].content:
+                        for part in chunk.candidates[0].content.parts:
+                            if part.text and not getattr(part, "thought", False):
+                                text_streamed = True
+                                yield _sse_event("text_delta", {"text": part.text})
 
             # 6. Fallback: if streaming produced nothing, extract from final
-            logger.info("Advisor stream: text_streamed=%s, final blocks=%s",
-                        text_streamed,
-                        [getattr(b, "type", "?") for b in final.content])
-            if not text_streamed:
-                for block in final.content:
-                    if getattr(block, "type", None) == "text":
-                        yield _sse_event("text_delta", {"text": block.text})
-                        text_streamed = True
-                        break
+            if final is not None:
+                logger.info("Advisor stream: text_streamed=%s, final blocks=%s",
+                            text_streamed,
+                            [getattr(b, "type", "?") for b in final.content])
                 if not text_streamed:
-                    logger.warning("Advisor stream: no text in response")
-                    yield _sse_event("text_delta", {
-                        "text": "No se pudo generar una respuesta. Intenta reformular tu pregunta.",
-                    })
+                    for block in final.content:
+                        if getattr(block, "type", None) == "text":
+                            yield _sse_event("text_delta", {"text": block.text})
+                            text_streamed = True
+                            break
 
-            # 7. Extract web sources from final message
+            if not text_streamed:
+                logger.warning("Advisor stream: no text in response")
+                yield _sse_event("text_delta", {
+                    "text": "No se pudo generar una respuesta. Intenta reformular tu pregunta.",
+                })
+
+            # 7. Extract web sources from final message (Claude only)
             web_sources: list[dict] = []
-            for block in final.content:
-                if getattr(block, "type", None) == "web_search_tool_result":
-                    for item in getattr(block, "content", []):
-                        if getattr(item, "type", None) == "web_search_result":
-                            web_sources.append({
-                                "title": getattr(item, "title", ""),
-                                "url": getattr(item, "url", ""),
-                            })
+            if final is not None:
+                for block in final.content:
+                    if getattr(block, "type", None) == "web_search_tool_result":
+                        for item in getattr(block, "content", []):
+                            if getattr(item, "type", None) == "web_search_result":
+                                web_sources.append({
+                                    "title": getattr(item, "title", ""),
+                                    "url": getattr(item, "url", ""),
+                                })
 
             seen_urls: set[str] = set()
             web_source_list = []
@@ -1254,15 +1377,17 @@ async def advisor_stream(request: AdvisorRequest):
                         "excerpt": ws["url"],
                     })
 
+            model_used = "gemini-2.5-pro" if use_gemini_fallback else "claude-opus-4"
             logger.info(
-                "Advisor stream: RAG=%s, web=%s (%d), history=%d msgs",
-                has_rag_context, bool(web_sources), len(web_sources),
+                "Advisor stream: model=%s, RAG=%s, web=%s (%d), history=%d msgs",
+                model_used, has_rag_context, bool(web_sources), len(web_sources),
                 len(request.conversation_history),
             )
 
             yield _sse_event("done", {
                 "web_search_used": len(web_sources) > 0,
                 "web_sources": web_source_list,
+                "model_used": model_used,
             })
 
         except Exception as e:
