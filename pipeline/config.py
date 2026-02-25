@@ -16,6 +16,11 @@ EMBEDDING_DIMENSIONS = 1536
 EMBED_BATCH_SIZE = 50  # OpenAI permite hasta 2048
 EMBED_RETRIES = 3
 
+# Reranking con Claude Haiku (post-retrieval)
+RERANK_MODEL = "claude-haiku-4-5-20251001"
+RERANK_MAX_TOKENS = 256
+RERANK_CANDIDATE_MULTIPLIER = 3  # Pedir 3x más candidatos del SQL para reranking
+
 
 @dataclass
 class PipelineConfigImpl(PipelineConfig):
