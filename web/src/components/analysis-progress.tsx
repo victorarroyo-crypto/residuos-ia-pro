@@ -14,6 +14,7 @@ import {
   Pencil,
   AlertCircle,
 } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -24,12 +25,21 @@ interface AgentProgress {
   findingsCount?: number;
 }
 
+interface AnalysisProgressRow {
+  id: string;
+  project_id: string;
+  event_type: string;
+  agent: string | null;
+  findings_count: number | null;
+  created_at: string;
+}
+
 export interface AnalysisProgressProps {
   agents: string[];
   instructions?: string;
   startTime: number;
   isComplete: boolean;
-  projectId?: string; // enables SSE when provided
+  projectId?: string; // enables Supabase Realtime when provided
 }
 
 // ─── Agent display config ───────────────────────────────────────
@@ -57,8 +67,8 @@ export function AnalysisProgress({
   );
   const [optimizadorStatus, setOptimizadorStatus] = useState<"pending" | "running" | "done">("pending");
   const [redactorStatus, setRedactorStatus] = useState<"pending" | "running" | "done">("pending");
-  const [sseConnected, setSseConnected] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const channelRef = useRef<ReturnType<ReturnType<typeof createClient>["channel"]> | null>(null);
 
   // Timer
   useEffect(() => {
@@ -69,75 +79,81 @@ export function AnalysisProgress({
     return () => clearInterval(interval);
   }, [startTime, isComplete]);
 
-  // SSE connection for real-time progress
+  // Supabase Realtime subscription for analysis progress
   useEffect(() => {
     if (!projectId || isComplete) return;
 
-    const es = new EventSource(`/api/analyze-project/progress?project_id=${projectId}`);
-    eventSourceRef.current = es;
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`analysis-progress-${projectId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "analysis_progress",
+          filter: `project_id=eq.${projectId}`,
+        },
+        (payload) => {
+          const row = payload.new as AnalysisProgressRow;
+          if (!row?.event_type) return;
 
-    es.onopen = () => setSseConnected(true);
+          setRealtimeConnected(true);
 
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        if (data.type === "agent_start") {
-          const agentId = data.agent;
-          if (agentId === "optimizador") {
-            setOptimizadorStatus("running");
-          } else if (agentId === "redactor") {
-            setRedactorStatus("running");
-          } else {
-            setAgentProgress((prev) =>
-              prev.map((a) =>
-                a.id === agentId && a.status !== "done"
-                  ? { ...a, status: "running" as const }
-                  : a
-              )
-            );
+          if (row.event_type === "agent_start") {
+            const agentId = row.agent;
+            if (agentId === "optimizador") {
+              setOptimizadorStatus("running");
+            } else if (agentId === "redactor") {
+              setRedactorStatus("running");
+            } else if (agentId) {
+              setAgentProgress((prev) =>
+                prev.map((a) =>
+                  a.id === agentId && a.status !== "done"
+                    ? { ...a, status: "running" as const }
+                    : a
+                )
+              );
+            }
+          } else if (row.event_type === "agent_done") {
+            const agentId = row.agent;
+            if (agentId === "optimizador") {
+              setOptimizadorStatus("done");
+            } else if (agentId === "redactor") {
+              setRedactorStatus("done");
+            } else if (agentId) {
+              setAgentProgress((prev) =>
+                prev.map((a) =>
+                  a.id === agentId
+                    ? {
+                        ...a,
+                        status: "done" as const,
+                        findingsCount: row.findings_count ?? undefined,
+                      }
+                    : a
+                )
+              );
+            }
           }
-        } else if (data.type === "agent_done") {
-          const agentId = data.agent;
-          if (agentId === "optimizador") {
-            setOptimizadorStatus("done");
-          } else if (agentId === "redactor") {
-            setRedactorStatus("done");
-          } else {
-            setAgentProgress((prev) =>
-              prev.map((a) =>
-                a.id === agentId
-                  ? {
-                      ...a,
-                      status: "done" as const,
-                      findingsCount: data.findings_count,
-                    }
-                  : a
-              )
-            );
-          }
-        } else if (data.type === "complete") {
-          es.close();
+          // "complete" events don't need special handling — the parent
+          // component sets isComplete when the API call resolves.
         }
-      } catch {
-        // Ignore parse errors
-      }
-    };
+      )
+      .subscribe((status) => {
+        setRealtimeConnected(status === "SUBSCRIBED");
+      });
 
-    es.onerror = () => {
-      setSseConnected(false);
-      es.close();
-    };
+    channelRef.current = channel;
 
     return () => {
-      es.close();
-      eventSourceRef.current = null;
+      supabase.removeChannel(channel);
+      channelRef.current = null;
     };
   }, [projectId, isComplete]);
 
-  // Fallback: simulate progressive completion when SSE is not available
+  // Fallback: simulate progressive completion when Realtime is not available
   useEffect(() => {
-    if (sseConnected || projectId) return; // SSE takes priority
+    if (realtimeConnected || projectId) return; // Realtime takes priority
 
     if (isComplete) {
       setAgentProgress((prev) =>
@@ -171,7 +187,7 @@ export function AnalysisProgress({
     });
 
     return () => timers.forEach(clearTimeout);
-  }, [agents, isComplete, sseConnected, projectId]);
+  }, [agents, isComplete, realtimeConnected, projectId]);
 
   // When fully complete, ensure all statuses are done
   useEffect(() => {
@@ -181,10 +197,6 @@ export function AnalysisProgress({
     );
     setOptimizadorStatus("done");
     setRedactorStatus("done");
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
   }, [isComplete]);
 
   const doneCount = agentProgress.filter((a) => a.status === "done").length;
@@ -205,7 +217,7 @@ export function AnalysisProgress({
           </h3>
         </div>
         <div className="flex items-center gap-3">
-          {sseConnected && (
+          {realtimeConnected && (
             <span className="text-xs text-vandarum-teal flex items-center gap-1">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-vandarum-teal animate-pulse" />
               En vivo

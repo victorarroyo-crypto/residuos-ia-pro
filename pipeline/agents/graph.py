@@ -22,11 +22,9 @@ Optimizador y Redactor siempre se ejecutan.
 """
 
 import asyncio
-import json
 import logging
 import time
-from collections import defaultdict
-from typing import Any, Callable
+from typing import Any
 
 from langgraph.graph import StateGraph, END
 
@@ -54,26 +52,35 @@ AGENT_MAP = {
 
 ALL_AGENT_IDS = list(AGENT_MAP.keys())
 
-# ─── Progress tracking (in-memory, per project) ─────────────────────
+# ─── Progress tracking (via Supabase Realtime) ──────────────────────
 
-_progress_events: dict[str, list[dict]] = defaultdict(list)
-_progress_callbacks: dict[str, Callable] = {}
+_sb_url: str = ""
+_sb_key: str = ""
+
+
+def _configure_progress(supabase_url: str, supabase_key: str):
+    """Set Supabase credentials for progress emission (called once per analysis run)."""
+    global _sb_url, _sb_key
+    _sb_url = supabase_url
+    _sb_key = supabase_key
 
 
 def emit_progress(project_id: str, event: dict):
-    """Push a progress event for an analysis run."""
-    event.setdefault("ts", time.time())
-    _progress_events[project_id].append(event)
-
-
-def get_progress_events(project_id: str, since_idx: int = 0) -> list[dict]:
-    """Get progress events from a given index onwards."""
-    return _progress_events.get(project_id, [])[since_idx:]
-
-
-def clear_progress(project_id: str):
-    """Clean up progress events after analysis is done."""
-    _progress_events.pop(project_id, None)
+    """Insert a progress event into analysis_progress table (Supabase Realtime)."""
+    if not _sb_url or not _sb_key:
+        logger.warning("emit_progress called without Supabase credentials configured")
+        return
+    try:
+        from supabase import create_client
+        sb = create_client(_sb_url, _sb_key)
+        sb.table("analysis_progress").insert({
+            "project_id": project_id,
+            "event_type": event.get("type", "unknown"),
+            "agent": event.get("agent"),
+            "findings_count": event.get("findings_count"),
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Could not emit analysis progress: {e}")
 
 
 # ─── Wrappers sync para nodos que son async ─────────────────────────
@@ -300,6 +307,9 @@ async def run_project_analysis(
       - errors: list[str]
       - agents_used: list[str]
     """
+    # Configure Supabase credentials for progress emission
+    _configure_progress(supabase_url, supabase_key)
+
     graph = build_analysis_graph(agents)
 
     used_agents = agents if agents else ALL_AGENT_IDS
