@@ -44,19 +44,35 @@ class PDFNatureDetector:
         except Exception as e:
             logger.warning(f"Error detectando naturaleza: {e}")
 
-        # Analizar primeras 5 páginas para determinar naturaleza
+        # Muestrear páginas distribuidas (inicio, medio, final) para
+        # detectar naturaleza con precisión — evita falsos SCANNED cuando
+        # solo la portada/índice carecen de texto extraíble.
         digital_pages = 0
         scanned_pages = 0
 
         try:
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                sample_pages = pdf.pages[:min(5, len(pdf.pages))]
-                for page in sample_pages:
-                    text = page.extract_text() or ""
+                n = len(pdf.pages)
+                if n <= 10:
+                    sample_indices = list(range(n))
+                else:
+                    # 3 del inicio, 2 del medio, 2 del final
+                    mid = n // 2
+                    sample_indices = sorted(set([
+                        0, 1, 2,
+                        mid - 1, mid,
+                        n - 2, n - 1,
+                    ]))
+                for idx in sample_indices:
+                    text = pdf.pages[idx].extract_text() or ""
                     if len(text.strip()) >= MIN_CHARS_DIGITAL:
                         digital_pages += 1
                     else:
                         scanned_pages += 1
+                logger.info(
+                    f"Nature detection: {n} pages, sampled {len(sample_indices)} "
+                    f"(digital={digital_pages}, scanned={scanned_pages})"
+                )
         except Exception:
             return PDFNature.SCANNED
 
@@ -164,13 +180,8 @@ class ContentExtractorImpl(ContentExtractor):
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             total_pages = len(pdf.pages)
 
-        MAX_OCR_PAGES = 100
-        pages_to_process = min(total_pages, MAX_OCR_PAGES)
-        if total_pages > MAX_OCR_PAGES:
-            logger.warning(
-                f"Scanned PDF: {total_pages} páginas, "
-                f"limitando OCR a {MAX_OCR_PAGES} para evitar OOM"
-            )
+        pages_to_process = total_pages
+        logger.info(f"Scanned PDF: processing all {total_pages} pages (page-by-page OCR)")
 
         pages = []
         confidences = []
@@ -241,14 +252,10 @@ class ContentExtractorImpl(ContentExtractor):
         if not scanned_indices:
             return pages_digital, 1.0
 
-        # Limitar OCR a máximo 50 páginas para evitar OOM en docs grandes (BREFs, etc.)
-        MAX_OCR_PAGES = 50
-        if len(scanned_indices) > MAX_OCR_PAGES:
-            logger.warning(
-                f"Hybrid PDF: {len(scanned_indices)} páginas necesitan OCR, "
-                f"limitando a {MAX_OCR_PAGES} para evitar OOM"
-            )
-            scanned_indices = scanned_indices[:MAX_OCR_PAGES]
+        logger.info(
+            f"Hybrid PDF: {len(scanned_indices)} scanned pages to OCR "
+            f"out of {len(pages_digital)} total (page-by-page)"
+        )
 
         # OCR página a página (evita cargar todas las imágenes en RAM)
         ocr_confidences = []
