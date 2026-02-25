@@ -355,7 +355,6 @@ function buildFooter(): Footer {
 
 function buildCoverPage(
   title: string,
-  subtitle: string,
   dateStr: string,
   projectName?: string
 ): Paragraph[] {
@@ -396,25 +395,6 @@ function buildCoverPage(
       ],
     })
   );
-
-  // Subtitle / query
-  if (subtitle) {
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 120 },
-        children: [
-          new TextRun({
-            text: subtitle,
-            font: FONT.title,
-            size: 28,
-            color: BRAND.grisMedio,
-            italics: true,
-          }),
-        ],
-      })
-    );
-  }
 
   // Project name if provided
   if (projectName) {
@@ -521,6 +501,55 @@ function buildCoverPage(
   return children;
 }
 
+// ─── Extract legal references from response text ─────────────────
+
+const LEGAL_PATTERNS: { regex: RegExp; label: string }[] = [
+  { regex: /Ley\s+\d+\/\d{4}/g, label: "Ley" },
+  { regex: /Real\s+Decreto\s+\d+\/\d{4}/g, label: "Real Decreto" },
+  { regex: /R\.?D\.?\s+\d+\/\d{4}/g, label: "Real Decreto" },
+  { regex: /Directiva\s+\d{4}\/\d+\/\w+/g, label: "Directiva UE" },
+  { regex: /Directiva\s+\(UE\)\s+\d{4}\/\d+/g, label: "Directiva UE" },
+  { regex: /Reglamento\s+\((?:UE|CE)\)\s+(?:n[°º]?\s*)?\d+\/\d{4}/g, label: "Reglamento UE" },
+  { regex: /Orden\s+\w+\/\d+\/\d{4}/g, label: "Orden" },
+  { regex: /Decisión\s+\d{4}\/\d+\/\w+/g, label: "Decisión" },
+];
+
+/** Extract unique legal references mentioned in the text. */
+function extractLegalReferences(text: string): { title: string; scope: string }[] {
+  const seen = new Set<string>();
+  const refs: { title: string; scope: string }[] = [];
+
+  for (const { regex } of LEGAL_PATTERNS) {
+    // Reset lastIndex for global regexes
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+      const normalized = m[0].replace(/\s+/g, " ").trim();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        refs.push({ title: normalized, scope: "normativa" });
+      }
+    }
+  }
+
+  return refs;
+}
+
+/** Derive a professional report title from the response content. */
+function deriveReportTitle(answer: string): string {
+  // Try to use the first markdown heading (# or ##) as title
+  const headingMatch = answer.match(/^#{1,2}\s+(.+)/m);
+  if (headingMatch) {
+    let title = headingMatch[1].replace(/\*+/g, "").trim();
+    // Truncate if too long
+    if (title.length > 80) title = title.slice(0, 77) + "...";
+    return title;
+  }
+
+  // Fallback: generic professional title
+  return "Informe de Consultoría Ambiental";
+}
+
 // ─── Main export function ────────────────────────────────────────
 
 export interface ExportWordOptions {
@@ -545,67 +574,33 @@ export async function exportToWord(
     year: "numeric",
   });
 
-  const title = reportTitle || "Informe Tecnico";
+  const title = reportTitle || deriveReportTitle(answer);
 
   // ─── Build content paragraphs ────────────────────────────────
 
   const contentElements: (Paragraph | Table)[] = [];
 
-  // Section: Consulta
-  contentElements.push(
-    new Paragraph({
-      heading: HeadingLevel.HEADING_2,
-      children: [
-        new TextRun({
-          text: "Consulta",
-          font: FONT.titleBold,
-          size: 28,
-          bold: true,
-          color: BRAND.verdeOscuro,
-        }),
-      ],
-      spacing: { after: 100 },
-    })
-  );
-  contentElements.push(
-    new Paragraph({
-      children: [
-        new TextRun({
-          text: query,
-          font: FONT.body,
-          size: 22,
-          italics: true,
-          color: BRAND.grisOscuro,
-        }),
-      ],
-      spacing: { after: 240 },
-      border: {
-        left: { style: BorderStyle.SINGLE, size: 8, color: BRAND.verdeClaro },
-      },
-      indent: { left: 200 },
-    })
-  );
-
-  // Section: Analisis y Recomendaciones
-  contentElements.push(
-    new Paragraph({
-      heading: HeadingLevel.HEADING_2,
-      children: [
-        new TextRun({
-          text: "Analisis y Recomendaciones",
-          font: FONT.titleBold,
-          size: 28,
-          bold: true,
-          color: BRAND.verdeOscuro,
-        }),
-      ],
-      spacing: { after: 120 },
-    })
-  );
+  // Content starts directly with the analysis (no "Consulta" section)
   contentElements.push(...markdownToDocxElements(answer));
 
-  // Section: Referencias
+  // Section: Referencias — always present
+  // Use RAG/web sources if available, otherwise extract legal refs from text
+  let finalRefs: { title: string; scope: string }[] = [];
   if (sources && sources.length > 0) {
+    finalRefs = sources;
+  }
+  // Always add legal references extracted from the response text
+  const legalRefs = extractLegalReferences(answer);
+  // Merge: add legal refs not already covered by RAG sources
+  const existingTitles = new Set(finalRefs.map((r) => r.title.toLowerCase()));
+  for (const lr of legalRefs) {
+    if (!existingTitles.has(lr.title.toLowerCase())) {
+      existingTitles.add(lr.title.toLowerCase());
+      finalRefs.push(lr);
+    }
+  }
+
+  if (finalRefs.length > 0) {
     contentElements.push(new Paragraph({ spacing: { before: 300, after: 100 } }));
     contentElements.push(
       new Paragraph({
@@ -623,7 +618,7 @@ export async function exportToWord(
       })
     );
 
-    sources.forEach((s, idx) => {
+    finalRefs.forEach((s, idx) => {
       contentElements.push(
         new Paragraph({
           spacing: { after: 50 },
@@ -702,7 +697,7 @@ export async function exportToWord(
           default: new Footer({ children: [new Paragraph({})] }),
           first: new Footer({ children: [new Paragraph({})] }),
         },
-        children: buildCoverPage(title, query, dateStr, projectName),
+        children: buildCoverPage(title, dateStr, projectName),
       },
       // ── Section 2: Content pages (with branded header/footer) ──
       {
