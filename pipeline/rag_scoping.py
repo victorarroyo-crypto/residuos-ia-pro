@@ -22,13 +22,17 @@ La función de búsqueda combina ambos RAGs cuando es útil,
 pero siempre son tablas separadas — imposible mezclar datos.
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from supabase._async.client import AsyncClient, create_client as acreate_client
+
+from .config import RERANK_MODEL, RERANK_MAX_TOKENS, RERANK_CANDIDATE_MULTIPLIER
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +56,7 @@ class RAGSearchResult:
     metadata: dict
     text_rank: float = 0.0
     hybrid_score: float = 0.0
+    rerank_score: float = 0.0
 
 
 @dataclass
@@ -77,6 +82,7 @@ class RAGScopingService:
     def __init__(self, config):
         self.config = config
         self.openai = AsyncOpenAI(api_key=config.openai_api_key)
+        self.anthropic = AsyncAnthropic(api_key=config.anthropic_api_key)
         self._supabase: Optional[AsyncClient] = None
 
     async def _get_supabase(self) -> AsyncClient:
@@ -104,13 +110,16 @@ class RAGScopingService:
         general_results = []
         project_results = []
 
+        # Pedir más candidatos al SQL para que el reranker tenga material
+        sql_top_k = top_k_per_scope * RERANK_CANDIDATE_MULTIPLIER
+
         # Buscar en knowledge base (normativa, BREFs)
         if RAGScope.GENERAL in scopes:
             general_results = await self._search_knowledge(
                 query_embedding=query_embedding,
                 query_text=query,
                 doc_type_filter=doc_type_filter,
-                top_k=top_k_per_scope,
+                top_k=sql_top_k,
                 threshold=similarity_threshold,
             )
 
@@ -121,15 +130,23 @@ class RAGScopingService:
                 query_text=query,
                 project_id=project_id,
                 doc_type_filter=doc_type_filter,
-                top_k=top_k_per_scope,
+                top_k=sql_top_k,
                 threshold=similarity_threshold,
             )
 
-        all_results = sorted(
+        # Reranking: Claude Haiku puntúa los candidatos por relevancia real
+        all_candidates = sorted(
             general_results + project_results,
             key=lambda r: r.hybrid_score,
             reverse=True,
         )
+        reranked = await self._rerank(all_candidates, query, top_n=top_k_per_scope * 2)
+
+        # Separar de nuevo por scope tras el reranking
+        general_results = [r for r in reranked if r.rag_scope == RAGScope.GENERAL]
+        project_results = [r for r in reranked if r.rag_scope == RAGScope.PROJECT]
+        all_results = reranked
+
         context_text = self._build_context(query, general_results, project_results)
 
         return RAGResponse(
@@ -229,6 +246,70 @@ class RAGScopingService:
         except Exception as e:
             logger.error(f"Error búsqueda project: {e}")
             return []
+
+    async def _rerank(
+        self,
+        results: list[RAGSearchResult],
+        query: str,
+        top_n: int,
+    ) -> list[RAGSearchResult]:
+        """Reranking con Claude Haiku: puntúa cada chunk por relevancia real."""
+        if len(results) <= top_n:
+            return results
+
+        # Construir fragmentos numerados para el prompt
+        fragments = []
+        for i, r in enumerate(results):
+            # Truncar a ~300 chars para mantener el prompt compacto
+            excerpt = r.content[:300].strip()
+            fragments.append(f"[{i}] ({r.doc_type} | {r.doc_title})\n{excerpt}")
+
+        prompt = (
+            f"Consulta del usuario: \"{query}\"\n\n"
+            f"Fragmentos recuperados:\n\n"
+            + "\n\n".join(fragments)
+            + f"\n\nPuntúa cada fragmento del 0 al 10 según su relevancia para responder la consulta. "
+            f"Responde SOLO con JSON: {{\"scores\": [puntuación0, puntuación1, ...]}}"
+        )
+
+        try:
+            response = await self.anthropic.messages.create(
+                model=RERANK_MODEL,
+                max_tokens=RERANK_MAX_TOKENS,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            text = response.content[0].text.strip()
+            # Extraer JSON (puede venir envuelto en ```json ... ```)
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+
+            parsed = json.loads(text)
+            scores = parsed.get("scores", [])
+
+            if len(scores) != len(results):
+                logger.warning(
+                    f"Rerank: esperaba {len(results)} scores, recibió {len(scores)}. "
+                    f"Usando hybrid_score como fallback."
+                )
+                return results[:top_n]
+
+            for i, r in enumerate(results):
+                r.rerank_score = float(scores[i])
+
+            reranked = sorted(results, key=lambda r: r.rerank_score, reverse=True)
+            logger.info(
+                f"Rerank: {len(results)} candidatos → top {top_n}. "
+                f"Scores: [{', '.join(f'{r.rerank_score:.0f}' for r in reranked[:top_n])}]"
+            )
+            return reranked[:top_n]
+
+        except Exception as e:
+            logger.warning(f"Rerank fallido ({e}), usando hybrid_score como fallback")
+            return results[:top_n]
 
     def _build_context(
         self,
