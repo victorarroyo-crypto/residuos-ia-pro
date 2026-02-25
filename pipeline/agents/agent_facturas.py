@@ -8,7 +8,8 @@ anomalias de precio, cantidad y tendencias.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_FACTURAS, build_instructions_block, build_agent_focus_block, build_previous_findings_block
-from .llm import call_claude
+from .llm import call_claude_with_tools
+from .tools import FACTURAS_TOOLS, ToolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,12 @@ def _build_facturas_context(state: AnalysisState) -> str:
         sections.append("NO HAY FACTURAS INDEXADAS PARA ESTE PROYECTO.")
         sections.append("Indica que no se puede realizar el analisis financiero sin facturas.")
 
+    sections.append("")
+    sections.append(
+        "Puedes usar search_project_docs para buscar detalles adicionales en facturas "
+        "y otros documentos del proyecto si necesitas verificar datos concretos."
+    )
+
     # Inyectar instrucciones HITL
     hitl = build_instructions_block(state) + build_agent_focus_block(state, "facturas") + build_previous_findings_block(state, "facturas")
     if hitl:
@@ -82,15 +89,24 @@ def _build_facturas_context(state: AnalysisState) -> str:
 
 
 async def agent_facturas(state: AnalysisState) -> dict:
-    """Nodo del agente de facturas."""
+    """Nodo del agente de facturas con tool use."""
     errors = list(state.get("errors", []))
     context = _build_facturas_context(state)
 
+    executor = ToolExecutor(
+        supabase_url=state["supabase_url"],
+        supabase_key=state["supabase_key"],
+        openai_api_key=state.get("openai_api_key", ""),
+        project_id=state.get("project_id", ""),
+    )
+
     try:
-        result = await call_claude(
+        result = await call_claude_with_tools(
             api_key=state["anthropic_api_key"],
             system_prompt=SYSTEM_FACTURAS,
             user_message=context,
+            tools=FACTURAS_TOOLS,
+            tool_executor=executor,
         )
 
         findings: list[Finding] = []
