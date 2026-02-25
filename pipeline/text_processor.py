@@ -148,7 +148,7 @@ class TextProcessor:
         logger.info(f"[{filename}] Tipo detectado: {doc_type}")
 
         # Chunking semántico
-        chunks = await self.chunker.chunk(pages, doc_type, doc_id)
+        chunks = await self.chunker.chunk(pages, doc_type, doc_id, filename=filename)
         logger.info(f"[{filename}] {len(chunks)} chunks generados")
 
         # Embeddings
