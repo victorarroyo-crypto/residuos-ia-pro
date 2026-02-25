@@ -284,6 +284,17 @@ class StorageService:
                 data.append(row)
 
             if data:
+                # Dedup por chunk ID: evitar "ON CONFLICT DO UPDATE cannot
+                # affect row a second time" si _build_chunks genera IDs repetidos
+                seen = {}
+                for idx, row in enumerate(data):
+                    seen[row["id"]] = idx  # último gana
+                if len(seen) < len(data):
+                    logger.warning(
+                        f"Doc {doc_id}: {len(data) - len(seen)} chunks duplicados eliminados antes de upsert"
+                    )
+                    data = [data[j] for j in sorted(seen.values())]
+
                 result = await sb.table(table).upsert(data).execute()
                 if not result.data:
                     raise RuntimeError(f"Fallo chunks (batch {i}) para doc {doc_id} en {table}")

@@ -599,23 +599,26 @@ Responde SOLO con el párrafo de contexto, sin explicación ni encabezado."""
     ) -> list[DocumentChunk]:
         """Construye objetos DocumentChunk desde splits de texto."""
         chunks = []
-        for i, split in enumerate(splits):
+        global_index = 0
+        for split in splits:
             # Si el split es muy largo, subdividir con ventana deslizante
             words = split.split()
             if len(words) > config["size"] * 1.5:
-                sub_chunks = self._subdivide(split, doc_id, doc_type, config, i * 100)
+                sub_chunks = self._subdivide(split, doc_id, doc_type, config, global_index)
                 chunks.extend(sub_chunks)
+                global_index += len(sub_chunks)
             else:
                 chunks.append(DocumentChunk(
-                    chunk_id=f"{doc_id}_chunk_{i:04d}",
+                    chunk_id=f"{doc_id}_chunk_{global_index:04d}",
                     doc_id=doc_id,
                     content=split,
-                    chunk_index=i,
+                    chunk_index=global_index,
                     page_start=1,
                     page_end=len(pages),
                     chunk_type="seccion",
                     metadata={"doc_type": doc_type.value},
                 ))
+                global_index += 1
         return chunks
 
     def _subdivide(
