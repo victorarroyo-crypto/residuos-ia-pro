@@ -40,18 +40,12 @@ class EmbeddingService:
 
     async def embed_all(self, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
         """Genera embeddings para todos los chunks en lotes."""
+        # Subdividir chunks que excedan el límite de tokens de OpenAI
+        chunks = self._split_oversized_chunks(chunks)
+
         for i in range(0, len(chunks), EMBED_BATCH_SIZE):
             batch = chunks[i:i + EMBED_BATCH_SIZE]
-            texts = []
-            for c in batch:
-                words = c.content.split()
-                if len(words) > MAX_EMBED_WORDS:
-                    logger.warning(
-                        f"Chunk {c.chunk_id} truncado: {len(words)} palabras → {MAX_EMBED_WORDS}"
-                    )
-                    texts.append(" ".join(words[:MAX_EMBED_WORDS]))
-                else:
-                    texts.append(c.content)
+            texts = [c.content for c in batch]
 
             response = await self._embed_with_retry(texts, i)
             if response is None:
@@ -64,6 +58,43 @@ class EmbeddingService:
         embedded = sum(1 for c in chunks if c.embedding is not None)
         logger.info(f"Embeddings: {embedded}/{len(chunks)} chunks")
         return chunks
+
+    def _split_oversized_chunks(self, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+        """Subdivide chunks que excedan MAX_EMBED_WORDS con ventana deslizante."""
+        result = []
+        for chunk in chunks:
+            words = chunk.content.split()
+            if len(words) <= MAX_EMBED_WORDS:
+                result.append(chunk)
+                continue
+
+            logger.warning(
+                f"Chunk {chunk.chunk_id} excede límite: {len(words)} palabras → subdividiendo"
+            )
+            size = MAX_EMBED_WORDS
+            overlap = 200
+            i = 0
+            sub_idx = 0
+            while i < len(words):
+                sub_content = " ".join(words[i:i + size])
+                if sub_content.strip():
+                    result.append(DocumentChunk(
+                        chunk_id=f"{chunk.chunk_id}_p{sub_idx:02d}",
+                        doc_id=chunk.doc_id,
+                        content=sub_content,
+                        chunk_index=chunk.chunk_index,
+                        page_start=chunk.page_start,
+                        page_end=chunk.page_end,
+                        chunk_type=chunk.chunk_type,
+                        metadata=chunk.metadata,
+                    ))
+                    sub_idx += 1
+                i += size - overlap
+            logger.info(f"Chunk {chunk.chunk_id} → {sub_idx} sub-chunks")
+
+        if len(result) != len(chunks):
+            logger.info(f"Chunks tras subdivisión: {len(chunks)} → {len(result)}")
+        return result
 
     async def _embed_with_retry(self, texts: list[str], batch_start: int):
         delays = [1, 2, 4]
