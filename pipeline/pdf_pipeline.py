@@ -196,6 +196,7 @@ class PDFPipeline:
             pages=pages,
             doc_type=doc_type,
             doc_id=doc_id,
+            filename=filename,
         )
         logger.info(f"[{filename}] {len(chunks)} chunks generados")
 

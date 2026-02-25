@@ -246,22 +246,75 @@ Responde ÚNICAMENTE con el tipo exacto de la lista, sin explicación."""
 class SemanticChunker:
     """
     Chunking inteligente que respeta la estructura del documento.
-    
+
     En lugar de cortar cada N tokens ciegamente, detecta secciones
     naturales del documento (artículos, cláusulas, entradas del registro)
     y las usa como unidades de chunking.
+
+    Contextual Embeddings: cada chunk se prefija con un resumen del
+    documento padre generado por Claude Haiku, para que el embedding
+    capture el contexto global (título, tipo de norma, ámbito, fecha).
     """
 
     def __init__(self, config: PipelineConfig):
         self.config = config
+        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key)
+
+    async def _generate_doc_context(
+        self,
+        pages: list[PageContent],
+        doc_type: DocType,
+        filename: str,
+    ) -> str:
+        """
+        Genera un resumen contextual del documento usando Claude Haiku.
+        Se llama UNA sola vez por documento y se prefija a todos los chunks.
+        Esto permite que el embedding capture: qué documento es, de qué trata,
+        y cuáles son sus referencias clave.
+        """
+        # Extraer muestra de texto de las primeras 3 páginas
+        sample_text = "\n".join(p.text[:2000] for p in pages[:3])
+
+        prompt = f"""Eres un experto en gestión de residuos industriales y normativa ambiental.
+Genera un contexto breve (3-4 frases) de este documento que capture:
+- Qué tipo de documento es (ley, directiva, BREF, real decreto, contrato, etc.)
+- Su título o nombre oficial completo
+- Su ámbito (qué regula, a qué sector aplica)
+- Referencias clave (número de ley/directiva, fecha de publicación, códigos LER si aplica)
+
+Archivo: {filename}
+Tipo clasificado: {doc_type.value}
+
+PRIMERAS PÁGINAS:
+{sample_text[:4000]}
+
+Responde SOLO con el párrafo de contexto, sin explicación ni encabezado."""
+
+        try:
+            response = await self.claude.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            context = response.content[0].text.strip()
+            logger.info(f"Contexto generado para {filename}: {len(context)} chars")
+            return context
+        except Exception as e:
+            logger.warning(f"Error generando contexto para {filename}: {e}")
+            # Fallback: contexto mínimo sin LLM
+            return f"Documento: {filename} | Tipo: {doc_type.value}"
 
     async def chunk(
         self,
         pages: list[PageContent],
         doc_type: DocType,
         doc_id: str,
+        filename: str = "",
     ) -> list[DocumentChunk]:
         """Selecciona estrategia de chunking según tipo de documento."""
+
+        # ── Contextual Embeddings: generar contexto del documento ──
+        doc_context = await self._generate_doc_context(pages, doc_type, filename or doc_id)
 
         strategy_map = {
             DocType.AAI:           self._chunk_by_section,
@@ -281,12 +334,29 @@ class SemanticChunker:
         strategy = strategy_map.get(doc_type, self._chunk_sliding_window)
         chunks = await strategy(pages, doc_id, doc_type)
 
+        # ── Prefijar contexto a todos los chunks ──
+        self._prepend_context(chunks, doc_context, doc_type)
+
         # Siempre añadir chunks de tablas por separado (son más valiosas)
         table_chunks = self._chunk_tables(pages, doc_id, doc_type, len(chunks))
+        self._prepend_context(table_chunks, doc_context, doc_type)
         chunks.extend(table_chunks)
 
         logger.info(f"Chunking {doc_type}: {len(chunks)} chunks ({len(table_chunks)} de tablas)")
         return chunks
+
+    def _prepend_context(
+        self,
+        chunks: list[DocumentChunk],
+        doc_context: str,
+        doc_type: DocType,
+    ) -> None:
+        """Prefija el contexto del documento a cada chunk (in-place)."""
+        if not doc_context:
+            return
+        prefix = f"[{doc_type.value.upper()}]\n{doc_context}\n---\n"
+        for chunk in chunks:
+            chunk.content = prefix + chunk.content
 
     async def _chunk_by_section(
         self, pages: list[PageContent], doc_id: str, doc_type: DocType
