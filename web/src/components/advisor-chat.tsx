@@ -203,6 +203,7 @@ export function AdvisorChat({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [streamPhase, setStreamPhase] = useState<string>("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState("");
@@ -341,6 +342,7 @@ export function AdvisorChat({
       const abort = new AbortController();
       abortRef.current = abort;
       setStreaming(true);
+      setStreamPhase("thinking");
 
       const res = await fetch("/api/advisor/stream", {
         method: "POST",
@@ -388,7 +390,10 @@ export function AdvisorChat({
           try {
             const data = JSON.parse(sse.data);
 
-            if (sse.event === "text_delta") {
+            if (sse.event === "status") {
+              setStreamPhase(data.phase || "thinking");
+            } else if (sse.event === "text_delta") {
+              setStreamPhase("");
               accumulatedText += data.text;
               setMessages((prev) => {
                 const updated = [...prev];
@@ -445,6 +450,7 @@ export function AdvisorChat({
     } finally {
       setLoading(false);
       setStreaming(false);
+      setStreamPhase("");
       abortRef.current = null;
     }
   }, [input, loading, streaming, attachedFiles, urls, messages, analysisContext, setMessages]);
@@ -618,11 +624,13 @@ export function AdvisorChat({
                 <div className="text-sm whitespace-pre-wrap">{msg.content}</div>
               )}
 
-              {/* Streaming indicator */}
+              {/* Streaming indicator with phase */}
               {msg.role === "assistant" && streaming && i === messages.length - 1 && !msg.content && (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
-                  Pensando...
+                  {streamPhase === "web_search" ? "Buscando en la web..." :
+                   streamPhase === "thinking" ? "Razonando..." :
+                   "Pensando..."}
                 </div>
               )}
 
