@@ -14,6 +14,7 @@ import io
 import logging
 from typing import Optional
 
+import fitz as pymupdf  # PyMuPDF — fallback para PDFs que pdfminer no parsea
 import pikepdf
 import pdfplumber
 import pdf2image
@@ -75,6 +76,29 @@ class PDFNatureDetector:
                 )
         except Exception:
             return PDFNature.SCANNED
+
+        # Fallback PyMuPDF: si pdfplumber no extrajo texto de ninguna página,
+        # intentar con PyMuPDF (MuPDF) que soporta más codificaciones de fonts.
+        # Esto evita clasificar erróneamente como SCANNED PDFs digitales que
+        # usan CMap/Type3 fonts que pdfminer no puede decodificar.
+        if digital_pages == 0 and scanned_pages > 0:
+            try:
+                doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+                fitz_digital = 0
+                for idx in sample_indices:
+                    text = doc[idx].get_text() or ""
+                    if len(text.strip()) >= MIN_CHARS_DIGITAL:
+                        fitz_digital += 1
+                doc.close()
+                if fitz_digital > 0:
+                    logger.info(
+                        f"Nature detection PyMuPDF fallback: "
+                        f"{fitz_digital}/{len(sample_indices)} pages have text"
+                    )
+                    digital_pages = fitz_digital
+                    scanned_pages = len(sample_indices) - fitz_digital
+            except Exception as e:
+                logger.warning(f"PyMuPDF fallback detection failed: {e}")
 
         total = digital_pages + scanned_pages
         if total == 0:
@@ -153,12 +177,24 @@ class ContentExtractorImpl(ContentExtractor):
             raise ValueError(f"No se puede extraer PDF con naturaleza: {nature}")
 
     async def _extract_digital(self, pdf_bytes: bytes) -> list[PageContent]:
-        """Extrae texto y tablas de PDF digital con pdfplumber."""
+        """Extrae texto y tablas de PDF digital con pdfplumber, fallback PyMuPDF."""
         pages = []
+        fitz_doc = None
+        fitz_fallback_count = 0
+
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
-                
+
+                # Fallback PyMuPDF si pdfplumber no extrajo texto suficiente
+                if len(text.strip()) < MIN_CHARS_DIGITAL:
+                    if fitz_doc is None:
+                        fitz_doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+                    fitz_text = fitz_doc[i].get_text() or ""
+                    if len(fitz_text.strip()) >= MIN_CHARS_DIGITAL:
+                        text = fitz_text
+                        fitz_fallback_count += 1
+
                 # Extracción de tablas con configuración optimizada para docs administrativos
                 tables = self._extract_tables_from_page(page)
 
@@ -170,6 +206,14 @@ class ContentExtractorImpl(ContentExtractor):
                     nature=PDFNature.DIGITAL,
                     confidence=1.0,
                 ))
+
+        if fitz_doc is not None:
+            fitz_doc.close()
+        if fitz_fallback_count > 0:
+            logger.info(
+                f"Digital extraction: PyMuPDF fallback used for "
+                f"{fitz_fallback_count}/{len(pages)} pages"
+            )
         return pages
 
     async def _extract_scanned(
