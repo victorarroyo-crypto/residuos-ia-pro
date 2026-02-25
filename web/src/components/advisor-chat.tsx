@@ -188,16 +188,25 @@ export function AdvisorChat({
 }: AdvisorChatProps) {
   const [internalMessages, setInternalMessages] = useState<ChatMessage[]>([]);
   const messages = controlledMessages ?? internalMessages;
+
+  // Ref to track latest messages for use inside async closures.
+  // This avoids the stale-closure bug where controlledMessages is captured
+  // at the start of an async function and never updated.
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  messagesRef.current = messages;
+
   const setMessages = useCallback(
     (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
       if (onMessagesChange) {
-        const newVal = typeof updater === "function" ? updater(controlledMessages ?? []) : updater;
+        const prev = messagesRef.current;
+        const newVal = typeof updater === "function" ? updater(prev) : updater;
+        messagesRef.current = newVal; // Eagerly update for consecutive calls
         onMessagesChange(newVal);
       } else {
         setInternalMessages(updater as React.SetStateAction<ChatMessage[]>);
       }
     },
-    [onMessagesChange, controlledMessages]
+    [onMessagesChange]
   );
 
   const [input, setInput] = useState("");
