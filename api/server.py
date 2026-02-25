@@ -712,7 +712,7 @@ async def _run_advisor(
         project_id=project_id,
         scopes=scopes,
         top_k_per_scope=12,
-        similarity_threshold=0.65,
+        similarity_threshold=0.50,
     )
     has_rag_context = bool(rag_response.results)
 
@@ -1174,7 +1174,7 @@ async def advisor_stream(request: AdvisorRequest):
                 project_id=request.project_id,
                 scopes=scopes,
                 top_k_per_scope=12,
-                similarity_threshold=0.65,
+                similarity_threshold=0.50,
             )
             has_rag_context = bool(rag_response.results)
 
