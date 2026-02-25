@@ -1167,8 +1167,11 @@ async def advisor_stream(request: AdvisorRequest):
             if request.analysis_context:
                 system_prompt += _build_analysis_context_addendum(request.analysis_context)
 
-            # 5b. Stream with raw event iteration (keeps connection alive
+            # 5b. Stream with event iteration (keeps connection alive
             #     during thinking/web-search phases that can last 30-90 s).
+            #     The high-level .stream() yields SDK-extended events:
+            #       "text"  → text deltas  (event.text)
+            #       "content_block_start" → raw block start (event.content_block)
             text_streamed = False
             async with claude.messages.stream(
                 model="claude-sonnet-4-20250514",
@@ -1182,23 +1185,26 @@ async def advisor_stream(request: AdvisorRequest):
                 messages=messages,
             ) as stream:
                 async for event in stream:
-                    # Thinking phase → send status keepalive
-                    if event.type == "content_block_start":
+                    # SDK "text" event → stream to client
+                    if event.type == "text":
+                        text_streamed = True
+                        yield _sse_event("text_delta", {"text": event.text})
+                    # Raw content_block_start → detect phase for keepalive
+                    elif event.type == "content_block_start":
                         block = getattr(event, "content_block", None)
-                        if block and getattr(block, "type", None) == "thinking":
-                            yield _sse_event("status", {"phase": "thinking"})
-                        elif block and getattr(block, "type", None) == "web_search_tool_result":
-                            yield _sse_event("status", {"phase": "web_search"})
-                    # Text deltas → stream to client
-                    elif event.type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if delta and getattr(delta, "type", None) == "text_delta":
-                            text_streamed = True
-                            yield _sse_event("text_delta", {"text": delta.text})
+                        if block:
+                            btype = getattr(block, "type", None)
+                            if btype == "thinking":
+                                yield _sse_event("status", {"phase": "thinking"})
+                            elif btype in ("server_tool_use", "web_search_tool_result"):
+                                yield _sse_event("status", {"phase": "web_search"})
 
                 final = await stream.get_final_message()
 
-            # 6. Fallback: if text_stream produced nothing, extract from final
+            # 6. Fallback: if streaming produced nothing, extract from final
+            logger.info("Advisor stream: text_streamed=%s, final blocks=%s",
+                        text_streamed,
+                        [getattr(b, "type", "?") for b in final.content])
             if not text_streamed:
                 for block in final.content:
                     if getattr(block, "type", None) == "text":
