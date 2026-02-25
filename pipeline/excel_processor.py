@@ -112,7 +112,7 @@ class ExcelProcessor:
 
     def __init__(self, config):
         self.config = config
-        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key)
+        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key, max_retries=4)
 
     async def process(
         self,

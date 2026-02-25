@@ -286,7 +286,7 @@ async def rag_query(request: RAGQueryRequest):
 
         # Generar respuesta con Claude usando el contexto recuperado
         from anthropic import AsyncAnthropic
-        claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+        claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
 
         system_prompt = (
             "Eres un experto en gestión de residuos industriales en España. "
@@ -754,7 +754,7 @@ async def _run_advisor(
     messages.append({"role": "user", "content": user_content_blocks})
 
     # 6. Call Claude with extended thinking + web search
-    claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+    claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
 
     # Web search tool: Claude decides when to search the web.
     # Anthropic executes the search server-side (uses Brave Search).
@@ -1156,7 +1156,7 @@ async def advisor_stream(request: AdvisorRequest):
             thinking_budget = 10000 if request.conversation_history else 24000
 
             # 5. Stream Claude response
-            claude = AsyncAnthropic(api_key=_config.anthropic_api_key)
+            claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
 
             web_search_tool = {
                 "type": "web_search_20250305",

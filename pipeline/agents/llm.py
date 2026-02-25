@@ -33,7 +33,7 @@ async def call_claude(
     temperature: float = 0.2,
 ) -> dict[str, Any] | str:
     """Llama a Claude y devuelve JSON parseado o texto."""
-    client = AsyncAnthropic(api_key=api_key)
+    client = AsyncAnthropic(api_key=api_key, max_retries=4)
 
     response = await client.messages.create(
         model=model,
@@ -71,7 +71,7 @@ async def call_claude_with_tools(
     3. Enviar resultados de vuelta
     4. Repetir hasta que Claude responda con texto final
     """
-    client = AsyncAnthropic(api_key=api_key)
+    client = AsyncAnthropic(api_key=api_key, max_retries=4)
 
     messages = [{"role": "user", "content": user_message}]
     response = None

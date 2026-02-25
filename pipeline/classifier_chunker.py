@@ -166,7 +166,7 @@ class DocumentClassifier:
 
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key)
+        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key, max_retries=4)
 
     async def classify(
         self, pages: list[PageContent], filename: str
@@ -258,7 +258,7 @@ class SemanticChunker:
 
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key)
+        self.claude = AsyncAnthropic(api_key=config.anthropic_api_key, max_retries=4)
 
     async def _generate_doc_context(
         self,

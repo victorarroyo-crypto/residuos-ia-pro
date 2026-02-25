@@ -82,7 +82,7 @@ class RAGScopingService:
     def __init__(self, config):
         self.config = config
         self.openai = AsyncOpenAI(api_key=config.openai_api_key)
-        self.anthropic = AsyncAnthropic(api_key=config.anthropic_api_key)
+        self.anthropic = AsyncAnthropic(api_key=config.anthropic_api_key, max_retries=4)
         self._supabase: Optional[AsyncClient] = None
 
     async def _get_supabase(self) -> AsyncClient:
