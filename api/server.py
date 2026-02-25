@@ -1173,6 +1173,7 @@ async def advisor_stream(request: AdvisorRequest):
             #       "text"  → text deltas  (event.text)
             #       "content_block_start" → raw block start (event.content_block)
             text_streamed = False
+            last_keepalive = time.monotonic()
             async with claude.messages.stream(
                 model="claude-sonnet-4-20250514",
                 max_tokens=32000,
@@ -1188,6 +1189,7 @@ async def advisor_stream(request: AdvisorRequest):
                     # SDK "text" event → stream to client
                     if event.type == "text":
                         text_streamed = True
+                        last_keepalive = time.monotonic()
                         yield _sse_event("text_delta", {"text": event.text})
                     # Raw content_block_start → detect phase for keepalive
                     elif event.type == "content_block_start":
@@ -1198,6 +1200,15 @@ async def advisor_stream(request: AdvisorRequest):
                                 yield _sse_event("status", {"phase": "thinking"})
                             elif btype in ("server_tool_use", "web_search_tool_result"):
                                 yield _sse_event("status", {"phase": "web_search"})
+                        last_keepalive = time.monotonic()
+                    else:
+                        # Keepalive: SSE comment every 5s during silent phases
+                        # (thinking deltas, content_block_stop, etc.)
+                        # SSE comments are ignored by the frontend parser.
+                        now = time.monotonic()
+                        if now - last_keepalive >= 5:
+                            yield ": keepalive\n\n"
+                            last_keepalive = now
 
                 final = await stream.get_final_message()
 
