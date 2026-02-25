@@ -174,7 +174,7 @@ Ejemplo del tono y nivel de desarrollo esperado en un parrafo del informe:
 
 "El analisis de los contratos vigentes revela que el acuerdo con Gestor Ambiental Sur SL para la gestion de aceites usados (LER 130205) expira en marzo de 2026, apenas seis semanas desde la fecha de este informe. El precio contratado de 320 EUR/tonelada se situa un 18% por encima del benchmark sectorial para este tipo de residuo peligroso (rango habitual: 220-280 EUR/tonelada), lo que supone un sobrecoste estimado de 4.200 EUR anuales sobre las 23 toneladas gestionadas el ultimo ejercicio. Dado que el contrato esta proximo a vencer, existe una ventana de renegociacion natural que permitiria corregir esta desviacion sin coste de rescision."
 
-El informe completo debe tener entre 800 y 1.500 palabras. Escribe en un tono profesional y directo, como un consultor senior presentando conclusiones a su cliente. Responde directamente con el informe en Markdown (no JSON)."""
+El informe debe tener la extension que los hallazgos requieran. Como referencia, un proyecto con hallazgos significativos deberia producir un informe de al menos 1.000 palabras. No cortes el analisis para ahorrar espacio; desarrolla cada punto con la profundidad que merece. Escribe en un tono profesional y directo, como un consultor senior presentando conclusiones a su cliente. Responde directamente con el informe en Markdown (no JSON)."""
 
 
 # ─── Bloque inyectable de instrucciones del consultor ─────────────
