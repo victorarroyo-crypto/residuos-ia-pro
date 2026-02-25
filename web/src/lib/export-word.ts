@@ -318,7 +318,7 @@ function buildFooter(): Footer {
         spacing: { before: 100 },
         children: [
           new TextRun({
-            text: "Generado por ResidusIA Pro  —  vandarum.com",
+            text: "vandarum.com",
             font: FONT.body,
             size: 16,
             color: BRAND.grisClaro,
@@ -604,7 +604,7 @@ export async function exportToWord(
   );
   contentElements.push(...markdownToDocxElements(answer));
 
-  // Section: Fuentes Consultadas
+  // Section: Referencias
   if (sources && sources.length > 0) {
     contentElements.push(new Paragraph({ spacing: { before: 300, after: 100 } }));
     contentElements.push(
@@ -612,7 +612,7 @@ export async function exportToWord(
         heading: HeadingLevel.HEADING_2,
         children: [
           new TextRun({
-            text: "Fuentes Consultadas",
+            text: "Referencias",
             font: FONT.titleBold,
             size: 28,
             bold: true,
@@ -623,65 +623,29 @@ export async function exportToWord(
       })
     );
 
-    for (const s of sources) {
-      const scopeLabel =
-        s.scope === "general"
-          ? "Base de Conocimiento"
-          : s.scope === "web"
-            ? "Web"
-            : "Proyecto";
-      const scopeColor =
-        s.scope === "web" ? BRAND.azul : s.scope === "general" ? BRAND.verdeOscuro : BRAND.verdeClaro;
-
+    sources.forEach((s, idx) => {
       contentElements.push(
         new Paragraph({
-          bullet: { level: 0 },
+          spacing: { after: 50 },
           children: [
+            new TextRun({
+              text: `[${idx + 1}]  `,
+              font: FONT.body,
+              size: 20,
+              bold: true,
+              color: BRAND.verdeOscuro,
+            }),
             new TextRun({
               text: s.title,
               font: FONT.body,
               size: 20,
             }),
-            new TextRun({
-              text: `  [${scopeLabel}]`,
-              font: FONT.body,
-              size: 18,
-              color: scopeColor,
-              italics: true,
-            }),
           ],
         })
       );
-    }
+    });
   }
 
-  // Disclaimer
-  contentElements.push(new Paragraph({ spacing: { before: 400, after: 80 } }));
-  contentElements.push(
-    new Paragraph({
-      border: {
-        top: { style: BorderStyle.SINGLE, size: 1, color: BRAND.grisMuyClaro },
-      },
-      spacing: { before: 100, after: 40 },
-      children: [
-        new TextRun({
-          text: "Nota: ",
-          font: FONT.body,
-          size: 18,
-          color: BRAND.grisClaro,
-          bold: true,
-          italics: true,
-        }),
-        new TextRun({
-          text: "Este informe ha sido generado por inteligencia artificial como herramienta de apoyo profesional. Las recomendaciones deben ser validadas por un tecnico cualificado antes de su aplicacion.",
-          font: FONT.body,
-          size: 18,
-          color: BRAND.grisClaro,
-          italics: true,
-        }),
-      ],
-    })
-  );
 
   // ─── Assemble document ───────────────────────────────────────
 
