@@ -4,7 +4,7 @@
  * Based on the Manual de Marca Vandarum (Oct 2025):
  *  - Brand colors: Verde Oscuro #307177, Verde Claro #8cb63c, Azul #32b4cd, Naranja #ffa720
  *  - Typography: Calibri Light (titles), Calibri (body) — closest system fonts to Helvetica Neue / Proxima Nova
- *  - Professional layout: cover page, logo header, page numbers, branded tables
+ *  - Professional layout: cover page, page numbers, branded tables
  */
 
 import {
@@ -12,7 +12,6 @@ import {
   Packer,
   Paragraph,
   TextRun,
-  ImageRun,
   HeadingLevel,
   AlignmentType,
   BorderStyle,
@@ -33,8 +32,6 @@ import {
   TableLayoutType,
 } from "docx";
 import { saveAs } from "file-saver";
-import { VANDARUM_LOGO_BASE64 } from "./vandarum-logo-data";
-
 // ─── Brand constants from Manual de Marca ────────────────────────
 
 const BRAND = {
@@ -55,12 +52,6 @@ const FONT = {
   body: "Calibri",          // Closest to Proxima Nova Regular
   code: "Consolas",
 } as const;
-
-// ─── Logo helper ─────────────────────────────────────────────────
-
-function getLogoBuffer(): Buffer {
-  return Buffer.from(VANDARUM_LOGO_BASE64, "base64");
-}
 
 // ─── Markdown → Paragraphs converter ─────────────────────────────
 
@@ -314,41 +305,6 @@ function markdownToDocxElements(text: string): (Paragraph | Table)[] {
   return elements;
 }
 
-// ─── Build header with logo ──────────────────────────────────────
-
-function buildHeader(reportType: string): Header {
-  return new Header({
-    children: [
-      new Paragraph({
-        alignment: AlignmentType.LEFT,
-        border: {
-          bottom: { style: BorderStyle.SINGLE, size: 6, color: BRAND.verdeOscuro },
-        },
-        spacing: { after: 200 },
-        children: [
-          new TextRun({
-            text: "VANDARUM",
-            font: FONT.titleBold,
-            size: 20,
-            bold: true,
-            color: BRAND.verdeOscuro,
-          }),
-          new TextRun({ children: [new Tab()] }),
-          new TextRun({
-            text: reportType,
-            font: FONT.title,
-            size: 20,
-            color: BRAND.grisMedio,
-          }),
-        ],
-        tabStops: [
-          { type: TabStopType.RIGHT, position: TabStopPosition.MAX },
-        ],
-      }),
-    ],
-  });
-}
-
 // ─── Build footer with page numbers ──────────────────────────────
 
 function buildFooter(): Footer {
@@ -362,7 +318,7 @@ function buildFooter(): Footer {
         spacing: { before: 100 },
         children: [
           new TextRun({
-            text: "Generado por ResidusIA Pro  —  vandarum.com",
+            text: "vandarum.com",
             font: FONT.body,
             size: 16,
             color: BRAND.grisClaro,
@@ -403,26 +359,10 @@ function buildCoverPage(
   dateStr: string,
   projectName?: string
 ): Paragraph[] {
-  const logoBuffer = getLogoBuffer();
   const children: Paragraph[] = [];
 
   // Spacing at top
-  children.push(new Paragraph({ spacing: { before: 1600 } }));
-
-  // Logo centered
-  children.push(
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 600 },
-      children: [
-        new ImageRun({
-          data: logoBuffer,
-          transformation: { width: 220, height: 172 },
-          type: "png",
-        }),
-      ],
-    })
-  );
+  children.push(new Paragraph({ spacing: { before: 2200 } }));
 
   // Main title
   children.push(
@@ -606,7 +546,6 @@ export async function exportToWord(
   });
 
   const title = reportTitle || "Informe Tecnico";
-  const headerLabel = "Informe del Asesor IA";
 
   // ─── Build content paragraphs ────────────────────────────────
 
@@ -665,7 +604,7 @@ export async function exportToWord(
   );
   contentElements.push(...markdownToDocxElements(answer));
 
-  // Section: Fuentes Consultadas
+  // Section: Referencias
   if (sources && sources.length > 0) {
     contentElements.push(new Paragraph({ spacing: { before: 300, after: 100 } }));
     contentElements.push(
@@ -673,7 +612,7 @@ export async function exportToWord(
         heading: HeadingLevel.HEADING_2,
         children: [
           new TextRun({
-            text: "Fuentes Consultadas",
+            text: "Referencias",
             font: FONT.titleBold,
             size: 28,
             bold: true,
@@ -684,65 +623,29 @@ export async function exportToWord(
       })
     );
 
-    for (const s of sources) {
-      const scopeLabel =
-        s.scope === "general"
-          ? "Base de Conocimiento"
-          : s.scope === "web"
-            ? "Web"
-            : "Proyecto";
-      const scopeColor =
-        s.scope === "web" ? BRAND.azul : s.scope === "general" ? BRAND.verdeOscuro : BRAND.verdeClaro;
-
+    sources.forEach((s, idx) => {
       contentElements.push(
         new Paragraph({
-          bullet: { level: 0 },
+          spacing: { after: 50 },
           children: [
+            new TextRun({
+              text: `[${idx + 1}]  `,
+              font: FONT.body,
+              size: 20,
+              bold: true,
+              color: BRAND.verdeOscuro,
+            }),
             new TextRun({
               text: s.title,
               font: FONT.body,
               size: 20,
             }),
-            new TextRun({
-              text: `  [${scopeLabel}]`,
-              font: FONT.body,
-              size: 18,
-              color: scopeColor,
-              italics: true,
-            }),
           ],
         })
       );
-    }
+    });
   }
 
-  // Disclaimer
-  contentElements.push(new Paragraph({ spacing: { before: 400, after: 80 } }));
-  contentElements.push(
-    new Paragraph({
-      border: {
-        top: { style: BorderStyle.SINGLE, size: 1, color: BRAND.grisMuyClaro },
-      },
-      spacing: { before: 100, after: 40 },
-      children: [
-        new TextRun({
-          text: "Nota: ",
-          font: FONT.body,
-          size: 18,
-          color: BRAND.grisClaro,
-          bold: true,
-          italics: true,
-        }),
-        new TextRun({
-          text: "Este informe ha sido generado por inteligencia artificial como herramienta de apoyo profesional. Las recomendaciones deben ser validadas por un tecnico cualificado antes de su aplicacion.",
-          font: FONT.body,
-          size: 18,
-          color: BRAND.grisClaro,
-          italics: true,
-        }),
-      ],
-    })
-  );
 
   // ─── Assemble document ───────────────────────────────────────
 
@@ -810,7 +713,7 @@ export async function exportToWord(
             pageNumbers: { start: 1 },
           },
         },
-        headers: { default: buildHeader(headerLabel) },
+        headers: { default: new Header({ children: [new Paragraph({})] }) },
         footers: { default: buildFooter() },
         children: contentElements as Paragraph[],
       },
