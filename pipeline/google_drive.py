@@ -648,7 +648,7 @@ class GoogleDriveService:
             folders_scanned += 1
             # Throttle: pause between folders to avoid Google API rate limits
             if folder_queue:
-                time.sleep(0.3)
+                time.sleep(0.1)
 
             # Log progress every 20 folders
             if folders_scanned % 20 == 0:
