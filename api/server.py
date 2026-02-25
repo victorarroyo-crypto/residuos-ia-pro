@@ -309,7 +309,7 @@ async def rag_query(request: RAGQueryRequest):
 
         try:
             message = await claude.messages.create(
-                model="claude-opus-4-20250514",
+                model="claude-sonnet-4-20250514",
                 max_tokens=2000,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
@@ -803,7 +803,7 @@ async def _run_advisor(
 
     try:
         async with claude.messages.stream(
-            model="claude-opus-4-20250514",
+            model="claude-sonnet-4-20250514",
             max_tokens=32000,
             thinking={
                 "type": "enabled",
@@ -1243,7 +1243,7 @@ async def advisor_stream(request: AdvisorRequest):
                 text_streamed = False
                 last_keepalive = time.monotonic()
                 async with claude.messages.stream(
-                    model="claude-opus-4-20250514",
+                    model="claude-sonnet-4-20250514",
                     max_tokens=32000,
                     thinking={
                         "type": "enabled",
