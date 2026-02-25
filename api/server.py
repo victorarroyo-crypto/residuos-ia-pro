@@ -6,6 +6,7 @@ Expone el pipeline de procesamiento de documentos via HTTP.
 import json
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
