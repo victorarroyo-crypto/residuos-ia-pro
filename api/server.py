@@ -1384,31 +1384,14 @@ async def update_session(session_id: str, request: SessionUpdate):
     return result.data[0]
 
 
-@app.get("/api/analyze/progress/{project_id}")
-async def stream_analysis_progress(project_id: str):
-    """SSE endpoint that streams real-time progress events during analysis."""
-    from pipeline.agents.graph import get_progress_events
-
-    async def event_stream():
-        last_idx = 0
-        while True:
-            events = get_progress_events(project_id, last_idx)
-            for event in events:
-                yield f"data: {json.dumps(event)}\n\n"
-                last_idx += 1
-                if event.get("type") == "complete":
-                    return
-            await asyncio.sleep(1)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+async def _cleanup_analysis_progress(project_id: str):
+    """Delete progress rows for a completed analysis (they served their Realtime purpose)."""
+    try:
+        from supabase._async.client import create_client as acreate_client
+        sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
+        await sb.table("analysis_progress").delete().eq("project_id", project_id).execute()
+    except Exception as e:
+        logger.warning(f"Could not cleanup analysis_progress for {project_id}: {e}")
 
 
 class PlanRequest(BaseModel):
@@ -1458,7 +1441,6 @@ async def analyze_execute(request: ExecuteRequest):
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     from pipeline.agents import run_project_analysis
-    from pipeline.agents.graph import clear_progress
 
     try:
         result = await run_project_analysis(
@@ -1471,12 +1453,11 @@ async def analyze_execute(request: ExecuteRequest):
             consultant_instructions=request.consultant_instructions,
             agent_focus=request.agent_focus,
         )
-        # Delay cleanup so SSE clients can read the "complete" event
-        await asyncio.sleep(5)
-        clear_progress(request.project_id)
+        # Cleanup old progress rows (Realtime already delivered them)
+        await _cleanup_analysis_progress(request.project_id)
         return result
     except Exception as e:
-        clear_progress(request.project_id)
+        await _cleanup_analysis_progress(request.project_id)
         logger.error(f"Error ejecutando analisis {request.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1488,7 +1469,6 @@ async def analyze_round2(request: Round2Request):
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     from pipeline.agents import run_project_analysis
-    from pipeline.agents.graph import clear_progress
 
     try:
         result = await run_project_analysis(
@@ -1503,11 +1483,10 @@ async def analyze_round2(request: Round2Request):
             round_number=2,
             previous_findings=request.previous_findings,
         )
-        await asyncio.sleep(5)
-        clear_progress(request.project_id)
+        await _cleanup_analysis_progress(request.project_id)
         return result
     except Exception as e:
-        clear_progress(request.project_id)
+        await _cleanup_analysis_progress(request.project_id)
         logger.error(f"Error en 2a vuelta {request.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
