@@ -81,6 +81,28 @@ async def lifespan(app: FastAPI):
     )
     service = UnifiedIngestionService(_config)
     rag_service = RAGScopingService(_config)
+
+    # Clean up zombie syncs left by previous server instances (e.g. redeploy)
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from supabase._async.client import create_client as acreate_client
+        _startup_sb = await acreate_client(supabase_url, supabase_key)
+        _zombie_result = await (
+            _startup_sb.table("gdrive_sync_log")
+            .update({
+                "status": "error",
+                "completed_at": _dt.now(_tz.utc).isoformat(),
+                "error_message": "Sync interrumpido por reinicio del servidor.",
+            })
+            .eq("status", "running")
+            .execute()
+        )
+        _zombie_count = len(_zombie_result.data) if _zombie_result.data else 0
+        if _zombie_count:
+            logger.info("Startup: marked %d zombie sync(s) as error", _zombie_count)
+    except Exception as e:
+        logger.warning("Startup: could not clean zombie syncs: %s", e)
+
     yield
 
 
@@ -2296,9 +2318,10 @@ async def _run_sync_job(
         # Update total_files_found immediately so the UI can show scan results
         await _update_sync_progress(total_files_found=total_found)
 
-        # 2. Check which are already indexed
+        # 2. Check which are already indexed (by drive_file_id OR titulo)
         all_drive_ids = [f["id"] for f in all_files]
         indexed_ids: set[str] = set()
+        # 2a. Check by drive_file_id
         for i in range(0, len(all_drive_ids), 50):
             batch = all_drive_ids[i:i + 50]
             result = await (
@@ -2311,106 +2334,127 @@ async def _run_sync_job(
                 if row.get("drive_file_id"):
                     indexed_ids.add(row["drive_file_id"])
 
-        new_files = [f for f in all_files if f["id"] not in indexed_ids]
+        # 2b. Fallback: check by titulo (filename) for docs with NULL drive_file_id
+        #     This catches docs ingested before drive_file_id was set
+        all_filenames = [f["name"] for f in all_files]
+        indexed_titles: set[str] = set()
+        for i in range(0, len(all_filenames), 50):
+            batch = all_filenames[i:i + 50]
+            result = await (
+                sb.table("knowledge_documents")
+                .select("titulo, id, drive_file_id")
+                .in_("titulo", batch)
+                .execute()
+            )
+            for row in result.data or []:
+                titulo = row.get("titulo")
+                if titulo:
+                    indexed_titles.add(titulo)
+                    # Backfill drive_file_id if missing
+                    if not row.get("drive_file_id"):
+                        for f in all_files:
+                            if f["name"] == titulo:
+                                try:
+                                    await (
+                                        sb.table("knowledge_documents")
+                                        .update({"drive_file_id": f["id"]})
+                                        .eq("id", row["id"])
+                                        .execute()
+                                    )
+                                    indexed_ids.add(f["id"])
+                                    logger.info("Sync %s: backfilled drive_file_id for %s", sync_id, titulo)
+                                except Exception:
+                                    pass
+                                break
+
+        new_files = [f for f in all_files if f["id"] not in indexed_ids and f["name"] not in indexed_titles]
         skipped = len(all_files) - len(new_files)
         logger.info("Sync %s: %d new files to ingest, %d already indexed", sync_id, len(new_files), skipped)
 
         # Update skipped count immediately
         await _update_sync_progress(files_skipped=skipped)
 
-        # 3. Ingest new files
+        # 3. Ingest new files (concurrent with semaphore)
         ingested = 0
         failed = 0
         details: list[dict] = []
+        _sync_lock = asyncio.Lock()
+        _sem = asyncio.Semaphore(3)  # max 3 concurrent ingestions
 
-        for file_info in new_files:
+        async def _ingest_one(file_info: dict) -> None:
+            nonlocal ingested, failed, skipped
+            fname = file_info["name"]
+            fpath = file_info.get("path", "")
             try:
                 file_bytes, filename, mime_type = await asyncio.to_thread(
                     gd.download_file, file_info["id"]
                 )
 
                 if len(file_bytes) == 0:
-                    details.append({
-                        "file": file_info["name"],
-                        "status": "skipped",
-                        "reason": "empty file",
-                    })
-                    skipped += 1
-                    await _update_sync_progress(files_skipped=skipped)
-                    continue
+                    async with _sync_lock:
+                        details.append({"file": fname, "status": "skipped", "reason": "empty file"})
+                        skipped += 1
+                        await _update_sync_progress(files_skipped=skipped)
+                    return
 
                 if len(file_bytes) > 100 * 1024 * 1024:
-                    details.append({
-                        "file": file_info["name"],
-                        "status": "skipped",
-                        "reason": "too large (>100MB)",
-                    })
-                    skipped += 1
-                    await _update_sync_progress(files_skipped=skipped)
-                    continue
+                    async with _sync_lock:
+                        details.append({"file": fname, "status": "skipped", "reason": "too large (>100MB)"})
+                        skipped += 1
+                        await _update_sync_progress(files_skipped=skipped)
+                    return
 
                 result = await asyncio.wait_for(
-                    service.ingest(
-                        file_bytes=file_bytes,
-                        filename=filename,
-                    ),
-                    timeout=300,  # 5 min max per file
+                    service.ingest(file_bytes=file_bytes, filename=filename),
+                    timeout=300,
                 )
 
                 if not result.success:
-                    failed += 1
-                    details.append({
-                        "file": file_info["name"],
-                        "path": file_info.get("path", ""),
-                        "status": "error",
-                        "error": result.error or "Ingestion failed",
-                    })
-                    logger.warning("Sync %s: ingestion failed for %s: %s", sync_id, filename, result.error)
-                    await _update_sync_progress(files_failed=failed)
-                    continue
+                    async with _sync_lock:
+                        failed += 1
+                        details.append({"file": fname, "path": fpath, "status": "error", "error": result.error or "Ingestion failed"})
+                        logger.warning("Sync %s: ingestion failed for %s: %s", sync_id, fname, result.error)
+                        await _update_sync_progress(files_failed=failed)
+                    return
 
                 doc_id = result.supabase_doc_id or result.doc_id
                 if doc_id:
-                    await (
-                        sb.table("knowledge_documents")
-                        .update({"drive_file_id": file_info["id"]})
-                        .eq("id", doc_id)
-                        .execute()
-                    )
+                    try:
+                        await (
+                            sb.table("knowledge_documents")
+                            .update({"drive_file_id": file_info["id"]})
+                            .eq("id", doc_id)
+                            .execute()
+                        )
+                    except Exception as ue:
+                        logger.warning("Sync %s: could not set drive_file_id for %s: %s", sync_id, fname, ue)
 
-                ingested += 1
-                details.append({
-                    "file": file_info["name"],
-                    "path": file_info.get("path", ""),
-                    "status": "ingested",
-                    "document_id": doc_id,
-                    "chunks": result.num_chunks,
-                })
-                logger.info("Sync %s: ingested %s (%d chunks)", sync_id, filename, result.num_chunks or 0)
-
-                # Update progress after each successful ingestion
-                await _update_sync_progress(files_ingested=ingested)
+                async with _sync_lock:
+                    ingested += 1
+                    details.append({"file": fname, "path": fpath, "status": "ingested", "document_id": doc_id, "chunks": result.num_chunks})
+                    logger.info("Sync %s: ingested %s (%d chunks)", sync_id, fname, result.num_chunks or 0)
+                    await _update_sync_progress(files_ingested=ingested)
 
             except (asyncio.TimeoutError, TimeoutError):
-                failed += 1
-                details.append({
-                    "file": file_info["name"],
-                    "path": file_info.get("path", ""),
-                    "status": "error",
-                    "error": "Timeout: file took >5 min to process, skipped",
-                })
-                logger.warning("Sync %s: TIMEOUT processing %s (>5 min), skipping", sync_id, file_info["name"])
-                await _update_sync_progress(files_failed=failed)
+                async with _sync_lock:
+                    failed += 1
+                    details.append({"file": fname, "path": fpath, "status": "error", "error": "Timeout: >5 min"})
+                    logger.warning("Sync %s: TIMEOUT processing %s (>5 min), skipping", sync_id, fname)
+                    await _update_sync_progress(files_failed=failed)
             except Exception as e:
-                failed += 1
-                details.append({
-                    "file": file_info["name"],
-                    "path": file_info.get("path", ""),
-                    "status": "error",
-                    "error": str(e)[:200],
-                })
-                logger.warning("Sync %s: failed %s: %s", sync_id, file_info["name"], e)
-                await _update_sync_progress(files_failed=failed)
+                async with _sync_lock:
+                    failed += 1
+                    details.append({"file": fname, "path": fpath, "status": "error", "error": str(e)[:200]})
+                    logger.warning("Sync %s: failed %s: %s", sync_id, fname, e)
+                    await _update_sync_progress(files_failed=failed)
+
+        # Process files in concurrent batches
+        for batch_start in range(0, len(new_files), 10):
+            batch = new_files[batch_start:batch_start + 10]
+            async def _bounded(fi: dict) -> None:
+                async with _sem:
+                    await _ingest_one(fi)
+            await asyncio.gather(*[_bounded(fi) for fi in batch])
 
         # 4. Final update of sync log
         now_iso = datetime.now(timezone.utc).isoformat()
