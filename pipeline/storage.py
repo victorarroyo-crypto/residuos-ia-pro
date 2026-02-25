@@ -155,6 +155,9 @@ class StorageService:
     # ──────────────────────────────────────────────────
 
     def _is_knowledge(self, doc: ProcessedDocument) -> bool:
+        # Sin project_id válido (UUID) → knowledge (ej: sync Drive)
+        if not doc.client_id or not _uuid_re.match(doc.client_id):
+            return True
         return doc.doc_type in KNOWLEDGE_DOC_TYPES
 
     # ──────────────────────────────────────────────────

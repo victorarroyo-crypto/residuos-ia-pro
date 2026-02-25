@@ -178,8 +178,13 @@ class TextProcessor:
         )
 
         # Guardar en Supabase
+        is_knowledge = self.storage._is_knowledge(processed)
         processed.supabase_doc_id = await self.storage.save_to_supabase(processed)
-        await self.storage.save_chunks_to_supabase(chunks, processed.supabase_doc_id)
+        await self.storage.save_chunks_to_supabase(
+            chunks, processed.supabase_doc_id,
+            is_knowledge=is_knowledge,
+            project_id=None if is_knowledge else client_id,
+        )
 
         logger.info(f"[{filename}] Procesado y almacenado. Doc ID: {doc_id}")
         return processed
