@@ -74,6 +74,12 @@ export async function POST(request: NextRequest) {
         {
           error:
             "OPENAI_API_KEY no configurada. La ruta /api/rag requiere embeddings para búsqueda semántica.",
+          debug: {
+            inProcessEnv: "OPENAI_API_KEY" in process.env,
+            valueLength: (process.env["OPENAI_API_KEY"] || "").length,
+            cwd: process.cwd(),
+            envKeysWithOpenai: Object.keys(process.env).filter(k => k.toLowerCase().includes("openai")),
+          },
         },
         { status: 503 }
       );
