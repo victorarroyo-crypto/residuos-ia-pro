@@ -187,6 +187,10 @@ KB_FILENAME_SIGNALS = {
         "informe", "auditoria", "auditoría", "diagnostico", "diagnóstico",
         "estudio", "dictamen", "peritaje", "ficha", "guia", "guía",
         "manual", "protocolo",
+        # Fichas de gestores, instalaciones y perfiles locales
+        "gestores", "vertedero", "ecoparque", "coprocesamiento",
+        "biometanizacion", "mapa_destinos", "subcategorias",
+        "recicla", "recycling", "planta_", "plantas_",
     ],
     DocType.NORMATIVA: [
         "ley", "decreto", "dl_", "orden", "boe", "dogc", "bopv",

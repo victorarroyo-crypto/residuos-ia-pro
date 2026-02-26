@@ -35,6 +35,7 @@ class PDFNatureDetector:
     """Determina si un PDF es digital, escaneado, híbrido o encriptado."""
 
     async def detect(self, pdf_bytes: bytes) -> PDFNature:
+        pikepdf_failed = False
         try:
             # Intentar abrir — si falla, está encriptado
             with pikepdf.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -43,7 +44,8 @@ class PDFNatureDetector:
         except pikepdf.PasswordError:
             return PDFNature.ENCRYPTED
         except Exception as e:
-            logger.warning(f"Error detectando naturaleza: {e}")
+            logger.warning(f"Error detectando naturaleza con pikepdf: {e}")
+            pikepdf_failed = True
 
         # Muestrear páginas distribuidas (inicio, medio, final) para
         # detectar naturaleza con precisión — evita falsos SCANNED cuando
@@ -74,7 +76,12 @@ class PDFNatureDetector:
                     f"Nature detection: {n} pages, sampled {len(sample_indices)} "
                     f"(digital={digital_pages}, scanned={scanned_pages})"
                 )
-        except Exception:
+        except Exception as e:
+            if pikepdf_failed:
+                raise ValueError(
+                    f"PDF corrupto: ni pikepdf ni pdfplumber pueden abrirlo. "
+                    f"Error: {e}"
+                )
             return PDFNature.SCANNED
 
         # Fallback PyMuPDF: si pdfplumber no extrajo texto de ninguna página,
