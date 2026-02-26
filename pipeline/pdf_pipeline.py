@@ -148,6 +148,7 @@ class PDFPipeline:
         client_id: str,
         filename: str,
         password: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> ProcessedDocument:
         """
         Punto de entrada único. Recibe el PDF y devuelve el documento procesado
@@ -187,7 +188,7 @@ class PDFPipeline:
 
         # ── PASO 4: Clasificar documento ──────────────────────────────────
         await self._emit_progress(doc_id, "clasificando_documento", 35)
-        doc_type = await self.classifier.classify(pages, filename)
+        doc_type = await self.classifier.classify(pages, filename, project_id=project_id)
         logger.info(f"[{filename}] Tipo detectado: {doc_type}")
 
         # ── PASO 5: Chunking semántico ────────────────────────────────────
