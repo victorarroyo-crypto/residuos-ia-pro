@@ -27,20 +27,6 @@ from .pdf_pipeline import (
 
 logger = logging.getLogger(__name__)
 
-# Tipos válidos para Knowledge Base (RAG General, sin proyecto).
-# En KB solo hay normativa, planes, guías, informes técnicos, etc.
-# Tipos como FACTURA, CONTRATO, REGISTRO, DARI, AAI, RFQ solo existen
-# en documentos de proyecto.
-KB_TYPES = {
-    DocType.NORMATIVA,
-    DocType.PLAN_GESTION,
-    DocType.INFORME,
-    DocType.ANALISIS,
-    DocType.FDS,
-    DocType.CERTIFICACION,
-    DocType.DESCONOCIDO,
-}
-
 # Tokens por chunk según tipo de documento
 CHUNK_CONFIG = {
     DocType.AAI:           {"size": 800,  "overlap": 200},  # secciones largas
@@ -98,6 +84,7 @@ FILENAME_SIGNALS = {
     ],
 }
 
+# ── Señales para documentos de proyecto (flujo completo) ──
 # Señales en contenido de texto
 CONTENT_SIGNALS = {
     DocType.AAI: [
@@ -175,6 +162,51 @@ CONTENT_SIGNALS = {
     ],
 }
 
+# ── Señales para Knowledge Base (RAG General, sin proyecto) ──
+# Flujo separado: sin LLM, default NORMATIVA.
+# Orden: FDS antes de INFORME para que "ficha_seguridad" no matchee "ficha".
+KB_FILENAME_SIGNALS = {
+    DocType.FDS: [
+        "fds", "sds", "msds", "ficha_seguridad", "ficha_datos_seguridad",
+        "safety_data", "hoja_seguridad",
+    ],
+    DocType.ANALISIS: [
+        "analisis", "análisis", "caracterizacion", "laboratorio",
+        "ensayo", "lixiviado", "cromatografia", "icp", "toxicidad",
+    ],
+    DocType.CERTIFICACION: [
+        "certificado", "certificacion", "certificación", "homologacion",
+        "end_of_waste", "fin_residuo", "no_peligrosidad",
+    ],
+    DocType.PLAN_GESTION: [
+        "plan_gestion", "plan_gestión", "plan_minimizacion", "plan_minimización",
+        "plan_prevencion", "plan_prevención", "pgr", "estudio_minimizacion",
+        "plan_director", "pircan", "girapec", "perpa",
+    ],
+    DocType.INFORME: [
+        "informe", "auditoria", "auditoría", "diagnostico", "diagnóstico",
+        "estudio", "dictamen", "peritaje", "ficha", "guia", "guía",
+        "manual", "protocolo",
+    ],
+    DocType.NORMATIVA: [
+        "ley", "decreto", "orden", "boe", "dogc", "bopv",
+        "bref", "directiva", "reglamento", "normativa",
+        "real_decreto", "uwwtd", "nca", "bat_", "mtd",
+        "pemar", "pniec", "plan_nacional", "plan_estatal",
+        "estrategia", "circular_economy", "economia_circular",
+        "rd_", "suelos_contaminados",
+    ],
+}
+
+KB_CONTENT_SIGNALS = {
+    DocType.NORMATIVA: CONTENT_SIGNALS[DocType.NORMATIVA],
+    DocType.ANALISIS: CONTENT_SIGNALS[DocType.ANALISIS],
+    DocType.CERTIFICACION: CONTENT_SIGNALS[DocType.CERTIFICACION],
+    DocType.FDS: CONTENT_SIGNALS[DocType.FDS],
+    DocType.INFORME: CONTENT_SIGNALS[DocType.INFORME],
+    DocType.PLAN_GESTION: CONTENT_SIGNALS[DocType.PLAN_GESTION],
+}
+
 
 class DocumentClassifier:
     """
@@ -192,48 +224,86 @@ class DocumentClassifier:
         filename: str,
         project_id: Optional[str] = None,
     ) -> DocType:
-        is_kb = project_id is None  # Knowledge Base = sin proyecto
+        """Router: KB (simple, sin LLM) vs proyecto (completa con LLM)."""
+        if project_id is None:
+            return self._classify_kb(pages, filename)
+        return await self._classify_project(pages, filename)
 
-        # 1. Señales de nombre de archivo (rápido, sin LLM)
+    def _classify_kb(
+        self,
+        pages: list[PageContent],
+        filename: str,
+    ) -> DocType:
+        """
+        Clasificación para Knowledge Base (RAG General).
+        Sin LLM — solo señales de filename y contenido.
+        Default: NORMATIVA (la mayoría de docs KB son normativa/legislación).
+        """
         filename_lower = filename.lower().replace(" ", "_")
-        for doc_type, signals in FILENAME_SIGNALS.items():
-            if is_kb and doc_type not in KB_TYPES:
-                continue
+
+        # 1. Señales de nombre de archivo
+        for doc_type, signals in KB_FILENAME_SIGNALS.items():
             if any(s in filename_lower for s in signals):
-                logger.info(f"Clasificado por nombre de archivo: {doc_type}")
+                logger.info(f"KB clasificado por filename: {doc_type}")
                 return doc_type
 
-        # 2. Señales de contenido en primeras 3 páginas (sin LLM)
-        sample_text = " ".join(
-            p.text.lower() for p in pages[:3]
-        )
-        allowed_types = KB_TYPES if is_kb else set(DocType)
-        scores = {dt: 0 for dt in DocType if dt in allowed_types}
-        for doc_type, signals in CONTENT_SIGNALS.items():
-            if doc_type not in allowed_types:
-                continue
+        # 2. Señales de contenido en primeras 3 páginas
+        sample_text = " ".join(p.text.lower() for p in pages[:3])
+        scores = {dt: 0 for dt in KB_CONTENT_SIGNALS}
+        for doc_type, signals in KB_CONTENT_SIGNALS.items():
             for signal in signals:
                 if signal in sample_text:
                     scores[doc_type] += 1
 
         best_type = max(scores, key=scores.get)
         if scores[best_type] >= 2:
-            logger.info(f"Clasificado por señales de contenido: {best_type} (score={scores[best_type]})")
+            logger.info(f"KB clasificado por contenido: {best_type} (score={scores[best_type]})")
             return best_type
 
-        # 3. Fallback: LLM con las primeras 2 páginas
-        logger.info("Clasificación ambigua, usando LLM...")
-        return await self._classify_with_llm(pages[:2], filename, is_kb=is_kb)
+        # 3. Default: NORMATIVA (sin LLM para KB)
+        logger.info(f"KB sin señales claras, default NORMATIVA: {filename}")
+        return DocType.NORMATIVA
+
+    async def _classify_project(
+        self,
+        pages: list[PageContent],
+        filename: str,
+    ) -> DocType:
+        """
+        Clasificación para documentos de proyecto.
+        Flujo completo: filename → contenido → LLM fallback.
+        Todos los tipos disponibles.
+        """
+        # 1. Señales de nombre de archivo
+        filename_lower = filename.lower().replace(" ", "_")
+        for doc_type, signals in FILENAME_SIGNALS.items():
+            if any(s in filename_lower for s in signals):
+                logger.info(f"Proyecto clasificado por filename: {doc_type}")
+                return doc_type
+
+        # 2. Señales de contenido en primeras 3 páginas
+        sample_text = " ".join(p.text.lower() for p in pages[:3])
+        scores = {dt: 0 for dt in DocType}
+        for doc_type, signals in CONTENT_SIGNALS.items():
+            for signal in signals:
+                if signal in sample_text:
+                    scores[doc_type] += 1
+
+        best_type = max(scores, key=scores.get)
+        if scores[best_type] >= 2:
+            logger.info(f"Proyecto clasificado por contenido: {best_type} (score={scores[best_type]})")
+            return best_type
+
+        # 3. Fallback: LLM
+        logger.info("Clasificación de proyecto ambigua, usando LLM...")
+        return await self._classify_with_llm(pages[:2], filename)
 
     async def _classify_with_llm(
-        self, pages: list[PageContent], filename: str, is_kb: bool = False
+        self, pages: list[PageContent], filename: str,
     ) -> DocType:
-        """Usa Claude para clasificar documentos ambiguos."""
+        """Usa Claude para clasificar documentos de proyecto ambiguos."""
         text_sample = "\n".join(p.text[:3000] for p in pages[:3])
-        if is_kb:
-            valid_types = [dt.value for dt in KB_TYPES if dt != DocType.DESCONOCIDO]
-        else:
-            valid_types = [dt.value for dt in DocType if dt != DocType.DESCONOCIDO]
+        valid_types = [dt.value for dt in DocType if dt != DocType.DESCONOCIDO]
 
         prompt = f"""Eres un experto en gestión de residuos industriales en España.
 Clasifica este documento en UNO de estos tipos:
