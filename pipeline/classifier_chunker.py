@@ -90,7 +90,7 @@ FILENAME_SIGNALS = {
     ],
     DocType.INFORME: [
         "informe", "auditoria", "auditoría", "diagnostico", "diagnóstico",
-        "estudio", "dictamen", "peritaje",
+        "estudio", "dictamen", "peritaje", "ficha",
     ],
     DocType.PLAN_GESTION: [
         "plan_gestion", "plan_gestión", "plan_minimizacion", "plan_minimización",
