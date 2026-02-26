@@ -15,7 +15,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIMENSIONS = 1536
 EMBED_BATCH_SIZE = 50  # OpenAI permite hasta 2048
 EMBED_RETRIES = 3
-MAX_EMBED_WORDS = 6000  # ~8000 tokens; límite OpenAI es 8192 tokens
+MAX_EMBED_WORDS = 4000  # ~6000 tokens; margen seguro para tablas Markdown (ratio ~1.5-2.0 tok/word)
 
 # Reranking con Claude Haiku (post-retrieval)
 RERANK_MODEL = "claude-haiku-4-5-20251001"
