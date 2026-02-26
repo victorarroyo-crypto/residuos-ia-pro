@@ -183,6 +183,14 @@ KB_FILENAME_SIGNALS = {
         "plan_prevencion", "plan_prevención", "pgr", "estudio_minimizacion",
         "plan_director", "pircan", "girapec", "perpa",
     ],
+    DocType.NORMATIVA: [
+        "ley", "decreto", "dl_", "orden", "boe", "dogc", "bopv",
+        "bref", "directiva", "reglamento", "normativa",
+        "real_decreto", "uwwtd", "nca", "bat_", "mtd",
+        "pemar", "pniec", "plan_nacional", "plan_estatal",
+        "estrategia", "circular_economy", "economia_circular",
+        "rd_", "suelos_contaminados",
+    ],
     DocType.INFORME: [
         "informe", "auditoria", "auditoría", "diagnostico", "diagnóstico",
         "estudio", "dictamen", "peritaje", "ficha", "guia", "guía",
@@ -191,14 +199,6 @@ KB_FILENAME_SIGNALS = {
         "gestores", "vertedero", "ecoparque", "coprocesamiento",
         "biometanizacion", "mapa_destinos", "subcategorias",
         "recicla", "recycling", "planta_", "plantas_",
-    ],
-    DocType.NORMATIVA: [
-        "ley", "decreto", "dl_", "orden", "boe", "dogc", "bopv",
-        "bref", "directiva", "reglamento", "normativa",
-        "real_decreto", "uwwtd", "nca", "bat_", "mtd",
-        "pemar", "pniec", "plan_nacional", "plan_estatal",
-        "estrategia", "circular_economy", "economia_circular",
-        "rd_", "suelos_contaminados",
     ],
 }
 
