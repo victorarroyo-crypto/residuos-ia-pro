@@ -2391,7 +2391,11 @@ async def _run_sync_job(
         except Exception:
             pass
 
-        _pre = len(new_files)
+        _md_skipped_files = [
+            f for f in new_files
+            if f["name"].lower().endswith(".md")
+            and f["name"][:-3] in _pdf_basenames
+        ]
         new_files = [
             f for f in new_files
             if not (
@@ -2399,9 +2403,8 @@ async def _run_sync_job(
                 and f["name"][:-3] in _pdf_basenames
             )
         ]
-        _md_skipped = _pre - len(new_files)
-        if _md_skipped:
-            logger.info("Sync %s: %d .md skipped (PDF version exists)", sync_id, _md_skipped)
+        if _md_skipped_files:
+            logger.info("Sync %s: %d .md skipped (PDF version exists)", sync_id, len(_md_skipped_files))
 
         skipped = len(all_files) - len(new_files)
         logger.info("Sync %s: %d new files to ingest, %d already indexed", sync_id, len(new_files), skipped)
@@ -2412,7 +2415,10 @@ async def _run_sync_job(
         # 3. Ingest new files (concurrent with semaphore)
         ingested = 0
         failed = 0
-        details: list[dict] = []
+        details: list[dict] = [
+            {"file": f["name"], "path": f.get("path", ""), "status": "skipped", "reason": "PDF version exists"}
+            for f in _md_skipped_files
+        ]
         _sync_lock = asyncio.Lock()
         _sem = asyncio.Semaphore(1)  # sequential to avoid memory crash (free(): invalid size)
 
@@ -2479,6 +2485,8 @@ async def _run_sync_job(
                             await sb.table("knowledge_chunks").delete().eq("document_id", _md_id).execute()
                             await sb.table("knowledge_documents").delete().eq("id", _md_id).execute()
                             logger.info("Sync %s: replaced .md '%s' with PDF '%s'", sync_id, _md_titulo, fname)
+                            async with _sync_lock:
+                                details.append({"file": _md_titulo, "status": "replaced", "reason": f"Replaced by PDF: {fname}"})
                     except Exception as _re:
                         logger.warning("Sync %s: could not cleanup old .md '%s': %s", sync_id, _md_titulo, _re)
 
