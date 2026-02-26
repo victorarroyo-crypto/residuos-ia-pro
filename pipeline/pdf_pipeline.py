@@ -228,10 +228,14 @@ class PDFPipeline:
             metadata=metadata,
         )
 
-        # Subir archivo original a Supabase Storage
-        processed.storage_path = await self.storage.upload_file(
-            pdf_bytes, filename, client_id, doc_type
-        )
+        # Subir archivo original a Supabase Storage (no bloquea el pipeline)
+        try:
+            processed.storage_path = await self.storage.upload_file(
+                pdf_bytes, filename, client_id, doc_type
+            )
+        except Exception as e:
+            logger.warning(f"[{filename}] Storage upload omitido: {e}")
+            processed.storage_path = None
 
         is_knowledge = self.storage._is_knowledge(processed)
         processed.supabase_doc_id = await self.storage.save_to_supabase(processed)

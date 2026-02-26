@@ -154,10 +154,14 @@ class TextProcessor:
         # Embeddings
         chunks = await self.embedder.embed_all(chunks)
 
-        # Subir archivo original a Storage
-        storage_path = await self.storage.upload_file(
-            file_bytes, filename, client_id, doc_type
-        )
+        # Subir archivo original a Storage (no bloquea el pipeline)
+        try:
+            storage_path = await self.storage.upload_file(
+                file_bytes, filename, client_id, doc_type
+            )
+        except Exception as e:
+            logger.warning(f"[{filename}] Storage upload omitido: {e}")
+            storage_path = None
 
         # Construir documento procesado
         processed = ProcessedDocument(
