@@ -17,6 +17,12 @@
     },
     "src/app/api/ingest/route.ts": {
       "maxDuration": 120
+    },
+    "src/app/api/knowledge-base/reprocess/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/knowledge-base/reclassify/route.ts": {
+      "maxDuration": 120
     }
   },
   "headers": [
