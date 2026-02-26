@@ -335,137 +335,234 @@ CREATE INDEX idx_sync_log_consultant ON gdrive_sync_log(consultant_id, started_a
 -- 7. FUNCIONES RAG
 -- ════════════════════════════════════════════════════════════════
 
--- Búsqueda en RAG General (knowledge base)
+-- Búsqueda híbrida en RAG General (vector + full-text con FULL OUTER JOIN)
 CREATE OR REPLACE FUNCTION search_knowledge(
   query_embedding     VECTOR(1536),
-  doc_type_filter     TEXT    DEFAULT NULL,
-  match_threshold     FLOAT   DEFAULT 0.70,
-  match_count         INT     DEFAULT 5
+  doc_type_filter     TEXT             DEFAULT NULL,
+  match_threshold     DOUBLE PRECISION DEFAULT 0.50,
+  match_count         INT              DEFAULT 20,
+  query_text          TEXT             DEFAULT NULL,
+  alpha               DOUBLE PRECISION DEFAULT 0.7
 )
 RETURNS TABLE (
   chunk_id      TEXT,
   document_id   TEXT,
   contenido     TEXT,
   chunk_type    TEXT,
-  similarity    FLOAT,
+  similarity    DOUBLE PRECISION,
+  text_rank     DOUBLE PRECISION,
+  hybrid_score  DOUBLE PRECISION,
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
   storage_path  TEXT
 )
-LANGUAGE SQL STABLE AS $$
+LANGUAGE sql STABLE
+AS $function$
+  WITH vector_results AS (
+    SELECT
+      kc.id            AS chunk_id,
+      kc.document_id,
+      kc.contenido,
+      kc.chunk_type,
+      1 - (kc.embedding <=> query_embedding) AS similarity,
+      kd.titulo        AS doc_titulo,
+      kd.tipo          AS doc_tipo,
+      kd.metadata      AS doc_metadata,
+      kd.storage_path
+    FROM knowledge_chunks kc
+    JOIN knowledge_documents kd ON kc.document_id = kd.id
+    WHERE
+      kc.embedding IS NOT NULL
+      AND (doc_type_filter IS NULL OR kd.tipo = doc_type_filter)
+      AND 1 - (kc.embedding <=> query_embedding) > match_threshold
+    ORDER BY kc.embedding <=> query_embedding
+    LIMIT match_count * 2
+  ),
+  text_results AS (
+    SELECT
+      kc.id            AS chunk_id,
+      kc.document_id,
+      kc.contenido,
+      kc.chunk_type,
+      kd.titulo        AS doc_titulo,
+      kd.tipo          AS doc_tipo,
+      kd.metadata      AS doc_metadata,
+      kd.storage_path,
+      ts_rank_cd(kc.tsv, websearch_to_tsquery('spanish', coalesce(query_text, '')), 32) AS text_rank
+    FROM knowledge_chunks kc
+    JOIN knowledge_documents kd ON kc.document_id = kd.id
+    WHERE
+      query_text IS NOT NULL
+      AND query_text != ''
+      AND kc.tsv @@ websearch_to_tsquery('spanish', query_text)
+      AND (doc_type_filter IS NULL OR kd.tipo = doc_type_filter)
+    ORDER BY ts_rank_cd(kc.tsv, websearch_to_tsquery('spanish', coalesce(query_text, '')), 32) DESC
+    LIMIT match_count * 2
+  ),
+  combined AS (
+    SELECT
+      coalesce(vr.chunk_id, tr.chunk_id)         AS chunk_id,
+      coalesce(vr.document_id, tr.document_id)   AS document_id,
+      coalesce(vr.contenido, tr.contenido)        AS contenido,
+      coalesce(vr.chunk_type, tr.chunk_type)      AS chunk_type,
+      coalesce(vr.similarity, 0.0)                AS similarity,
+      coalesce(vr.doc_titulo, tr.doc_titulo)      AS doc_titulo,
+      coalesce(vr.doc_tipo, tr.doc_tipo)          AS doc_tipo,
+      coalesce(vr.doc_metadata, tr.doc_metadata)  AS doc_metadata,
+      coalesce(vr.storage_path, tr.storage_path)  AS storage_path,
+      coalesce(tr.text_rank, 0.0)                 AS text_rank,
+      (alpha * coalesce(vr.similarity, 0.0) + (1 - alpha) * coalesce(tr.text_rank, 0.0)) AS hybrid_score
+    FROM vector_results vr
+    FULL OUTER JOIN text_results tr ON vr.chunk_id = tr.chunk_id
+  )
   SELECT
-    kc.id            AS chunk_id,
-    kc.document_id,
-    kc.contenido,
-    kc.chunk_type,
-    1 - (kc.embedding <=> query_embedding) AS similarity,
-    kd.titulo        AS doc_titulo,
-    kd.tipo          AS doc_tipo,
-    kd.metadata      AS doc_metadata,
-    kd.storage_path
-  FROM knowledge_chunks kc
-  JOIN knowledge_documents kd ON kc.document_id = kd.id
-  WHERE
-    (doc_type_filter IS NULL OR kd.tipo = doc_type_filter)
-    AND 1 - (kc.embedding <=> query_embedding) > match_threshold
-  ORDER BY kc.embedding <=> query_embedding
+    chunk_id, document_id, contenido, chunk_type,
+    similarity::DOUBLE PRECISION, text_rank::DOUBLE PRECISION, hybrid_score::DOUBLE PRECISION,
+    doc_titulo, doc_tipo, doc_metadata, storage_path
+  FROM combined
+  ORDER BY hybrid_score DESC
   LIMIT match_count;
-$$;
+$function$;
 
--- Búsqueda en RAG de Proyecto
+-- Búsqueda híbrida en RAG de Proyecto (vector + full-text con FULL OUTER JOIN)
 CREATE OR REPLACE FUNCTION search_project(
   query_embedding     VECTOR(1536),
   p_project_id        UUID,
-  doc_type_filter     TEXT    DEFAULT NULL,
-  match_threshold     FLOAT   DEFAULT 0.70,
-  match_count         INT     DEFAULT 5
+  doc_type_filter     TEXT             DEFAULT NULL,
+  match_threshold     DOUBLE PRECISION DEFAULT 0.50,
+  match_count         INT              DEFAULT 20,
+  query_text          TEXT             DEFAULT NULL,
+  alpha               DOUBLE PRECISION DEFAULT 0.7
 )
 RETURNS TABLE (
   chunk_id      TEXT,
   document_id   TEXT,
   contenido     TEXT,
   chunk_type    TEXT,
-  similarity    FLOAT,
+  similarity    DOUBLE PRECISION,
+  text_rank     DOUBLE PRECISION,
+  hybrid_score  DOUBLE PRECISION,
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
   storage_path  TEXT
 )
-LANGUAGE SQL STABLE AS $$
+LANGUAGE sql STABLE
+AS $function$
+  WITH vector_results AS (
+    SELECT
+      pc.id            AS chunk_id,
+      pc.document_id,
+      pc.contenido,
+      pc.chunk_type,
+      1 - (pc.embedding <=> query_embedding) AS similarity,
+      pd.titulo        AS doc_titulo,
+      pd.tipo          AS doc_tipo,
+      pd.metadata      AS doc_metadata,
+      pd.storage_path
+    FROM project_chunks pc
+    JOIN project_documents pd ON pc.document_id = pd.id
+    WHERE
+      pc.project_id = p_project_id
+      AND pc.embedding IS NOT NULL
+      AND (doc_type_filter IS NULL OR pd.tipo = doc_type_filter)
+      AND 1 - (pc.embedding <=> query_embedding) > match_threshold
+    ORDER BY pc.embedding <=> query_embedding
+    LIMIT match_count * 2
+  ),
+  text_results AS (
+    SELECT
+      pc.id            AS chunk_id,
+      pc.document_id,
+      pc.contenido,
+      pc.chunk_type,
+      pd.titulo        AS doc_titulo,
+      pd.tipo          AS doc_tipo,
+      pd.metadata      AS doc_metadata,
+      pd.storage_path,
+      ts_rank_cd(pc.tsv, websearch_to_tsquery('spanish', coalesce(query_text, '')), 32) AS text_rank
+    FROM project_chunks pc
+    JOIN project_documents pd ON pc.document_id = pd.id
+    WHERE
+      pc.project_id = p_project_id
+      AND query_text IS NOT NULL
+      AND query_text != ''
+      AND pc.tsv @@ websearch_to_tsquery('spanish', query_text)
+      AND (doc_type_filter IS NULL OR pd.tipo = doc_type_filter)
+    ORDER BY ts_rank_cd(pc.tsv, websearch_to_tsquery('spanish', coalesce(query_text, '')), 32) DESC
+    LIMIT match_count * 2
+  ),
+  combined AS (
+    SELECT
+      coalesce(vr.chunk_id, tr.chunk_id)         AS chunk_id,
+      coalesce(vr.document_id, tr.document_id)   AS document_id,
+      coalesce(vr.contenido, tr.contenido)        AS contenido,
+      coalesce(vr.chunk_type, tr.chunk_type)      AS chunk_type,
+      coalesce(vr.similarity, 0.0)                AS similarity,
+      coalesce(vr.doc_titulo, tr.doc_titulo)      AS doc_titulo,
+      coalesce(vr.doc_tipo, tr.doc_tipo)          AS doc_tipo,
+      coalesce(vr.doc_metadata, tr.doc_metadata)  AS doc_metadata,
+      coalesce(vr.storage_path, tr.storage_path)  AS storage_path,
+      coalesce(tr.text_rank, 0.0)                 AS text_rank,
+      (alpha * coalesce(vr.similarity, 0.0) + (1 - alpha) * coalesce(tr.text_rank, 0.0)) AS hybrid_score
+    FROM vector_results vr
+    FULL OUTER JOIN text_results tr ON vr.chunk_id = tr.chunk_id
+  )
   SELECT
-    pc.id            AS chunk_id,
-    pc.document_id,
-    pc.contenido,
-    pc.chunk_type,
-    1 - (pc.embedding <=> query_embedding) AS similarity,
-    pd.titulo        AS doc_titulo,
-    pd.tipo          AS doc_tipo,
-    pd.metadata      AS doc_metadata,
-    pd.storage_path
-  FROM project_chunks pc
-  JOIN project_documents pd ON pc.document_id = pd.id
-  WHERE
-    pc.project_id = p_project_id
-    AND (doc_type_filter IS NULL OR pd.tipo = doc_type_filter)
-    AND 1 - (pc.embedding <=> query_embedding) > match_threshold
-  ORDER BY pc.embedding <=> query_embedding
+    chunk_id, document_id, contenido, chunk_type,
+    similarity::DOUBLE PRECISION, text_rank::DOUBLE PRECISION, hybrid_score::DOUBLE PRECISION,
+    doc_titulo, doc_tipo, doc_metadata, storage_path
+  FROM combined
+  ORDER BY hybrid_score DESC
   LIMIT match_count;
-$$;
+$function$;
 
--- Búsqueda combinada (ambos RAGs en una llamada)
+-- Búsqueda combinada (delega a search_knowledge + search_project)
 CREATE OR REPLACE FUNCTION search_combined(
   query_embedding     VECTOR(1536),
-  p_project_id        UUID    DEFAULT NULL,
-  doc_type_filter     TEXT    DEFAULT NULL,
-  match_threshold     FLOAT   DEFAULT 0.70,
-  match_count_kb      INT     DEFAULT 5,
-  match_count_project INT     DEFAULT 5
+  p_project_id        UUID             DEFAULT NULL,
+  doc_type_filter     TEXT             DEFAULT NULL,
+  match_threshold     DOUBLE PRECISION DEFAULT 0.50,
+  match_count_kb      INT              DEFAULT 10,
+  match_count_project INT              DEFAULT 10,
+  query_text          TEXT             DEFAULT NULL,
+  alpha               DOUBLE PRECISION DEFAULT 0.7
 )
 RETURNS TABLE (
   chunk_id      TEXT,
   document_id   TEXT,
   contenido     TEXT,
   chunk_type    TEXT,
-  similarity    FLOAT,
+  similarity    DOUBLE PRECISION,
+  text_rank     DOUBLE PRECISION,
+  hybrid_score  DOUBLE PRECISION,
   doc_titulo    TEXT,
   doc_tipo      TEXT,
   doc_metadata  JSONB,
   storage_path  TEXT,
-  source        TEXT          -- 'knowledge' o 'project'
+  source        TEXT
 )
-LANGUAGE SQL STABLE AS $$
-  -- RAG General
+LANGUAGE sql STABLE
+AS $function$
   (
-    SELECT kc.id, kc.document_id, kc.contenido, kc.chunk_type,
-           1 - (kc.embedding <=> query_embedding) AS similarity,
-           kd.titulo, kd.tipo, kd.metadata, kd.storage_path,
-           'knowledge'::TEXT AS source
-    FROM knowledge_chunks kc
-    JOIN knowledge_documents kd ON kc.document_id = kd.id
-    WHERE (doc_type_filter IS NULL OR kd.tipo = doc_type_filter)
-      AND 1 - (kc.embedding <=> query_embedding) > match_threshold
-    ORDER BY kc.embedding <=> query_embedding
-    LIMIT match_count_kb
+    SELECT sk.*, 'knowledge'::TEXT AS source
+    FROM search_knowledge(
+      query_embedding, doc_type_filter, match_threshold,
+      match_count_kb, query_text, alpha
+    ) sk
   )
   UNION ALL
-  -- RAG Proyecto
   (
-    SELECT pc.id, pc.document_id, pc.contenido, pc.chunk_type,
-           1 - (pc.embedding <=> query_embedding) AS similarity,
-           pd.titulo, pd.tipo, pd.metadata, pd.storage_path,
-           'project'::TEXT AS source
-    FROM project_chunks pc
-    JOIN project_documents pd ON pc.document_id = pd.id
+    SELECT sp.*, 'project'::TEXT AS source
+    FROM search_project(
+      query_embedding, p_project_id, doc_type_filter, match_threshold,
+      match_count_project, query_text, alpha
+    ) sp
     WHERE p_project_id IS NOT NULL
-      AND pc.project_id = p_project_id
-      AND (doc_type_filter IS NULL OR pd.tipo = doc_type_filter)
-      AND 1 - (pc.embedding <=> query_embedding) > match_threshold
-    ORDER BY pc.embedding <=> query_embedding
-    LIMIT match_count_project
   )
-  ORDER BY 5 DESC;
-$$;
+  ORDER BY hybrid_score DESC;
+$function$;
 
 -- ════════════════════════════════════════════════════════════════
 -- 8. VISTAS
