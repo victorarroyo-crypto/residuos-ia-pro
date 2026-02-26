@@ -534,6 +534,10 @@ Responde SOLO con el párrafo de contexto, sin explicación ni encabezado."""
 
         return chunks
 
+    # Máximo de filas por chunk de tabla — previene embeddings oversized.
+    # 50 filas × ~40 words/fila = ~2000 words + headers + contexto ≈ 3000 words.
+    MAX_TABLE_ROWS = 50
+
     def _chunk_tables(
         self,
         pages: list[PageContent],
@@ -544,6 +548,7 @@ Responde SOLO con el párrafo de contexto, sin explicación ni encabezado."""
         """
         Convierte tablas extraídas en chunks textuales estructurados.
         Las tablas de AAIs (lista de LERs autorizados) son críticas para el RAG.
+        Tablas grandes se subdividen en grupos de MAX_TABLE_ROWS filas.
         """
         table_chunks = []
         chunk_index = start_index
@@ -555,29 +560,44 @@ Responde SOLO con el párrafo de contexto, sin explicación ni encabezado."""
                 if not headers or not rows:
                     continue
 
-                # Formatear tabla como markdown (mejor para el LLM)
-                lines = [" | ".join(str(h) for h in headers)]
-                lines.append(" | ".join("---" for _ in headers))
-                for row in rows:
-                    lines.append(" | ".join(str(c) for c in row))
+                # Header Markdown (compartido por todos los sub-chunks)
+                header_lines = [
+                    " | ".join(str(h) for h in headers),
+                    " | ".join("---" for _ in headers),
+                ]
 
-                content = f"[TABLA - Página {page.page_num}]\n" + "\n".join(lines)
+                total_parts = (len(rows) + self.MAX_TABLE_ROWS - 1) // self.MAX_TABLE_ROWS
 
-                table_chunks.append(DocumentChunk(
-                    chunk_id=f"{doc_id}_table_{chunk_index:04d}",
-                    doc_id=doc_id,
-                    content=content,
-                    chunk_index=chunk_index,
-                    page_start=page.page_num,
-                    page_end=page.page_num,
-                    chunk_type="tabla",
-                    metadata={
-                        "doc_type": doc_type.value,
-                        "table_headers": headers,
-                        "num_rows": len(rows),
-                    },
-                ))
-                chunk_index += 1
+                for group_start in range(0, len(rows), self.MAX_TABLE_ROWS):
+                    group_rows = rows[group_start:group_start + self.MAX_TABLE_ROWS]
+
+                    lines = list(header_lines)
+                    for row in group_rows:
+                        lines.append(" | ".join(str(c) for c in row))
+
+                    # Indicar parte si la tabla fue dividida
+                    suffix = ""
+                    if total_parts > 1:
+                        part_num = group_start // self.MAX_TABLE_ROWS + 1
+                        suffix = f" (parte {part_num}/{total_parts})"
+
+                    content = f"[TABLA - Página {page.page_num}{suffix}]\n" + "\n".join(lines)
+
+                    table_chunks.append(DocumentChunk(
+                        chunk_id=f"{doc_id}_table_{chunk_index:04d}",
+                        doc_id=doc_id,
+                        content=content,
+                        chunk_index=chunk_index,
+                        page_start=page.page_num,
+                        page_end=page.page_num,
+                        chunk_type="tabla",
+                        metadata={
+                            "doc_type": doc_type.value,
+                            "table_headers": headers,
+                            "num_rows": len(group_rows),
+                        },
+                    ))
+                    chunk_index += 1
 
         return table_chunks
 

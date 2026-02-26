@@ -6,6 +6,7 @@ pdfplumber==0.11.0          # extracción texto + tablas de PDFs digitales
 pdf2image==1.17.0           # conversión PDF a imagen para OCR
 pytesseract==0.3.13         # OCR (requiere Tesseract instalado en el sistema)
 pikepdf==9.0.0              # manejo de PDFs encriptados/protegidos
+PyMuPDF>=1.24.0             # fallback text extraction cuando pdfminer falla
 Pillow==10.4.0              # manipulación de imágenes para preprocesamiento OCR
 
 # IA
