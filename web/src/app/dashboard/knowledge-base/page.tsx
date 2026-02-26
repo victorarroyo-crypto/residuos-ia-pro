@@ -237,6 +237,14 @@ export default function KnowledgeBasePage() {
   // Reprocess state
   const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
 
+  // Reclassify state
+  const [reclassifying, setReclassifying] = useState(false);
+  const [reclassifyResult, setReclassifyResult] = useState<{
+    success: boolean;
+    message: string;
+    changes?: { titulo: string; old_tipo: string; new_tipo: string }[];
+  } | null>(null);
+
   // Drive browser state
   const [driveItems, setDriveItems] = useState<DriveItem[]>([]);
   const [driveLoading, setDriveLoading] = useState(false);
@@ -818,6 +826,45 @@ export default function KnowledgeBasePage() {
       const cleared = new Set(reprocessing);
       docIds.forEach((id) => cleared.delete(id));
       setReprocessing(cleared);
+    }
+  }
+
+  // ─── Reclassify handler ───────────────────────────────────
+  async function handleReclassify() {
+    setReclassifying(true);
+    setReclassifyResult(null);
+    try {
+      const res = await fetch("/api/knowledge-base/reclassify", {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReclassifyResult({
+          success: true,
+          message:
+            data.reclassified > 0
+              ? `${data.reclassified} documento${data.reclassified !== 1 ? "s" : ""} reclasificado${data.reclassified !== 1 ? "s" : ""} de ${data.total}.`
+              : `Todos los ${data.total} documentos ya tenian la clasificacion correcta.`,
+          changes: data.changes,
+        });
+        if (data.reclassified > 0) {
+          setLoadingDocs(true);
+          await loadDocuments();
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setReclassifyResult({
+          success: false,
+          message: err.error || "Error al reclasificar.",
+        });
+      }
+    } catch {
+      setReclassifyResult({
+        success: false,
+        message: "Pipeline API no disponible.",
+      });
+    } finally {
+      setReclassifying(false);
     }
   }
 
@@ -1417,6 +1464,44 @@ export default function KnowledgeBasePage() {
         </div>
       )}
 
+      {/* Reclassify result */}
+      {reclassifyResult && (
+        <div
+          className={`flex items-start gap-2 rounded-md p-3 text-sm ${
+            reclassifyResult.success
+              ? "bg-blue-50 text-blue-800 border border-blue-200"
+              : "bg-red-50 text-red-800 border border-red-200"
+          }`}
+        >
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              {reclassifyResult.success ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+              ) : (
+                <AlertCircle className="h-4 w-4 shrink-0" />
+              )}
+              <span className="font-medium">{reclassifyResult.message}</span>
+            </div>
+            {reclassifyResult.changes && reclassifyResult.changes.length > 0 && (
+              <div className="mt-2 ml-6 rounded-md border border-blue-200 bg-blue-50/50 p-2">
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {reclassifyResult.changes.map((c, i) => (
+                    <div key={i} className="flex items-start gap-1 text-xs">
+                      <RefreshCw className="h-3 w-3 text-blue-500 shrink-0 mt-0.5" />
+                      <span className="font-medium truncate" title={c.titulo}>{c.titulo}</span>
+                      <span className="text-blue-600 shrink-0">{c.old_tipo} → {c.new_tipo}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <button onClick={() => setReclassifyResult(null)} className="shrink-0">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Sync control bar */}
       {gdriveConnected && (
         <Card>
@@ -1673,8 +1758,10 @@ export default function KnowledgeBasePage() {
           loading={loadingDocs}
           deleting={deleting}
           reprocessing={reprocessing}
+          reclassifying={reclassifying}
           onDelete={handleDelete}
           onReprocess={handleReprocess}
+          onReclassify={handleReclassify}
           onSearch={() => {
             setLoadingDocs(true);
             loadDocuments();
@@ -2052,8 +2139,10 @@ function DocumentsTab({
   loading,
   deleting,
   reprocessing,
+  reclassifying,
   onDelete,
   onReprocess,
+  onReclassify,
   onSearch,
 }: {
   documents: KBDocument[];
@@ -2062,8 +2151,10 @@ function DocumentsTab({
   loading: boolean;
   deleting: string | null;
   reprocessing: Set<string>;
+  reclassifying: boolean;
   onDelete: (id: string) => void;
   onReprocess: (ids: string[]) => void;
+  onReclassify: () => void;
   onSearch: () => void;
 }) {
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
@@ -2154,11 +2245,25 @@ function DocumentsTab({
                   {f.label} ({f.count})
                 </button>
               ))}
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto h-7 text-xs"
+              onClick={onReclassify}
+              disabled={reclassifying}
+            >
+              {reclassifying ? (
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              {reclassifying ? "Reclasificando..." : "Reclasificar tipos"}
+            </Button>
             {docsWithIssues.length > 0 && (
               <Button
                 size="sm"
                 variant="outline"
-                className="ml-auto h-7 text-xs"
+                className="h-7 text-xs"
                 onClick={() => onReprocess(docsWithIssues.map((d) => d.id))}
                 disabled={reprocessing.size > 0}
               >

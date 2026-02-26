@@ -2740,6 +2740,96 @@ async def reprocess_documents(req: ReprocessRequest):
     }
 
 
+# ─── Reclassify existing KB documents ────────────────────────────
+@app.post("/api/knowledge-base/reclassify")
+async def reclassify_knowledge_documents():
+    """
+    Re-classify all knowledge_documents that have chunks,
+    using the current KB classification logic (filename + content signals).
+    Updates the 'tipo' field when the new classification differs.
+    """
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pipeline.classifier_chunker import KB_FILENAME_SIGNALS, KB_CONTENT_SIGNALS
+
+    sb = await rag_service._get_supabase()
+
+    # 1. Get all knowledge_documents
+    docs_result = await sb.table("knowledge_documents").select("id, titulo, tipo").execute()
+    all_docs = docs_result.data or []
+    if not all_docs:
+        return {"total": 0, "reclassified": 0, "unchanged": 0, "changes": []}
+
+    reclassified = 0
+    unchanged = 0
+    changes: list[dict] = []
+
+    for doc in all_docs:
+        doc_id = doc["id"]
+        titulo = doc.get("titulo") or ""
+        old_tipo = doc.get("tipo") or ""
+
+        # Classify by filename
+        filename_lower = titulo.lower().replace(" ", "_")
+        new_tipo = None
+        for doc_type_key, signals in KB_FILENAME_SIGNALS.items():
+            if any(s in filename_lower for s in signals):
+                new_tipo = doc_type_key.value
+                break
+
+        # If no filename match, classify by content from first 3 chunks
+        if new_tipo is None:
+            chunks_result = await (
+                sb.table("knowledge_chunks")
+                .select("contenido")
+                .eq("document_id", doc_id)
+                .order("chunk_index")
+                .limit(3)
+                .execute()
+            )
+            sample_text = " ".join(
+                (c.get("contenido") or "").lower()
+                for c in (chunks_result.data or [])
+            )
+
+            scores = {dt: 0 for dt in KB_CONTENT_SIGNALS}
+            for dt, sigs in KB_CONTENT_SIGNALS.items():
+                for sig in sigs:
+                    if sig in sample_text:
+                        scores[dt] += 1
+            best = max(scores, key=scores.get)
+            if scores[best] >= 2:
+                new_tipo = best.value
+            else:
+                new_tipo = "normativa"  # default KB
+
+        if new_tipo != old_tipo:
+            await (
+                sb.table("knowledge_documents")
+                .update({"tipo": new_tipo})
+                .eq("id", doc_id)
+                .execute()
+            )
+            changes.append({
+                "doc_id": doc_id,
+                "titulo": titulo,
+                "old_tipo": old_tipo,
+                "new_tipo": new_tipo,
+            })
+            reclassified += 1
+            logger.info("Reclassified '%s': %s → %s", titulo, old_tipo, new_tipo)
+        else:
+            unchanged += 1
+
+    return {
+        "total": len(all_docs),
+        "reclassified": reclassified,
+        "unchanged": unchanged,
+        "changes": changes,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
