@@ -199,7 +199,7 @@ function formatBytes(bytes: number | null): string {
 
 // ─── Component ──────────────────────────────────────────────
 export default function KnowledgeBasePage() {
-  const [activeTab, setActiveTab] = useState<"drive" | "documents">(
+  const [activeTab, setActiveTab] = useState<"drive" | "documents" | "search">(
     "drive"
   );
 
@@ -1629,6 +1629,17 @@ export default function KnowledgeBasePage() {
           <FileText className="h-4 w-4" />
           Documentos indexados
         </button>
+        <button
+          onClick={() => setActiveTab("search")}
+          className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === "search"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Search className="h-4 w-4" />
+          Buscar RAG
+        </button>
       </div>
 
       {/* Tab content */}
@@ -1646,7 +1657,7 @@ export default function KnowledgeBasePage() {
           onIngest={handleIngestFromDrive}
           onBatchIngest={handleBatchIngestFromDrive}
         />
-      ) : (
+      ) : activeTab === "documents" ? (
         <DocumentsTab
           documents={documents}
           search={search}
@@ -1661,6 +1672,8 @@ export default function KnowledgeBasePage() {
             loadDocuments();
           }}
         />
+      ) : (
+        <SearchTab />
       )}
     </div>
   );
@@ -2189,6 +2202,287 @@ function DocumentsTab({
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Search Tab ──────────────────────────────────────────────
+interface RagSource {
+  document_id: string;
+  title: string;
+  doc_type: string;
+  chunk_type: string;
+  similarity: number;
+  semantic_similarity: number;
+  text_rank: number;
+  scope: "general" | "project";
+  excerpt: string;
+}
+
+interface SearchResults {
+  answer: string;
+  sources: RagSource[];
+  retrieval?: {
+    mode: string;
+    candidates: number;
+    top_k: number;
+  };
+  error?: string;
+}
+
+function SearchTab() {
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState<SearchResults | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [topK, setTopK] = useState(10);
+  const [expandedDocs, setExpandedDocs] = useState<Set<string>>(new Set());
+
+  async function handleSearch() {
+    const q = query.trim();
+    if (!q) return;
+    setSearching(true);
+    setError(null);
+    setResults(null);
+    setExpandedDocs(new Set());
+
+    try {
+      const res = await fetch("/api/rag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: q, scope: "general", top_k: topK }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Error ${res.status}`);
+      }
+
+      const data: SearchResults = await res.json();
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setResults(data);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error desconocido");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  // Group sources by document for the document-level view
+  const groupedByDoc = results?.sources
+    ? Object.entries(
+        results.sources.reduce<Record<string, RagSource[]>>((acc, s) => {
+          const key = s.document_id;
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(s);
+          return acc;
+        }, {})
+      ).sort(
+        ([, a], [, b]) =>
+          Math.max(...b.map((c) => c.similarity)) -
+          Math.max(...a.map((c) => c.similarity))
+      )
+    : [];
+
+  const toggleDoc = (docId: string) => {
+    setExpandedDocs((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Search className="h-5 w-5" />
+          Buscar en el RAG
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Busca por tema, provincia, normativa o cualquier concepto para verificar cobertura en la base de conocimiento.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Search controls */}
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Ej: residuos Castilla y León, Decreto 22/2011, BREF tratamiento superficies..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              className="w-full rounded-md border border-input bg-background px-9 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </div>
+          <select
+            value={topK}
+            onChange={(e) => setTopK(Number(e.target.value))}
+            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+          >
+            <option value={5}>Top 5</option>
+            <option value={10}>Top 10</option>
+            <option value={15}>Top 15</option>
+          </select>
+          <Button onClick={handleSearch} disabled={searching || !query.trim()}>
+            {searching ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : (
+              <Search className="h-4 w-4 mr-2" />
+            )}
+            Buscar
+          </Button>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
+        )}
+
+        {/* Loading */}
+        {searching && (
+          <div className="flex items-center justify-center py-12 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin mr-2" />
+            Buscando en la base de conocimiento...
+          </div>
+        )}
+
+        {/* Results */}
+        {results && !searching && (
+          <div className="space-y-4">
+            {/* Summary bar */}
+            <div className="flex items-center gap-4 text-sm">
+              <Badge variant="outline" className="gap-1">
+                <Database className="h-3 w-3" />
+                {groupedByDoc.length} documento{groupedByDoc.length !== 1 ? "s" : ""}
+              </Badge>
+              <Badge variant="outline" className="gap-1">
+                <FileText className="h-3 w-3" />
+                {results.sources.length} chunk{results.sources.length !== 1 ? "s" : ""} relevantes
+              </Badge>
+              {results.retrieval && (
+                <span className="text-muted-foreground">
+                  {results.retrieval.candidates} candidatos evaluados · {results.retrieval.mode}
+                </span>
+              )}
+            </div>
+
+            {/* No results */}
+            {results.sources.length === 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-center">
+                <AlertTriangle className="h-5 w-5 text-amber-500 mx-auto mb-2" />
+                <p className="text-sm font-medium text-amber-800">
+                  No se encontraron resultados para &ldquo;{query}&rdquo;
+                </p>
+                <p className="text-xs text-amber-600 mt-1">
+                  Prueba con otros términos o verifica que los documentos relevantes están indexados.
+                </p>
+              </div>
+            )}
+
+            {/* Document list */}
+            {groupedByDoc.map(([docId, chunks]) => {
+              const bestScore = Math.max(...chunks.map((c) => c.similarity));
+              const isExpanded = expandedDocs.has(docId);
+              const title = chunks[0].title;
+              const docType = chunks[0].doc_type;
+
+              return (
+                <div
+                  key={docId}
+                  className="rounded-lg border bg-card overflow-hidden"
+                >
+                  {/* Document header */}
+                  <button
+                    onClick={() => toggleDoc(docId)}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left"
+                  >
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <FileText className="h-4 w-4 shrink-0 text-teal-600" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{title}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                          {(knowledgeTypeLabels[docType] || docType || "").replace(/_/g, " ")}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">
+                          {chunks.length} chunk{chunks.length !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div
+                        className={`text-xs font-mono font-medium ${
+                          bestScore >= 0.8
+                            ? "text-green-600"
+                            : bestScore >= 0.6
+                              ? "text-amber-600"
+                              : "text-red-500"
+                        }`}
+                      >
+                        {(bestScore * 100).toFixed(1)}%
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">relevancia</div>
+                    </div>
+                  </button>
+
+                  {/* Expanded chunks */}
+                  {isExpanded && (
+                    <div className="border-t divide-y">
+                      {chunks
+                        .sort((a, b) => b.similarity - a.similarity)
+                        .map((chunk, i) => (
+                          <div key={i} className="px-4 py-3 bg-muted/30">
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-1.5 py-0"
+                              >
+                                {chunk.chunk_type}
+                              </Badge>
+                              <span
+                                className={`text-[10px] font-mono ${
+                                  chunk.similarity >= 0.8
+                                    ? "text-green-600"
+                                    : chunk.similarity >= 0.6
+                                      ? "text-amber-600"
+                                      : "text-red-500"
+                                }`}
+                              >
+                                {(chunk.similarity * 100).toFixed(1)}% sim
+                              </span>
+                              {chunk.text_rank > 0 && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  · texto: {chunk.text_rank.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                              {chunk.excerpt}
+                            </p>
+                          </div>
+                        ))}
                     </div>
                   )}
                 </div>

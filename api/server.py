@@ -2369,6 +2369,40 @@ async def _run_sync_job(
                                 break
 
         new_files = [f for f in all_files if f["id"] not in indexed_ids and f["name"] not in indexed_titles]
+
+        # 2c. PDF priority: skip .md files when a .pdf version exists
+        #     (in Drive, in indexed titles, or already in knowledge_documents)
+        _pdf_basenames: set[str] = set()
+        for f in all_files:
+            if f["name"].lower().endswith(".pdf"):
+                _pdf_basenames.add(f["name"][:-4])
+        for title in indexed_titles:
+            if title.lower().endswith(".pdf"):
+                _pdf_basenames.add(title[:-4])
+        try:
+            _pdf_db = await (
+                sb.table("knowledge_documents")
+                .select("titulo")
+                .like("titulo", "%.pdf")
+                .execute()
+            )
+            for row in (_pdf_db.data or []):
+                _pdf_basenames.add(row["titulo"][:-4])
+        except Exception:
+            pass
+
+        _pre = len(new_files)
+        new_files = [
+            f for f in new_files
+            if not (
+                f["name"].lower().endswith(".md")
+                and f["name"][:-3] in _pdf_basenames
+            )
+        ]
+        _md_skipped = _pre - len(new_files)
+        if _md_skipped:
+            logger.info("Sync %s: %d .md skipped (PDF version exists)", sync_id, _md_skipped)
+
         skipped = len(all_files) - len(new_files)
         logger.info("Sync %s: %d new files to ingest, %d already indexed", sync_id, len(new_files), skipped)
 
@@ -2429,6 +2463,24 @@ async def _run_sync_job(
                         )
                     except Exception as ue:
                         logger.warning("Sync %s: could not set drive_file_id for %s: %s", sync_id, fname, ue)
+
+                # Auto-replace old .md version when a PDF is ingested
+                if fname.lower().endswith(".pdf"):
+                    _md_titulo = fname[:-4] + ".md"
+                    try:
+                        _old_md = await (
+                            sb.table("knowledge_documents")
+                            .select("id")
+                            .eq("titulo", _md_titulo)
+                            .execute()
+                        )
+                        for _md_row in (_old_md.data or []):
+                            _md_id = _md_row["id"]
+                            await sb.table("knowledge_chunks").delete().eq("document_id", _md_id).execute()
+                            await sb.table("knowledge_documents").delete().eq("id", _md_id).execute()
+                            logger.info("Sync %s: replaced .md '%s' with PDF '%s'", sync_id, _md_titulo, fname)
+                    except Exception as _re:
+                        logger.warning("Sync %s: could not cleanup old .md '%s': %s", sync_id, _md_titulo, _re)
 
                 async with _sync_lock:
                     ingested += 1
