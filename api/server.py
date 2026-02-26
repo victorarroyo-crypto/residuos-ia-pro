@@ -2753,6 +2753,16 @@ async def reclassify_knowledge_documents():
 
     from pipeline.classifier_chunker import KB_FILENAME_SIGNALS, KB_CONTENT_SIGNALS
 
+    # DocType enum values → valid knowledge_documents.tipo values (CHECK constraint)
+    DOCTYPE_TO_KB_TIPO = {
+        "normativa": "legislacion",
+        "ficha_seguridad": "documentacion_tecnica",
+        "analisis_residuos": "clasificacion_residuos",
+        "informe_certificacion": "referencia",
+        "informe_tecnico": "documentacion_tecnica",
+        "plan_gestion": "gestion_operativa",
+    }
+
     sb = await rag_service._get_supabase()
 
     # 1. Get all knowledge_documents
@@ -2775,7 +2785,8 @@ async def reclassify_knowledge_documents():
         new_tipo = None
         for doc_type_key, signals in KB_FILENAME_SIGNALS.items():
             if any(s in filename_lower for s in signals):
-                new_tipo = doc_type_key.value
+                raw = doc_type_key.value
+                new_tipo = DOCTYPE_TO_KB_TIPO.get(raw, raw)
                 break
 
         # If no filename match, classify by content from first 3 chunks
@@ -2800,9 +2811,10 @@ async def reclassify_knowledge_documents():
                         scores[dt] += 1
             best = max(scores, key=scores.get)
             if scores[best] >= 2:
-                new_tipo = best.value
+                raw = best.value
+                new_tipo = DOCTYPE_TO_KB_TIPO.get(raw, raw)
             else:
-                new_tipo = "normativa"  # default KB
+                new_tipo = "legislacion"  # default KB
 
         if new_tipo != old_tipo:
             await (
