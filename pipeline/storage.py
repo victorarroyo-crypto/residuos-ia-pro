@@ -255,7 +255,7 @@ class StorageService:
         sb = await self._get_supabase()
         table = "knowledge_chunks" if is_knowledge else "project_chunks"
 
-        batch_size = 100
+        batch_size = 50
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
             data = []
@@ -310,8 +310,13 @@ class StorageService:
         """
         mapping = {
             DocType.NORMATIVA: "legislacion",
+            DocType.PLAN_GESTION: "legislacion",
+            DocType.INFORME: "documentacion_tecnica",
+            DocType.ANALISIS: "documentacion_tecnica",
+            DocType.FDS: "documentacion_tecnica",
+            DocType.CERTIFICACION: "documentacion_tecnica",
         }
-        return mapping.get(doc_type, "desconocido")
+        return mapping.get(doc_type, "referencia")
 
     async def _save_structured_metadata(self, sb: AsyncClient, doc: ProcessedDocument):
         """Pobla tablas estructuradas con metadatos extraídos de docs de proyecto."""
