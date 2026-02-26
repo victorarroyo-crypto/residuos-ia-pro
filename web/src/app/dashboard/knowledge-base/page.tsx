@@ -69,7 +69,7 @@ interface BreadcrumbItem {
 interface SyncDetail {
   file: string;
   path?: string;
-  status: "ingested" | "skipped" | "error";
+  status: "ingested" | "skipped" | "error" | "replaced";
   reason?: string;
   error?: string;
   document_id?: string;
@@ -236,6 +236,14 @@ export default function KnowledgeBasePage() {
 
   // Reprocess state
   const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
+
+  // Reclassify state
+  const [reclassifying, setReclassifying] = useState(false);
+  const [reclassifyResult, setReclassifyResult] = useState<{
+    success: boolean;
+    message: string;
+    changes?: { titulo: string; old_tipo: string; new_tipo: string }[];
+  } | null>(null);
 
   // Drive browser state
   const [driveItems, setDriveItems] = useState<DriveItem[]>([]);
@@ -821,6 +829,45 @@ export default function KnowledgeBasePage() {
     }
   }
 
+  // ─── Reclassify handler ───────────────────────────────────
+  async function handleReclassify() {
+    setReclassifying(true);
+    setReclassifyResult(null);
+    try {
+      const res = await fetch("/api/knowledge-base/reclassify", {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReclassifyResult({
+          success: true,
+          message:
+            data.reclassified > 0
+              ? `${data.reclassified} documento${data.reclassified !== 1 ? "s" : ""} reclasificado${data.reclassified !== 1 ? "s" : ""} de ${data.total}.`
+              : `Todos los ${data.total} documentos ya tenian la clasificacion correcta.`,
+          changes: data.changes,
+        });
+        if (data.reclassified > 0) {
+          setLoadingDocs(true);
+          await loadDocuments();
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setReclassifyResult({
+          success: false,
+          message: err.error || "Error al reclasificar.",
+        });
+      }
+    } catch {
+      setReclassifyResult({
+        success: false,
+        message: "Pipeline API no disponible.",
+      });
+    } finally {
+      setReclassifying(false);
+    }
+  }
+
   // ─── Upload retry handler ──────────────────────────────────
   async function handleRetryUpload(fileState: UploadFileState) {
     const docId = fileState.progress?.doc_id;
@@ -1365,6 +1412,7 @@ export default function KnowledgeBasePage() {
               const errors = syncResult.details.filter((d) => d.status === "error");
               const ingested = syncResult.details.filter((d) => d.status === "ingested");
               const skipped = syncResult.details.filter((d) => d.status === "skipped");
+              const replacedMd = syncResult.details.filter((d) => d.status === "replaced");
               return (
                 <div className="mt-2 ml-6 space-y-2">
                   {/* Errores primero, siempre visibles */}
@@ -1379,12 +1427,19 @@ export default function KnowledgeBasePage() {
                             <XCircle className="h-3 w-3 text-red-500 shrink-0 mt-0.5" />
                             <span className="font-medium">{d.file}</span>
                             {d.error && (
-                              <span className="text-red-600">{d.error}</span>
+                              <span className="text-red-600">— {d.error}</span>
                             )}
                           </div>
                         ))}
                       </div>
                     </div>
+                  )}
+                  {/* Reemplazados .md → PDF */}
+                  {replacedMd.length > 0 && (
+                    <p className="text-xs text-blue-700">
+                      <RefreshCw className="h-3 w-3 inline mr-1" />
+                      {replacedMd.length} .md reemplazado{replacedMd.length !== 1 ? "s" : ""} por PDF
+                    </p>
                   )}
                   {/* Resumen de exitosos y saltados */}
                   {ingested.length > 0 && (
@@ -1404,6 +1459,44 @@ export default function KnowledgeBasePage() {
             })()}
           </div>
           <button onClick={() => setSyncResult(null)} className="shrink-0">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Reclassify result */}
+      {reclassifyResult && (
+        <div
+          className={`flex items-start gap-2 rounded-md p-3 text-sm ${
+            reclassifyResult.success
+              ? "bg-blue-50 text-blue-800 border border-blue-200"
+              : "bg-red-50 text-red-800 border border-red-200"
+          }`}
+        >
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              {reclassifyResult.success ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+              ) : (
+                <AlertCircle className="h-4 w-4 shrink-0" />
+              )}
+              <span className="font-medium">{reclassifyResult.message}</span>
+            </div>
+            {reclassifyResult.changes && reclassifyResult.changes.length > 0 && (
+              <div className="mt-2 ml-6 rounded-md border border-blue-200 bg-blue-50/50 p-2">
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {reclassifyResult.changes.map((c, i) => (
+                    <div key={i} className="flex items-start gap-1 text-xs">
+                      <RefreshCw className="h-3 w-3 text-blue-500 shrink-0 mt-0.5" />
+                      <span className="font-medium truncate" title={c.titulo}>{c.titulo}</span>
+                      <span className="text-blue-600 shrink-0">{c.old_tipo} → {c.new_tipo}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <button onClick={() => setReclassifyResult(null)} className="shrink-0">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -1665,8 +1758,10 @@ export default function KnowledgeBasePage() {
           loading={loadingDocs}
           deleting={deleting}
           reprocessing={reprocessing}
+          reclassifying={reclassifying}
           onDelete={handleDelete}
           onReprocess={handleReprocess}
+          onReclassify={handleReclassify}
           onSearch={() => {
             setLoadingDocs(true);
             loadDocuments();
@@ -1881,45 +1976,158 @@ function DriveTab({
               Historial de sincronizaciones
             </p>
             <div className="space-y-2">
-              {syncStatus.recent_syncs.map((sync) => (
-                <div
-                  key={sync.id}
-                  className="flex items-center gap-3 text-xs rounded-md bg-muted/50 px-3 py-2"
-                >
-                  {sync.status === "completed" ? (
-                    <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
-                  ) : sync.status === "running" ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal shrink-0" />
-                  ) : (
-                    <XCircle className="h-4 w-4 text-red-500 shrink-0" />
-                  )}
-                  <span className="text-muted-foreground">
-                    {new Date(sync.started_at).toLocaleString("es-ES", {
-                      day: "2-digit",
-                      month: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  <span className="flex-1">
-                    {sync.status === "running"
-                      ? "En progreso..."
-                      : sync.status === "error"
-                        ? sync.error_message || "Error"
-                        : `${sync.files_ingested} nuevos, ${sync.files_skipped} existentes${sync.files_failed ? `, ${sync.files_failed} errores` : ""}`}
-                  </span>
-                  {sync.total_files_found > 0 && (
-                    <Badge variant="outline" className="text-[10px] shrink-0">
-                      {sync.total_files_found} archivos
-                    </Badge>
-                  )}
-                </div>
-              ))}
+              {syncStatus.recent_syncs.map((sync) => {
+                const details: SyncDetail[] = sync.details
+                  ? typeof sync.details === "string"
+                    ? (() => { try { return JSON.parse(sync.details); } catch { return []; } })()
+                    : sync.details
+                  : [];
+                const errors = details.filter((d) => d.status === "error");
+                const replaced = details.filter((d) => d.status === "replaced");
+                const skippedPdf = details.filter((d) => d.status === "skipped" && d.reason === "PDF version exists");
+                const hasDetails = errors.length > 0 || replaced.length > 0 || skippedPdf.length > 0;
+                return (
+                  <SyncHistoryEntry
+                    key={sync.id}
+                    sync={sync}
+                    errors={errors}
+                    replaced={replaced}
+                    skippedPdf={skippedPdf}
+                    hasDetails={hasDetails}
+                  />
+                );
+              })}
             </div>
           </CardContent>
         </>
       )}
     </Card>
+  );
+}
+
+// ─── Sync History Entry (expandable) ────────────────────────
+function SyncHistoryEntry({
+  sync,
+  errors,
+  replaced,
+  skippedPdf,
+  hasDetails,
+}: {
+  sync: SyncLog;
+  errors: SyncDetail[];
+  replaced: SyncDetail[];
+  skippedPdf: SyncDetail[];
+  hasDetails: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-md bg-muted/50 text-xs">
+      <button
+        onClick={() => hasDetails && setExpanded(!expanded)}
+        className={`flex items-center gap-3 w-full px-3 py-2 text-left ${hasDetails ? "cursor-pointer hover:bg-muted/80" : "cursor-default"}`}
+      >
+        {sync.status === "completed" ? (
+          sync.files_failed > 0 ? (
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+          )
+        ) : sync.status === "running" ? (
+          <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal shrink-0" />
+        ) : (
+          <XCircle className="h-4 w-4 text-red-500 shrink-0" />
+        )}
+        <span className="text-muted-foreground shrink-0">
+          {new Date(sync.started_at).toLocaleString("es-ES", {
+            day: "2-digit",
+            month: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </span>
+        <span className="flex-1 truncate">
+          {sync.status === "running"
+            ? "En progreso..."
+            : sync.status === "error"
+              ? sync.error_message || "Error"
+              : `${sync.files_ingested} nuevos, ${sync.files_skipped} existentes${sync.files_failed ? `, ${sync.files_failed} errores` : ""}${replaced.length ? `, ${replaced.length} reemplazados` : ""}`}
+        </span>
+        {sync.total_files_found > 0 && (
+          <Badge variant="outline" className="text-[10px] shrink-0">
+            {sync.total_files_found} archivos
+          </Badge>
+        )}
+        {hasDetails && (
+          expanded ? (
+            <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+          ) : (
+            <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
+          )
+        )}
+      </button>
+
+      {expanded && hasDetails && (
+        <div className="px-3 pb-3 space-y-2 border-t border-border/50 pt-2 ml-7">
+          {/* Errors */}
+          {errors.length > 0 && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-2">
+              <p className="font-medium text-red-800 mb-1">
+                {errors.length} archivo{errors.length !== 1 ? "s" : ""} con error:
+              </p>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {errors.map((d, i) => (
+                  <div key={i} className="flex items-start gap-1">
+                    <XCircle className="h-3 w-3 text-red-500 shrink-0 mt-0.5" />
+                    <span className="font-medium">{d.file}</span>
+                    {d.error && (
+                      <span className="text-red-600 truncate" title={d.error}>— {d.error}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Replaced .md → PDF */}
+          {replaced.length > 0 && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 p-2">
+              <p className="font-medium text-blue-800 mb-1">
+                {replaced.length} .md reemplazado{replaced.length !== 1 ? "s" : ""} por PDF:
+              </p>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {replaced.map((d, i) => (
+                  <div key={i} className="flex items-start gap-1">
+                    <RefreshCw className="h-3 w-3 text-blue-500 shrink-0 mt-0.5" />
+                    <span>{d.file}</span>
+                    {d.reason && (
+                      <span className="text-blue-600">— {d.reason}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Skipped .md (PDF exists) */}
+          {skippedPdf.length > 0 && (
+            <div className="rounded-md border border-gray-200 bg-gray-50 p-2">
+              <p className="font-medium text-gray-700 mb-1">
+                {skippedPdf.length} .md omitido{skippedPdf.length !== 1 ? "s" : ""} (PDF disponible):
+              </p>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {skippedPdf.map((d, i) => (
+                  <div key={i} className="flex items-start gap-1 text-gray-600">
+                    <File className="h-3 w-3 shrink-0 mt-0.5" />
+                    <span>{d.file}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1931,8 +2139,10 @@ function DocumentsTab({
   loading,
   deleting,
   reprocessing,
+  reclassifying,
   onDelete,
   onReprocess,
+  onReclassify,
   onSearch,
 }: {
   documents: KBDocument[];
@@ -1941,8 +2151,10 @@ function DocumentsTab({
   loading: boolean;
   deleting: string | null;
   reprocessing: Set<string>;
+  reclassifying: boolean;
   onDelete: (id: string) => void;
   onReprocess: (ids: string[]) => void;
+  onReclassify: () => void;
   onSearch: () => void;
 }) {
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
@@ -2033,11 +2245,25 @@ function DocumentsTab({
                   {f.label} ({f.count})
                 </button>
               ))}
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto h-7 text-xs"
+              onClick={onReclassify}
+              disabled={reclassifying}
+            >
+              {reclassifying ? (
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              {reclassifying ? "Reclasificando..." : "Reclasificar tipos"}
+            </Button>
             {docsWithIssues.length > 0 && (
               <Button
                 size="sm"
                 variant="outline"
-                className="ml-auto h-7 text-xs"
+                className="h-7 text-xs"
                 onClick={() => onReprocess(docsWithIssues.map((d) => d.id))}
                 disabled={reprocessing.size > 0}
               >
