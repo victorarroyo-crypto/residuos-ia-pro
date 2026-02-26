@@ -150,6 +150,7 @@ class UnifiedIngestionService:
             client_id=project_id or "general",
             filename=filename,
             password=password,
+            project_id=project_id,
         )
 
         # Determinar scope

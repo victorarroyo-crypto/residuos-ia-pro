@@ -17,6 +17,8 @@ CLASIFICADOR Y CHUNKER SEMÁNTICO
 
 import logging
 import re
+from typing import Optional
+
 from anthropic import AsyncAnthropic
 
 from .pdf_pipeline import (
@@ -24,6 +26,20 @@ from .pdf_pipeline import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Tipos válidos para Knowledge Base (RAG General, sin proyecto).
+# En KB solo hay normativa, planes, guías, informes técnicos, etc.
+# Tipos como FACTURA, CONTRATO, REGISTRO, DARI, AAI, RFQ solo existen
+# en documentos de proyecto.
+KB_TYPES = {
+    DocType.NORMATIVA,
+    DocType.PLAN_GESTION,
+    DocType.INFORME,
+    DocType.ANALISIS,
+    DocType.FDS,
+    DocType.CERTIFICACION,
+    DocType.DESCONOCIDO,
+}
 
 # Tokens por chunk según tipo de documento
 CHUNK_CONFIG = {
@@ -53,6 +69,8 @@ FILENAME_SIGNALS = {
         "ley", "decreto", "orden", "boe", "dogc", "bopv",
         "bref", "directiva", "reglamento", "normativa",
         "real_decreto", "uwwtd", "nca", "bat_", "mtd",
+        "pemar", "pniec", "plan_nacional", "plan_estatal",
+        "estrategia", "circular_economy", "economia_circular",
     ],
     DocType.ANALISIS: [
         "analisis", "análisis", "caracterizacion", "laboratorio",
@@ -169,11 +187,18 @@ class DocumentClassifier:
         self.claude = AsyncAnthropic(api_key=config.anthropic_api_key, max_retries=4)
 
     async def classify(
-        self, pages: list[PageContent], filename: str
+        self,
+        pages: list[PageContent],
+        filename: str,
+        project_id: Optional[str] = None,
     ) -> DocType:
+        is_kb = project_id is None  # Knowledge Base = sin proyecto
+
         # 1. Señales de nombre de archivo (rápido, sin LLM)
         filename_lower = filename.lower().replace(" ", "_")
         for doc_type, signals in FILENAME_SIGNALS.items():
+            if is_kb and doc_type not in KB_TYPES:
+                continue
             if any(s in filename_lower for s in signals):
                 logger.info(f"Clasificado por nombre de archivo: {doc_type}")
                 return doc_type
@@ -182,8 +207,11 @@ class DocumentClassifier:
         sample_text = " ".join(
             p.text.lower() for p in pages[:3]
         )
-        scores = {dt: 0 for dt in DocType}
+        allowed_types = KB_TYPES if is_kb else set(DocType)
+        scores = {dt: 0 for dt in DocType if dt in allowed_types}
         for doc_type, signals in CONTENT_SIGNALS.items():
+            if doc_type not in allowed_types:
+                continue
             for signal in signals:
                 if signal in sample_text:
                     scores[doc_type] += 1
@@ -195,14 +223,17 @@ class DocumentClassifier:
 
         # 3. Fallback: LLM con las primeras 2 páginas
         logger.info("Clasificación ambigua, usando LLM...")
-        return await self._classify_with_llm(pages[:2], filename)
+        return await self._classify_with_llm(pages[:2], filename, is_kb=is_kb)
 
     async def _classify_with_llm(
-        self, pages: list[PageContent], filename: str
+        self, pages: list[PageContent], filename: str, is_kb: bool = False
     ) -> DocType:
         """Usa Claude para clasificar documentos ambiguos."""
         text_sample = "\n".join(p.text[:3000] for p in pages[:3])
-        valid_types = [dt.value for dt in DocType if dt != DocType.DESCONOCIDO]
+        if is_kb:
+            valid_types = [dt.value for dt in KB_TYPES if dt != DocType.DESCONOCIDO]
+        else:
+            valid_types = [dt.value for dt in DocType if dt != DocType.DESCONOCIDO]
 
         prompt = f"""Eres un experto en gestión de residuos industriales en España.
 Clasifica este documento en UNO de estos tipos:

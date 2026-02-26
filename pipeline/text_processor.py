@@ -144,7 +144,7 @@ class TextProcessor:
         ]
 
         # Clasificar
-        doc_type = await self.classifier.classify(pages, filename)
+        doc_type = await self.classifier.classify(pages, filename, project_id=project_id)
         logger.info(f"[{filename}] Tipo detectado: {doc_type}")
 
         # Chunking semántico
