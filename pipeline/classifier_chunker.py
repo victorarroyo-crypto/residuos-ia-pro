@@ -52,7 +52,7 @@ FILENAME_SIGNALS = {
     DocType.FACTURA:  ["factura", "fra", "invoice", "alb"],
     DocType.REGISTRO: ["libro_registro", "registro_residuos", "control_residuos"],
     DocType.NORMATIVA:[
-        "ley", "decreto", "orden", "boe", "dogc", "bopv",
+        "ley", "decreto", "dl_", "orden", "boe", "dogc", "bopv",
         "bref", "directiva", "reglamento", "normativa",
         "real_decreto", "uwwtd", "nca", "bat_", "mtd",
         "pemar", "pniec", "plan_nacional", "plan_estatal",
@@ -189,7 +189,7 @@ KB_FILENAME_SIGNALS = {
         "manual", "protocolo",
     ],
     DocType.NORMATIVA: [
-        "ley", "decreto", "orden", "boe", "dogc", "bopv",
+        "ley", "decreto", "dl_", "orden", "boe", "dogc", "bopv",
         "bref", "directiva", "reglamento", "normativa",
         "real_decreto", "uwwtd", "nca", "bat_", "mtd",
         "pemar", "pniec", "plan_nacional", "plan_estatal",

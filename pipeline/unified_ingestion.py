@@ -227,12 +227,16 @@ class UnifiedIngestionService:
         if scope == RAGScope.PROJECT:
             doc_data["project_id"] = project_id
 
-        # Subir archivo original a Supabase Storage
+        # Subir archivo original a Supabase Storage (no bloquea el pipeline)
         from .pdf_pipeline import DocType
-        storage_path = await self.storage.upload_file(
-            file_bytes, filename, project_id or "general",
-            DocType.DESCONOCIDO,
-        )
+        try:
+            storage_path = await self.storage.upload_file(
+                file_bytes, filename, project_id or "general",
+                DocType.DESCONOCIDO,
+            )
+        except Exception as e:
+            logger.warning(f"Storage upload omitido para {filename}: {e}")
+            storage_path = None
         doc_data["storage_path"] = storage_path
 
         # Determinar tabla destino según scope
