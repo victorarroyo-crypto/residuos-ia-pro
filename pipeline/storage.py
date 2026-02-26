@@ -304,17 +304,32 @@ class StorageService:
     def _map_knowledge_tipo(self, doc_type: DocType) -> str:
         """Mapea DocType del pipeline al tipo de knowledge_documents.
 
-        Tipos alineados con estructura Google Drive:
-          legislacion, documentacion_tecnica, gestores_residuos,
-          clasificacion_residuos, gestion_operativa, referencia
+        Alineado con la estructura de Google Drive (RAG_Residuos_Industriales):
+          01_Legislacion_Regulacion  → legislacion
+          02_Documentacion_Tecnica   → documentacion_tecnica
+          03_Gestores_Residuos       → gestores_residuos
+          04_Clasificacion_Residuos  → clasificacion_residuos
+          05_Gestion_Operativa       → gestion_operativa
+          06_Referencia              → referencia
         """
         mapping = {
+            # 01_Legislacion_Regulacion: leyes, decretos, directivas, planes
             DocType.NORMATIVA: "legislacion",
             DocType.PLAN_GESTION: "legislacion",
-            DocType.INFORME: "documentacion_tecnica",
-            DocType.ANALISIS: "documentacion_tecnica",
+            # 02_Documentacion_Tecnica: BREFs, fichas, informes, análisis
             DocType.FDS: "documentacion_tecnica",
+            DocType.ANALISIS: "documentacion_tecnica",
             DocType.CERTIFICACION: "documentacion_tecnica",
+            DocType.INFORME: "documentacion_tecnica",
+            DocType.MANUAL: "documentacion_tecnica",
+            # 05_Gestion_Operativa: AAIs, DARIs, registros, contratos
+            DocType.AAI: "gestion_operativa",
+            DocType.DARI: "gestion_operativa",
+            DocType.PERMISO: "gestion_operativa",
+            DocType.REGISTRO: "gestion_operativa",
+            DocType.CONTRATO: "gestion_operativa",
+            DocType.FACTURA: "gestion_operativa",
+            DocType.RFQ: "gestion_operativa",
         }
         return mapping.get(doc_type, "referencia")
 
