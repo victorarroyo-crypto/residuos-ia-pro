@@ -33,6 +33,9 @@ export async function POST(request: NextRequest) {
 
     let storageFiles: string | undefined;
     let analysisContextStr: string | undefined;
+    let consultantId: string | undefined;
+    let gdriveFolderId: string | undefined;
+    let gdriveMaxFiles: number | undefined;
 
     if (contentType.includes("application/json")) {
       // ── JSON mode: files arrive as base64 strings (or storage_paths for large files) ──
@@ -70,6 +73,16 @@ export async function POST(request: NextRequest) {
       if (body.analysis_context) {
         analysisContextStr = JSON.stringify(body.analysis_context);
       }
+
+      if (typeof body.consultant_id === "string" && body.consultant_id.trim()) {
+        consultantId = body.consultant_id;
+      }
+      if (typeof body.gdrive_folder_id === "string" && body.gdrive_folder_id.trim()) {
+        gdriveFolderId = body.gdrive_folder_id;
+      }
+      if (typeof body.gdrive_max_files === "number" && Number.isFinite(body.gdrive_max_files)) {
+        gdriveMaxFiles = body.gdrive_max_files;
+      }
     } else {
       // ── FormData mode (small files, < 4MB) ──
       const formData = await request.formData();
@@ -87,6 +100,15 @@ export async function POST(request: NextRequest) {
       if (p && typeof p === "string") projectId = p;
       const u = formData.get("urls");
       if (u && typeof u === "string") urls = u;
+      const c = formData.get("consultant_id");
+      if (c && typeof c === "string") consultantId = c;
+      const gf = formData.get("gdrive_folder_id");
+      if (gf && typeof gf === "string") gdriveFolderId = gf;
+      const gm = formData.get("gdrive_max_files");
+      if (gm && typeof gm === "string" && gm.trim()) {
+        const parsed = Number(gm);
+        if (Number.isFinite(parsed)) gdriveMaxFiles = parsed;
+      }
 
       for (const file of formData.getAll("files")) {
         if (file instanceof Blob) {
@@ -104,6 +126,11 @@ export async function POST(request: NextRequest) {
     if (urls) pipelineForm.append("urls", urls);
     if (storageFiles) pipelineForm.append("storage_files", storageFiles);
     if (analysisContextStr) pipelineForm.append("analysis_context", analysisContextStr);
+    if (consultantId) pipelineForm.append("consultant_id", consultantId);
+    if (gdriveFolderId) pipelineForm.append("gdrive_folder_id", gdriveFolderId);
+    if (typeof gdriveMaxFiles === "number") {
+      pipelineForm.append("gdrive_max_files", String(gdriveMaxFiles));
+    }
     for (const { blob, name } of fileBlobs) {
       pipelineForm.append("files", blob, name);
     }

@@ -571,6 +571,10 @@ class AdvisorRequest(BaseModel):
     # Multi-file support (up to 6)
     files: Optional[list[FileAttachment]] = None
     urls: Optional[list[str]] = None
+    # Optional agentic folder scan in Google Drive
+    consultant_id: Optional[str] = None
+    gdrive_folder_id: Optional[str] = None
+    gdrive_max_files: int = 12
     # HITL: analysis context when advisor is embedded in plan review or results
     analysis_context: Optional[dict] = None
     # Legacy single-file support (backward compatibility)
@@ -754,6 +758,56 @@ async def _fetch_url_content(url: str) -> str:
 # ─── Advisor core logic (shared by JSON and FormData endpoints) ───
 
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif"}
+
+
+async def _collect_gdrive_docs_for_advisor(
+    consultant_id: str,
+    folder_id: str,
+    max_files: int = 12,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Read files from a Drive folder (read-only) for advisor analysis context."""
+    docs: list[tuple[str, str]] = []
+    warnings: list[str] = []
+
+    gd, _ = await _get_gdrive_service(consultant_id)
+
+    supported_extensions = {
+        ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt", ".html", ".htm", ".md"
+    }
+
+    all_files = await asyncio.to_thread(
+        gd.list_all_files_recursive,
+        folder_id,
+        supported_extensions,
+    )
+
+    if not all_files:
+        return docs, ["[Google Drive] La carpeta seleccionada no contiene documentos compatibles."]
+
+    file_limit = max(1, min(max_files, 30))
+
+    for f in all_files[:file_limit]:
+        file_id = f.get("id", "")
+        file_name = f.get("name", "archivo")
+        file_path = f.get("path", "")
+        if not file_id:
+            continue
+
+        try:
+            file_bytes, downloaded_name, _mime = await asyncio.to_thread(gd.download_file, file_id)
+            effective_name = downloaded_name or file_name
+            extracted = await asyncio.to_thread(_extract_binary_text, file_bytes, effective_name)
+            prefixed_name = f"[GD] {file_path}" if file_path else f"[GD] {effective_name}"
+            docs.append((prefixed_name, extracted[:15000]))
+        except Exception as e:
+            warnings.append(f"[Google Drive] No se pudo leer '{file_name}': {e}")
+
+    if len(all_files) > file_limit:
+        warnings.append(
+            f"[Google Drive] Se analizaron {file_limit} archivos de {len(all_files)} disponibles (limite configurado)."
+        )
+
+    return docs, warnings
 
 
 async def _run_advisor(
@@ -1041,6 +1095,16 @@ async def advisor_query(request: AdvisorRequest):
             else:
                 processed_docs.append((f.name, f.content[:15000]))
 
+        if request.consultant_id and request.gdrive_folder_id:
+            gd_docs, gd_warnings = await _collect_gdrive_docs_for_advisor(
+                consultant_id=request.consultant_id,
+                folder_id=request.gdrive_folder_id,
+                max_files=request.gdrive_max_files,
+            )
+            processed_docs.extend(gd_docs)
+            for w in gd_warnings:
+                processed_docs.append(("google_drive_notice", w))
+
         history = [{"role": m.role, "content": m.content} for m in request.conversation_history]
 
         result = await _run_advisor(
@@ -1071,6 +1135,9 @@ async def advisor_chat(
     urls: str = Form(default="[]"),
     storage_files: str = Form(default="[]"),
     analysis_context: str = Form(default=""),
+    consultant_id: Optional[str] = Form(default=None),
+    gdrive_folder_id: Optional[str] = Form(default=None),
+    gdrive_max_files: int = Form(default=12),
     files: list[UploadFile] = File(default=[]),
 ):
     """
@@ -1188,6 +1255,16 @@ async def advisor_chat(
                         (upload.filename, f"[Error procesando {upload.filename}: {e}]")
                     )
                     logger.warning("Advisor: extraction failed for %s: %s", upload.filename, e)
+
+        if consultant_id and gdrive_folder_id:
+            gd_docs, gd_warnings = await _collect_gdrive_docs_for_advisor(
+                consultant_id=consultant_id,
+                folder_id=gdrive_folder_id,
+                max_files=gdrive_max_files,
+            )
+            processed_docs.extend(gd_docs)
+            for w in gd_warnings:
+                processed_docs.append(("google_drive_notice", w))
 
         # Parse analysis_context
         parsed_analysis_context = None
