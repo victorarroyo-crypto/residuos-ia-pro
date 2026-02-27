@@ -76,6 +76,12 @@ export interface AnalysisContext {
 export interface AdvisorChatProps {
   /** Project ID for project-scoped RAG */
   projectId?: string;
+  /** Optional consultant scope for Google Drive agentic folder scan */
+  consultantId?: string;
+  /** Optional folder in Google Drive to read (read-only) during this chat request */
+  gdriveFolderId?: string;
+  /** Max files to inspect from the selected Drive folder (1-30) */
+  gdriveMaxFiles?: number;
   /** Analysis context for HITL-embedded advisor */
   analysisContext?: AnalysisContext;
   /** Compact mode for embedding */
@@ -177,6 +183,9 @@ const DEFAULT_SUGGESTIONS = [
 export function AdvisorChat({
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   projectId,
+  consultantId,
+  gdriveFolderId,
+  gdriveMaxFiles = 12,
   analysisContext,
   compact = false,
   placeholder,
@@ -324,6 +333,9 @@ export function AdvisorChat({
             files: base64Files.length > 0 ? base64Files : undefined,
             storage_files: storagePaths.length > 0 ? storagePaths : undefined,
             analysis_context: analysisContext ?? undefined,
+            consultant_id: consultantId ?? undefined,
+            gdrive_folder_id: gdriveFolderId ?? undefined,
+            gdrive_max_files: gdriveMaxFiles,
           }),
         });
 
@@ -462,7 +474,19 @@ export function AdvisorChat({
       setStreamPhase("");
       abortRef.current = null;
     }
-  }, [input, loading, streaming, attachedFiles, urls, messages, analysisContext, setMessages]);
+  }, [
+    input,
+    loading,
+    streaming,
+    attachedFiles,
+    urls,
+    messages,
+    analysisContext,
+    consultantId,
+    gdriveFolderId,
+    gdriveMaxFiles,
+    setMessages,
+  ]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || []);
