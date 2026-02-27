@@ -17,11 +17,16 @@ import {
   File,
   Globe,
   Download,
+  FolderOpen,
+  Folder,
+  ArrowLeft,
+  ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { exportToWord } from "@/lib/export-word";
 import { renderMarkdown } from "@/lib/render-markdown";
+import { createClient } from "@/lib/supabase/client";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -76,12 +81,6 @@ export interface AnalysisContext {
 export interface AdvisorChatProps {
   /** Project ID for project-scoped RAG */
   projectId?: string;
-  /** Optional consultant scope for Google Drive agentic folder scan */
-  consultantId?: string;
-  /** Optional folder in Google Drive to read (read-only) during this chat request */
-  gdriveFolderId?: string;
-  /** Max files to inspect from the selected Drive folder (1-30) */
-  gdriveMaxFiles?: number;
   /** Analysis context for HITL-embedded advisor */
   analysisContext?: AnalysisContext;
   /** Compact mode for embedding */
@@ -183,9 +182,6 @@ const DEFAULT_SUGGESTIONS = [
 export function AdvisorChat({
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   projectId,
-  consultantId,
-  gdriveFolderId,
-  gdriveMaxFiles = 12,
   analysisContext,
   compact = false,
   placeholder,
@@ -228,6 +224,21 @@ export function AdvisorChat({
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urls, setUrls] = useState<string[]>([]);
 
+  // Google Drive folder context
+  const [consultantId, setConsultantId] = useState<string>("");
+  const [gdriveConnected, setGdriveConnected] = useState(false);
+  const [gdriveRootFolder, setGdriveRootFolder] = useState<string>("");
+  const [showDriveBrowser, setShowDriveBrowser] = useState(false);
+  const [driveBrowsing, setDriveBrowsing] = useState(false);
+  const [driveFolderStack, setDriveFolderStack] = useState<{ id: string; name: string }[]>([]);
+  const [driveFolderItems, setDriveFolderItems] = useState<
+    { id: string; name: string; isFolder: boolean; mimeType: string; size?: number }[]
+  >([]);
+  const [driveLoadingContext, setDriveLoadingContext] = useState(false);
+  const [driveContext, setDriveContext] = useState<string>("");
+  const [driveContextFiles, setDriveContextFiles] = useState<{ name: string; chars_extracted: number }[]>([]);
+  const [driveContextFolder, setDriveContextFolder] = useState<string>("");
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -240,6 +251,25 @@ export function AdvisorChat({
   useEffect(() => {
     if (!compact) inputRef.current?.focus();
   }, [compact]);
+
+  // Check Google Drive connection on mount
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      const uid = data.user?.id || "";
+      if (!uid) return;
+      setConsultantId(uid);
+      fetch(`/api/gdrive/status?consultant_id=${uid}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((status) => {
+          if (status?.connected) {
+            setGdriveConnected(true);
+            setGdriveRootFolder(status.root_folder_id || "");
+          }
+        })
+        .catch(() => {});
+    });
+  }, []);
 
   const totalAttachments = attachedFiles.length + urls.length;
   const hasFiles = attachedFiles.length > 0;
@@ -258,6 +288,7 @@ export function AdvisorChat({
     const fileNames = [
       ...attachedFiles.map((f) => f.name),
       ...urls.map((u) => u),
+      ...(driveContext ? [`📂 ${driveContextFolder} (${driveContextFiles.length} docs)`] : []),
     ];
 
     const userMsg: ChatMessage = {
@@ -333,9 +364,6 @@ export function AdvisorChat({
             files: base64Files.length > 0 ? base64Files : undefined,
             storage_files: storagePaths.length > 0 ? storagePaths : undefined,
             analysis_context: analysisContext ?? undefined,
-            consultant_id: consultantId ?? undefined,
-            gdrive_folder_id: gdriveFolderId ?? undefined,
-            gdrive_max_files: gdriveMaxFiles,
           }),
         });
 
@@ -373,6 +401,8 @@ export function AdvisorChat({
           conversation_history: conversationHistory,
           urls: currentUrls.length > 0 ? currentUrls : undefined,
           analysis_context: analysisContext ?? undefined,
+          drive_context: driveContext || undefined,
+          drive_files: driveContextFiles.length > 0 ? driveContextFiles : undefined,
         }),
         signal: abort.signal,
       });
@@ -483,8 +513,8 @@ export function AdvisorChat({
     messages,
     analysisContext,
     consultantId,
-    gdriveFolderId,
-    gdriveMaxFiles,
+    driveContext,
+    driveContextFiles,
     setMessages,
   ]);
 
@@ -546,6 +576,81 @@ export function AdvisorChat({
     setUrls((prev) => prev.filter((_, i) => i !== index));
   }
 
+  // ─── Google Drive browsing ──────────────────────────────────
+
+  async function openDriveBrowser() {
+    if (!consultantId || !gdriveRootFolder) return;
+    setShowDriveBrowser(true);
+    setDriveFolderStack([{ id: gdriveRootFolder, name: "Google Drive" }]);
+    await browseDriveFolder(gdriveRootFolder);
+  }
+
+  async function browseDriveFolder(folderId: string) {
+    setDriveBrowsing(true);
+    try {
+      const res = await fetch(
+        `/api/gdrive/browse?consultant_id=${consultantId}&folder_id=${folderId}`
+      );
+      if (!res.ok) throw new Error("Error al navegar carpeta");
+      const data = await res.json();
+      setDriveFolderItems(data.items || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al navegar Drive");
+    } finally {
+      setDriveBrowsing(false);
+    }
+  }
+
+  async function navigateDriveFolder(folderId: string, folderName: string) {
+    setDriveFolderStack((prev) => [...prev, { id: folderId, name: folderName }]);
+    await browseDriveFolder(folderId);
+  }
+
+  async function navigateDriveBack() {
+    if (driveFolderStack.length <= 1) return;
+    const newStack = driveFolderStack.slice(0, -1);
+    setDriveFolderStack(newStack);
+    await browseDriveFolder(newStack[newStack.length - 1].id);
+  }
+
+  async function loadDriveFolderContext(folderId: string, folderName: string, recursive: boolean) {
+    setDriveLoadingContext(true);
+    setShowDriveBrowser(false);
+    try {
+      const res = await fetch("/api/advisor/drive-context", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultant_id: consultantId,
+          folder_id: folderId,
+          recursive,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Error ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.processed_files === 0) {
+        setError("No se encontraron archivos procesables en esa carpeta.");
+        return;
+      }
+      setDriveContext(data.context_text);
+      setDriveContextFiles(data.files || []);
+      setDriveContextFolder(folderName);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al cargar contexto de Drive");
+    } finally {
+      setDriveLoadingContext(false);
+    }
+  }
+
+  function clearDriveContext() {
+    setDriveContext("");
+    setDriveContextFiles([]);
+    setDriveContextFolder("");
+  }
+
   function clearConversation() {
     setMessages([]);
     setError(null);
@@ -553,6 +658,7 @@ export function AdvisorChat({
     setUrls([]);
     setShowUrlInput(false);
     setUrlInput("");
+    clearDriveContext();
   }
 
   function selectSuggestion(question: string) {
@@ -789,6 +895,129 @@ export function AdvisorChat({
         <div ref={chatEndRef} />
       </div>
 
+      {/* Drive context indicator */}
+      {driveContext && (
+        <div className="mt-1.5 flex items-center gap-2 text-xs bg-vandarum-teal/10 border border-vandarum-teal/20 rounded-lg px-3 py-1.5">
+          <FolderOpen className="h-3.5 w-3.5 text-vandarum-teal shrink-0" />
+          <span className="font-medium text-vandarum-teal">{driveContextFolder}</span>
+          <span className="text-muted-foreground">
+            {driveContextFiles.length} archivo{driveContextFiles.length !== 1 ? "s" : ""} como contexto
+          </span>
+          <button
+            onClick={clearDriveContext}
+            className="ml-auto text-muted-foreground hover:text-foreground"
+            title="Quitar contexto de Drive"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Drive loading indicator */}
+      {driveLoadingContext && (
+        <div className="mt-1.5 flex items-center gap-2 text-xs bg-muted rounded-lg px-3 py-1.5">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-vandarum-teal" />
+          <span>Descargando y extrayendo documentos de Drive...</span>
+        </div>
+      )}
+
+      {/* Drive folder browser */}
+      {showDriveBrowser && (
+        <div className="mt-1.5 border rounded-lg bg-background max-h-64 flex flex-col">
+          <div className="flex items-center gap-2 px-3 py-2 border-b bg-muted/50">
+            <FolderOpen className="h-4 w-4 text-vandarum-teal" />
+            <div className="flex items-center gap-1 text-xs text-muted-foreground flex-1 min-w-0 overflow-hidden">
+              {driveFolderStack.map((f, i) => (
+                <span key={f.id} className="flex items-center gap-1 shrink-0">
+                  {i > 0 && <ChevronRight className="h-3 w-3" />}
+                  <span className={i === driveFolderStack.length - 1 ? "font-medium text-foreground" : ""}>
+                    {f.name.length > 20 ? f.name.slice(0, 18) + "..." : f.name}
+                  </span>
+                </span>
+              ))}
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-1.5"
+              onClick={() => setShowDriveBrowser(false)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {driveBrowsing ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-vandarum-teal" />
+              </div>
+            ) : (
+              <div className="divide-y">
+                {driveFolderStack.length > 1 && (
+                  <button
+                    onClick={navigateDriveBack}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-muted-foreground"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    Volver
+                  </button>
+                )}
+                {driveFolderItems.filter(f => f.isFolder).map((item) => (
+                  <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted group">
+                    <button
+                      onClick={() => navigateDriveFolder(item.id, item.name)}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                    >
+                      <Folder className="h-3.5 w-3.5 text-vandarum-teal shrink-0" />
+                      <span className="truncate">{item.name}</span>
+                    </button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] px-2 opacity-0 group-hover:opacity-100 shrink-0"
+                      onClick={() => loadDriveFolderContext(item.id, item.name, true)}
+                    >
+                      Cargar
+                    </Button>
+                  </div>
+                ))}
+                {driveFolderItems.filter(f => !f.isFolder).length > 0 && (
+                  <div className="px-3 py-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+                    {driveFolderItems.filter(f => !f.isFolder).length} archivo(s)
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          {/* Load current folder button */}
+          {driveFolderStack.length > 0 && !driveBrowsing && (
+            <div className="border-t px-3 py-2 flex gap-2">
+              <Button
+                size="sm"
+                variant="default"
+                className="flex-1 h-7 text-xs bg-vandarum-teal hover:bg-vandarum-teal/90"
+                onClick={() => {
+                  const current = driveFolderStack[driveFolderStack.length - 1];
+                  loadDriveFolderContext(current.id, current.name, false);
+                }}
+              >
+                Cargar esta carpeta
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 h-7 text-xs"
+                onClick={() => {
+                  const current = driveFolderStack[driveFolderStack.length - 1];
+                  loadDriveFolderContext(current.id, current.name, true);
+                }}
+              >
+                Incluir subcarpetas
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Input area */}
       <div className="mt-2">
         {(attachedFiles.length > 0 || urls.length > 0) && (
@@ -868,6 +1097,18 @@ export function AdvisorChat({
           >
             <LinkIcon className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
           </Button>
+          {gdriveConnected && (
+            <Button
+              variant={driveContext ? "default" : "outline"}
+              size="icon"
+              className={`${compact ? "h-8 w-8" : ""} ${driveContext ? "bg-vandarum-teal hover:bg-vandarum-teal/90" : ""}`}
+              onClick={openDriveBrowser}
+              disabled={loading || streaming || driveLoadingContext}
+              title={driveContext ? `Contexto Drive: ${driveContextFolder}` : "Cargar carpeta de Google Drive"}
+            >
+              <FolderOpen className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
+            </Button>
+          )}
           <input
             ref={inputRef}
             type="text"
