@@ -504,7 +504,19 @@ export function AdvisorChat({
       setStreamPhase("");
       abortRef.current = null;
     }
-  }, [input, loading, streaming, attachedFiles, urls, messages, analysisContext, driveContext, driveContextFiles, setMessages]);
+  }, [
+    input,
+    loading,
+    streaming,
+    attachedFiles,
+    urls,
+    messages,
+    analysisContext,
+    consultantId,
+    driveContext,
+    driveContextFiles,
+    setMessages,
+  ]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || []);
