@@ -515,6 +515,7 @@ export function AdvisorChat({
     consultantId,
     driveContext,
     driveContextFiles,
+    driveContextFolder,
     setMessages,
   ]);
 
