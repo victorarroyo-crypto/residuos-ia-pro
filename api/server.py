@@ -528,6 +528,9 @@ class AdvisorRequest(BaseModel):
     urls: Optional[list[str]] = None
     # HITL: analysis context when advisor is embedded in plan review or results
     analysis_context: Optional[dict] = None
+    # Google Drive folder context (ephemeral, not persisted)
+    drive_context: Optional[str] = None
+    drive_files: Optional[list[dict]] = None
     # Legacy single-file support (backward compatibility)
     file_content: Optional[str] = None
     file_name: Optional[str] = None
@@ -1225,6 +1228,12 @@ async def advisor_stream(request: AdvisorRequest):
                 text_parts.append(
                     "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
                     f"{rag_response.context_text}\n"
+                )
+            if request.drive_context:
+                n_files = len(request.drive_files) if request.drive_files else 0
+                text_parts.append(
+                    f"DOCUMENTOS DE GOOGLE DRIVE ({n_files} archivos cargados como contexto):\n"
+                    f"{request.drive_context}\n"
                 )
             text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
 
@@ -2843,6 +2852,101 @@ async def reclassify_knowledge_documents():
         "reclassified": reclassified,
         "unchanged": unchanged,
         "changes": changes,
+    }
+
+
+# ─── Advisor: Google Drive folder context (ephemeral) ─────────
+
+DRIVE_CONTEXT_EXTENSIONS = {
+    ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv",
+    ".txt", ".html", ".htm", ".md", ".json", ".xml",
+}
+DRIVE_MAX_FILES = 25
+DRIVE_MAX_TOTAL_TEXT = 120_000  # ~120KB ≈ ~30K tokens
+DRIVE_MAX_PER_FILE = 20_000    # ~20KB per file
+
+
+class DriveContextRequest(BaseModel):
+    consultant_id: str
+    folder_id: str
+    recursive: bool = False
+
+
+@app.post("/api/advisor/drive-context")
+async def advisor_drive_context(request: DriveContextRequest):
+    """
+    Extract text from files in a Google Drive folder for ephemeral advisor context.
+    Downloads, extracts text, and returns concatenated content — nothing is persisted.
+    """
+    gd, _sb = await _get_gdrive_service(request.consultant_id)
+
+    # 1. List files in folder
+    if request.recursive:
+        all_files = gd.list_all_files_recursive(
+            request.folder_id,
+            supported_extensions=[ext.lstrip(".") for ext in DRIVE_CONTEXT_EXTENSIONS],
+        )
+    else:
+        listing = gd.list_folder(request.folder_id)
+        all_files = [
+            f for f in listing["items"]
+            if not f["isFolder"]
+            and any(f["name"].lower().endswith(ext) for ext in DRIVE_CONTEXT_EXTENSIONS)
+        ]
+
+    if not all_files:
+        return {
+            "context_text": "",
+            "files": [],
+            "total_files_in_folder": 0,
+            "processed_files": 0,
+            "truncated": False,
+        }
+
+    # 2. Download and extract text (with limits)
+    context_parts: list[str] = []
+    file_metadata: list[dict] = []
+    total_text = 0
+    truncated = len(all_files) > DRIVE_MAX_FILES
+
+    for f in all_files[:DRIVE_MAX_FILES]:
+        if total_text >= DRIVE_MAX_TOTAL_TEXT:
+            truncated = True
+            break
+        try:
+            file_bytes, filename, _mime = await asyncio.to_thread(
+                gd.download_file, f["id"]
+            )
+            if len(file_bytes) == 0:
+                continue
+
+            extracted = await asyncio.to_thread(
+                _extract_binary_text, file_bytes, filename
+            )
+            if not extracted or extracted.startswith("["):
+                continue
+
+            budget = min(DRIVE_MAX_PER_FILE, DRIVE_MAX_TOTAL_TEXT - total_text)
+            text_chunk = extracted[:budget]
+            context_parts.append(f"=== {filename} ===\n{text_chunk}")
+            total_text += len(text_chunk)
+            file_metadata.append({
+                "name": filename,
+                "size": f.get("size") or len(file_bytes),
+                "chars_extracted": len(text_chunk),
+            })
+        except Exception as e:
+            logger.warning("drive-context: failed to process %s: %s", f.get("name", "?"), e)
+            continue
+
+    context_text = "\n\n".join(context_parts)
+
+    return {
+        "context_text": context_text,
+        "files": file_metadata,
+        "total_files_in_folder": len(all_files),
+        "processed_files": len(file_metadata),
+        "truncated": truncated,
     }
 
 
