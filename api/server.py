@@ -445,6 +445,55 @@ Tienes acceso a búsqueda web. Úsala cuando la pregunta requiere datos actualiz
 Responde siempre en español."""
 
 
+ADVISOR_REPORT_MODE_ADDENDUM = """
+
+## MODO INFORME PROFESIONAL (ACTIVADO)
+
+Cuando la consulta lo requiera, responde como entregable de consultoria medioambiental en gestion de residuos.
+Usa exactamente estos encabezados de nivel 2 (##), en este orden:
+1) ## 1. Resumen ejecutivo
+2) ## 2. Alcance, metodologia y limitaciones
+3) ## 3. Contexto operativo y linea base
+4) ## 4. Evaluacion de cumplimiento normativo
+5) ## 5. Analisis economico de la gestion de residuos
+6) ## 6. Oportunidades de mejora y eficiencia
+7) ## 7. Plan de accion priorizado (30-60-90 dias)
+8) ## 8. Matriz de riesgos y recomendaciones de control
+9) ## 9. Conclusion ejecutiva
+10) ## 10. Anexo de trazabilidad tecnica
+
+Reglas de este modo:
+- No inventes datos; marca cualquier ausencia como "limitacion de evidencia".
+- Integra datos cuantitativos disponibles (EUR, t/ano, LER, plazos, gestores, norma aplicable).
+- En el plan 30-60-90 incluye responsable sugerido, dependencia y resultado esperado por accion.
+- En matriz de riesgos agrupa al menos: legal, operativo y economico.
+"""
+
+
+def _is_professional_report_mode(query: str, analysis_context: Optional[dict]) -> bool:
+    """Detects whether the advisor should answer in consultancy report format."""
+    if analysis_context:
+        mode = str(analysis_context.get("response_mode", "")).lower().strip()
+        output_format = str(analysis_context.get("output_format", "")).lower().strip()
+        if mode in {"report", "professional_report", "consulting_report"}:
+            return True
+        if output_format in {"report", "professional_report", "consulting_report"}:
+            return True
+        if analysis_context.get("force_professional_report") is True:
+            return True
+
+    q = (query or "").lower()
+    trigger_phrases = [
+        "informe",
+        "informe profesional",
+        "informe ejecutivo",
+        "formato consultoria",
+        "estandar de consultoria",
+        "dictamen tecnico",
+    ]
+    return any(t in q for t in trigger_phrases)
+
+
 def _build_analysis_context_addendum(ctx: dict) -> str:
     """Build a system prompt addendum with the HITL analysis context."""
     parts = ["\n\n## CONTEXTO DEL ANALISIS EN CURSO"]
@@ -802,6 +851,8 @@ async def _run_advisor(
 
     # Build system prompt, injecting analysis context if available
     system_prompt = ADVISOR_SYSTEM_PROMPT
+    if _is_professional_report_mode(query, analysis_context):
+        system_prompt += ADVISOR_REPORT_MODE_ADDENDUM
     if analysis_context:
         system_prompt += _build_analysis_context_addendum(analysis_context)
 
@@ -1244,6 +1295,8 @@ async def advisor_stream(request: AdvisorRequest):
             }
 
             system_prompt = ADVISOR_SYSTEM_PROMPT
+            if _is_professional_report_mode(request.query, request.analysis_context):
+                system_prompt += ADVISOR_REPORT_MODE_ADDENDUM
             if request.analysis_context:
                 system_prompt += _build_analysis_context_addendum(request.analysis_context)
 
