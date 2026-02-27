@@ -438,6 +438,10 @@ Tu expertise abarca la clasificación de residuos (LER, códigos espejo, peligro
 
 Ante consultas complejas, antes de redactar tu respuesta: identifica el tipo de consulta, recopila todos los datos relevantes del contexto RAG, documentos adjuntos y tu expertise propio, aplica la legislación y criterios técnicos correspondientes citando artículos exactos, analiza alternativas cuando existan, y estructura tu respuesta con recomendaciones concretas y accionables. Cita siempre las fuentes normativas específicas (artículo, anexo, ley, real decreto).
 
+## CITACIÓN DE FUENTES DOCUMENTALES
+
+Cuando tu respuesta se base en documentos del contexto RAG (tanto del proyecto como de la base de conocimiento general), integra las referencias de forma natural en tu texto narrativo. No te limites a usar la información: indica de dónde procede para que el consultor pueda verificarla y trazarla. Por ejemplo: "De acuerdo con el BREF de tratamiento de residuos recogido en la base de conocimiento..." o "Según consta en la Autorización Ambiental Integrada del proyecto...". Cuando cites legislación extraída de un documento RAG, menciona tanto la norma como el documento fuente. Esto es especialmente importante cuando los datos provienen de documentos del proyecto (facturas, contratos, AAI, registro de producción), ya que el consultor necesita saber exactamente de qué documento se extrae cada dato.
+
 ## BÚSQUEDA WEB
 
 Tienes acceso a búsqueda web. Úsala cuando la pregunta requiere datos actualizados (precios, normativa reciente), cuando no tienes suficiente contexto del RAG ni de los documentos adjuntos, cuando el usuario pregunta sobre algo específico que requiere verificación (un gestor concreto, una planta de tratamiento, un BOE reciente), o cuando necesitas confirmar concentraciones límite, umbrales o valores técnicos actuales. No la uses para preguntas generales que puedes responder con tu conocimiento experto. Cuando uses resultados web, indica la fuente.
@@ -987,18 +991,8 @@ async def _run_advisor(
         else:
             raise
 
-    # 7. Combine RAG sources + web sources
-    sources = [
-        {
-            "document_id": r.document_id,
-            "title": r.doc_title,
-            "doc_type": r.doc_type,
-            "similarity": round(r.similarity, 3),
-            "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
-            "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
-        }
-        for r in rag_response.results
-    ]
+    # 7. Combine RAG sources + web sources (deduplicated by document)
+    sources = _deduplicate_sources(rag_response.results)
 
     # Add web sources (deduplicated by URL)
     seen_urls: set[str] = set()
@@ -1030,6 +1024,26 @@ async def _run_advisor(
 
 
 # ─── Advisor helpers ─────────────────────────────────────────────
+
+
+def _deduplicate_sources(results) -> list[dict]:
+    """Deduplicate RAG sources by document_id, keeping the highest similarity."""
+    seen: dict[str, dict] = {}
+    for r in results:
+        doc_id = r.document_id
+        similarity = round(r.similarity, 3)
+        scope = r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope
+        if doc_id not in seen or similarity > seen[doc_id]["similarity"]:
+            seen[doc_id] = {
+                "document_id": doc_id,
+                "title": r.doc_title,
+                "doc_type": r.doc_type,
+                "similarity": similarity,
+                "scope": scope,
+                "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
+            }
+    return list(seen.values())
+
 
 MAX_HISTORY_MSG_CHARS = 1500
 
@@ -1329,18 +1343,8 @@ async def advisor_stream(request: AdvisorRequest):
             )
             has_rag_context = bool(rag_response.results)
 
-            # Emit sources immediately
-            sources = [
-                {
-                    "document_id": r.document_id,
-                    "title": r.doc_title,
-                    "doc_type": r.doc_type,
-                    "similarity": round(r.similarity, 3),
-                    "scope": r.rag_scope.value if isinstance(r.rag_scope, RAGScope) else r.rag_scope,
-                    "excerpt": r.content[:200] + "..." if len(r.content) > 200 else r.content,
-                }
-                for r in rag_response.results
-            ]
+            # Emit sources immediately (deduplicated by document)
+            sources = _deduplicate_sources(rag_response.results)
             yield _sse_event("sources", {"sources": sources, "rag_context_used": has_rag_context})
 
             # 2. Build text context

@@ -667,38 +667,74 @@ export function AdvisorChat({
                 </div>
               )}
 
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="mt-2 border-t border-border/30 pt-1.5">
-                  <p className="text-xs font-medium mb-1 opacity-70 flex items-center gap-1">
-                    <BookOpen className="h-3 w-3" />
-                    Fuentes:
-                  </p>
-                  <div className="space-y-0.5">
-                    {msg.sources.map((src, j) =>
-                      src.scope === "web" ? (
-                        <a
-                          key={j}
-                          href={src.excerpt}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 text-xs opacity-70 hover:opacity-100"
-                        >
-                          <Globe className="h-3 w-3 shrink-0 text-blue-500" />
-                          <span className="truncate underline">{src.title || src.excerpt}</span>
-                          <Badge variant="outline" className="text-[10px] py-0 shrink-0 border-blue-300 text-blue-600">Web</Badge>
-                        </a>
-                      ) : (
-                        <div key={j} className="flex items-center gap-1.5 text-xs opacity-70">
-                          <FileText className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{src.title}</span>
-                          <Badge variant="outline" className="text-[10px] py-0 shrink-0">{Math.round(src.similarity * 100)}%</Badge>
-                          <Badge variant="outline" className="text-[10px] py-0 shrink-0">{src.scope === "general" ? "KB" : "Proyecto"}</Badge>
+              {msg.sources && msg.sources.length > 0 && (() => {
+                const projectSources = msg.sources.filter(s => s.scope === "project");
+                const kbSources = msg.sources.filter(s => s.scope === "general");
+                const webSources = msg.sources.filter(s => s.scope === "web");
+                return (
+                  <div className="mt-2 border-t border-border/30 pt-1.5">
+                    <p className="text-xs font-medium mb-1 opacity-70 flex items-center gap-1">
+                      <BookOpen className="h-3 w-3" />
+                      Documentación consultada
+                    </p>
+                    <div className="space-y-1">
+                      {projectSources.length > 0 && (
+                        <div>
+                          {(kbSources.length > 0 || webSources.length > 0) && (
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Proyecto</p>
+                          )}
+                          <div className="space-y-0.5">
+                            {projectSources.map((src, j) => (
+                              <div key={`p-${j}`} className="flex items-center gap-1.5 text-xs opacity-70">
+                                <FileText className="h-3 w-3 shrink-0 text-vandarum-teal" />
+                                <span className="truncate">{src.title}</span>
+                                <Badge variant="outline" className="text-[10px] py-0 shrink-0">{src.doc_type}</Badge>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      )
-                    )}
+                      )}
+                      {kbSources.length > 0 && (
+                        <div>
+                          {(projectSources.length > 0 || webSources.length > 0) && (
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Base de conocimiento</p>
+                          )}
+                          <div className="space-y-0.5">
+                            {kbSources.map((src, j) => (
+                              <div key={`k-${j}`} className="flex items-center gap-1.5 text-xs opacity-70">
+                                <FileText className="h-3 w-3 shrink-0" />
+                                <span className="truncate">{src.title}</span>
+                                <Badge variant="outline" className="text-[10px] py-0 shrink-0">{src.doc_type}</Badge>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {webSources.length > 0 && (
+                        <div>
+                          {(projectSources.length > 0 || kbSources.length > 0) && (
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Web</p>
+                          )}
+                          <div className="space-y-0.5">
+                            {webSources.map((src, j) => (
+                              <a
+                                key={`w-${j}`}
+                                href={src.excerpt}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1.5 text-xs opacity-70 hover:opacity-100"
+                              >
+                                <Globe className="h-3 w-3 shrink-0 text-blue-500" />
+                                <span className="truncate underline">{src.title || src.excerpt}</span>
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {msg.role === "assistant" && msg.content && !(streaming && i === messages.length - 1) && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs opacity-60">
