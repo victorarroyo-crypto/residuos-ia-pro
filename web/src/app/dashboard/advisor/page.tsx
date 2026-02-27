@@ -13,10 +13,7 @@ import {
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { GoogleDrivePicker } from "@/components/google-drive-picker";
 import { AdvisorChat, ChatMessage } from "@/components/advisor-chat";
-import { createClient } from "@/lib/supabase/client";
 
 // ─── Chat session types ─────────────────────────────────────────
 
@@ -76,11 +73,6 @@ export default function AdvisorPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
-  const [consultantId, setConsultantId] = useState<string>("");
-  const [useGDriveFolder, setUseGDriveFolder] = useState(false);
-  const [gdriveFolderId, setGdriveFolderId] = useState<string>("");
-  const [gdriveFolderName, setGdriveFolderName] = useState<string>("");
-  const [gdriveMaxFiles, setGdriveMaxFiles] = useState<number>(12);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -105,37 +97,6 @@ export default function AdvisorPage() {
       saveSessions([first]);
       saveActiveSessionId(first.id);
     }
-  }, []);
-
-  useEffect(() => {
-    const supabase = createClient();
-    let cancelled = false;
-
-    async function bootstrapAdvisorScope() {
-      const { data } = await supabase.auth.getUser();
-      const userId = data.user?.id || "";
-      if (!userId || cancelled) return;
-
-      setConsultantId(userId);
-
-      try {
-        const statusRes = await fetch(`/api/gdrive/status?consultant_id=${encodeURIComponent(userId)}`);
-        if (!statusRes.ok) return;
-        const status = await statusRes.json();
-        const root = typeof status?.root_folder_id === "string" ? status.root_folder_id : "";
-        if (root && !cancelled) {
-          setGdriveFolderId(root);
-          setGdriveFolderName("Carpeta raíz conectada");
-        }
-      } catch {
-        // Non-blocking: advisor works without Drive folder mode
-      }
-    }
-
-    bootstrapAdvisorScope();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeId) || null;
@@ -266,65 +227,6 @@ export default function AdvisorPage() {
         </div>
       </div>
 
-      {!fullscreen && (
-        <div className="shrink-0 rounded-lg border bg-card p-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={useGDriveFolder}
-                onChange={(e) => setUseGDriveFolder(e.target.checked)}
-              />
-              Analizar carpeta de Google Drive en este chat
-            </label>
-            <GoogleDrivePicker
-              consultantId={consultantId}
-              disabled={!useGDriveFolder || !consultantId}
-              onFolderSelected={(folderId, folderName) => {
-                setGdriveFolderId(folderId);
-                setGdriveFolderName(folderName);
-              }}
-              onError={(err) => {
-                console.error("[advisor-page] picker error", err);
-              }}
-            />
-
-            {gdriveFolderId && (
-              <Badge variant="secondary" className="max-w-[420px] truncate">
-                {gdriveFolderName ? `Drive > ${gdriveFolderName}` : `Drive > ${gdriveFolderId}`}
-              </Badge>
-            )}
-
-            <input
-              type="number"
-              min={1}
-              max={30}
-              value={gdriveMaxFiles}
-              onChange={(e) => setGdriveMaxFiles(Math.max(1, Math.min(30, Number(e.target.value) || 12)))}
-              disabled={!useGDriveFolder}
-              className="h-9 w-24 rounded-md border px-2 text-sm disabled:opacity-50"
-              title="Maximo de archivos a analizar"
-            />
-          </div>
-
-          {useGDriveFolder && (
-            <details className="mt-2 text-xs text-muted-foreground">
-              <summary className="cursor-pointer">Opciones avanzadas (ID manual)</summary>
-              <input
-                type="text"
-                placeholder="Pegar ID de carpeta manualmente"
-                value={gdriveFolderId}
-                onChange={(e) => {
-                  setGdriveFolderId(e.target.value);
-                  if (!e.target.value.trim()) setGdriveFolderName("");
-                }}
-                className="mt-2 h-8 w-full rounded-md border px-2 text-xs"
-              />
-            </details>
-          )}
-        </div>
-      )}
-
       {/* Main content: sidebar + chat */}
       <div className="flex flex-1 min-h-0 gap-3">
         {/* Sidebar - chat history */}
@@ -375,9 +277,6 @@ export default function AdvisorPage() {
             <AdvisorChat
               key={activeId}
               className="flex-1 min-h-0"
-              consultantId={useGDriveFolder ? consultantId : undefined}
-              gdriveFolderId={useGDriveFolder ? gdriveFolderId : undefined}
-              gdriveMaxFiles={gdriveMaxFiles}
               messages={activeSession.messages}
               onMessagesChange={handleMessagesChange}
             />
