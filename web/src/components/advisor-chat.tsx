@@ -580,10 +580,11 @@ export function AdvisorChat({
   // ─── Google Drive browsing ──────────────────────────────────
 
   async function openDriveBrowser() {
-    if (!consultantId || !gdriveRootFolder) return;
+    if (!consultantId || !gdriveConnected) return;
+    const startFolder = gdriveRootFolder || "root";
     setShowDriveBrowser(true);
-    setDriveFolderStack([{ id: gdriveRootFolder, name: "Google Drive" }]);
-    await browseDriveFolder(gdriveRootFolder);
+    setDriveFolderStack([{ id: startFolder, name: "Mi unidad" }]);
+    await browseDriveFolder(startFolder);
   }
 
   async function browseDriveFolder(folderId: string) {
@@ -592,7 +593,13 @@ export function AdvisorChat({
       const res = await fetch(
         `/api/gdrive/browse?consultant_id=${consultantId}&folder_id=${folderId}`
       );
-      if (!res.ok) throw new Error("Error al navegar carpeta");
+      if (!res.ok) {
+        if (res.status === 401) {
+          setShowDriveBrowser(false);
+          throw new Error("Sesión de Google Drive expirada. Reconecta en Ajustes > Google Drive.");
+        }
+        throw new Error("Error al navegar carpeta");
+      }
       const data = await res.json();
       setDriveFolderItems(data.items || []);
     } catch (e) {
