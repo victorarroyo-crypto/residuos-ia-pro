@@ -599,6 +599,7 @@ class GoogleDriveService:
         folder_id: str,
         supported_extensions: set[str] | None = None,
         _path: str = "",
+        max_folders: int = 0,
     ) -> list[dict]:
         """
         Iteratively (BFS) list ALL files under a folder.
@@ -646,6 +647,10 @@ class GoogleDriveService:
                     break
 
             folders_scanned += 1
+            if max_folders > 0 and folders_scanned >= max_folders:
+                logger.info("Drive scan: folder limit reached (%d), returning %d files found so far", max_folders, len(all_files))
+                break
+
             # Throttle: pause between folders to avoid Google API rate limits
             if folder_queue:
                 time.sleep(0.1)
