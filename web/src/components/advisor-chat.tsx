@@ -227,7 +227,6 @@ export function AdvisorChat({
   // Google Drive folder context
   const [consultantId, setConsultantId] = useState<string>("");
   const [gdriveConnected, setGdriveConnected] = useState(false);
-  const [gdriveRootFolder, setGdriveRootFolder] = useState<string>("");
   const [showDriveBrowser, setShowDriveBrowser] = useState(false);
   const [driveBrowsing, setDriveBrowsing] = useState(false);
   const [driveFolderStack, setDriveFolderStack] = useState<{ id: string; name: string }[]>([]);
@@ -264,7 +263,6 @@ export function AdvisorChat({
         .then((status) => {
           if (status?.connected) {
             setGdriveConnected(true);
-            setGdriveRootFolder(status.root_folder_id || "");
           }
         })
         .catch(() => {});
@@ -581,10 +579,9 @@ export function AdvisorChat({
 
   async function openDriveBrowser() {
     if (!consultantId || !gdriveConnected) return;
-    const startFolder = gdriveRootFolder || "root";
     setShowDriveBrowser(true);
-    setDriveFolderStack([{ id: startFolder, name: "Mi unidad" }]);
-    await browseDriveFolder(startFolder);
+    setDriveFolderStack([{ id: "root", name: "Mi unidad" }]);
+    await browseDriveFolder("root");
   }
 
   async function browseDriveFolder(folderId: string) {
