@@ -3014,7 +3014,7 @@ async def advisor_drive_context(request: DriveContextRequest):
     if request.recursive:
         all_files = gd.list_all_files_recursive(
             request.folder_id,
-            supported_extensions=[ext.lstrip(".") for ext in DRIVE_CONTEXT_EXTENSIONS],
+            supported_extensions=DRIVE_CONTEXT_EXTENSIONS,
             max_folders=50,
         )
     else:
