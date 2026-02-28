@@ -2992,7 +2992,7 @@ DRIVE_CONTEXT_EXTENSIONS = {
     ".txt", ".html", ".htm", ".md", ".json", ".xml",
 }
 DRIVE_MAX_FILES = 25
-DRIVE_MAX_TOTAL_TEXT = 120_000  # ~120KB ≈ ~30K tokens
+DRIVE_MAX_TOTAL_TEXT = 500_000  # ~500KB ≈ ~125K tokens (25 archivos × 20K)
 DRIVE_MAX_PER_FILE = 20_000    # ~20KB per file
 
 
