@@ -96,13 +96,13 @@ MODEL_CAPABILITIES: dict[str, dict] = {
     "claude-opus-4-6":   {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 32000, "context": 200000},
     "claude-sonnet-4":   {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 32000, "context": 200000},
     "claude-haiku-4-5":  {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 8192,  "context": 200000},
-    "gpt-5.2":           {"thinking": True,  "web_search": False, "tools": True, "vision": True,  "max_tokens": 32000, "context": 400000},
-    "gpt-5":             {"thinking": False, "web_search": False, "tools": True, "vision": True,  "max_tokens": 16384, "context": 400000},
-    "o3":                {"thinking": True,  "web_search": False, "tools": True, "vision": True,  "max_tokens": 16384, "context": 200000},
-    "o4-mini":           {"thinking": True,  "web_search": False, "tools": True, "vision": True,  "max_tokens": 16384, "context": 200000},
-    "gpt-5-mini":        {"thinking": False, "web_search": False, "tools": True, "vision": True,  "max_tokens": 8192,  "context": 400000},
-    "gemini-2.5-pro":    {"thinking": True,  "web_search": False, "tools": True, "vision": True,  "max_tokens": 32000, "context": 1000000},
-    "gemini-2.5-flash":  {"thinking": True,  "web_search": False, "tools": True, "vision": True,  "max_tokens": 8192,  "context": 1000000},
+    "gpt-5.2":           {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 32000, "context": 400000},
+    "gpt-5":             {"thinking": False, "web_search": True,  "tools": True, "vision": True,  "max_tokens": 16384, "context": 400000},
+    "o3":                {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 16384, "context": 200000},
+    "o4-mini":           {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 16384, "context": 200000},
+    "gpt-5-mini":        {"thinking": False, "web_search": True,  "tools": True, "vision": True,  "max_tokens": 8192,  "context": 400000},
+    "gemini-2.5-pro":    {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 32000, "context": 1000000},
+    "gemini-2.5-flash":  {"thinking": True,  "web_search": True,  "tools": True, "vision": True,  "max_tokens": 8192,  "context": 1000000},
 }
 
 
@@ -120,6 +120,70 @@ class ModelCallResult:
     raw_response: Any = None
     fallback_used: bool = False
     warning: str = ""
+
+
+# ── Helpers para extraer fuentes web de Google y OpenAI ──────────
+
+
+def _extract_google_web_sources(response) -> list[dict]:
+    """Extrae fuentes web del grounding_metadata de Gemini."""
+    sources: list[dict] = []
+    try:
+        for candidate in getattr(response, "candidates", []):
+            grounding = getattr(candidate, "grounding_metadata", None)
+            if not grounding:
+                continue
+            # grounding_chunks contiene las fuentes
+            for chunk in getattr(grounding, "grounding_chunks", []):
+                web = getattr(chunk, "web", None)
+                if web:
+                    sources.append({
+                        "title": getattr(web, "title", "") or "",
+                        "url": getattr(web, "uri", "") or "",
+                    })
+            # search_entry_point puede tener info adicional
+            support = getattr(grounding, "grounding_supports", [])
+            for s in (support or []):
+                for seg_chunk in getattr(s, "grounding_chunk_indices", []):
+                    pass  # Ya procesado arriba via grounding_chunks
+    except Exception as e:
+        logger.debug("Error extrayendo web sources de Gemini: %s", e)
+    return sources
+
+
+def _extract_openai_responses_text(response) -> str:
+    """Extrae texto de una respuesta de OpenAI Responses API."""
+    try:
+        for item in getattr(response, "output", []):
+            if getattr(item, "type", None) == "message":
+                for content in getattr(item, "content", []):
+                    if getattr(content, "type", None) == "output_text":
+                        return getattr(content, "text", "") or ""
+    except Exception as e:
+        logger.debug("Error extrayendo texto de OpenAI Responses: %s", e)
+    return ""
+
+
+def _extract_openai_web_sources(response) -> list[dict]:
+    """Extrae fuentes web de las annotations de OpenAI Responses API."""
+    sources: list[dict] = []
+    seen_urls: set[str] = set()
+    try:
+        for item in getattr(response, "output", []):
+            if getattr(item, "type", None) == "message":
+                for content in getattr(item, "content", []):
+                    for ann in getattr(content, "annotations", []):
+                        if getattr(ann, "type", None) == "url_citation":
+                            url = getattr(ann, "url", "") or ""
+                            if url and url not in seen_urls:
+                                seen_urls.add(url)
+                                sources.append({
+                                    "title": getattr(ann, "title", "") or url,
+                                    "url": url,
+                                })
+    except Exception as e:
+        logger.debug("Error extrayendo web sources de OpenAI Responses: %s", e)
+    return sources
 
 
 class ModelRouter:
@@ -232,12 +296,22 @@ class ModelRouter:
         max_tokens: int = 16384,
         tools: Optional[list] = None,
         temperature: float = 0.7,
+        web_search: bool = False,
     ):
-        """Llama a un modelo OpenAI. Devuelve el response raw."""
+        """Llama a un modelo OpenAI. Devuelve el response raw.
+
+        Si web_search=True, usa la Responses API con web_search_preview.
+        Si no, usa Chat Completions (compatible con todos los modelos).
+        """
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self._openai_key)
         api_model = MODEL_API_IDS.get(model, model)
+
+        if web_search:
+            return await self._call_openai_responses(
+                client, api_model, model, system_prompt, messages, max_tokens,
+            )
 
         openai_messages = [{"role": "system", "content": system_prompt}]
         for msg in messages:
@@ -264,6 +338,36 @@ class ModelRouter:
         response = await client.chat.completions.create(**kwargs)
         return response
 
+    async def _call_openai_responses(
+        self,
+        client,
+        api_model: str,
+        model: str,
+        system_prompt: str,
+        messages: list[dict],
+        max_tokens: int,
+    ):
+        """Llama a OpenAI via Responses API con web_search_preview."""
+        # Construir input para Responses API
+        input_items = [{"role": "system", "content": system_prompt}]
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text = " ".join(
+                    b["text"] for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+                content = text if text else str(content)
+            input_items.append({"role": msg["role"], "content": content})
+
+        response = await client.responses.create(
+            model=api_model,
+            input=input_items,
+            tools=[{"type": "web_search_preview"}],
+            max_output_tokens=max_tokens,
+        )
+        return response
+
     async def call_google(
         self,
         model: str,
@@ -271,6 +375,8 @@ class ModelRouter:
         messages: list[dict],
         max_tokens: int = 32000,
         temperature: float = 0.7,
+        thinking_budget: Optional[int] = None,
+        web_search: bool = False,
     ):
         """Llama a un modelo Google Gemini. Devuelve el response raw."""
         from google import genai
@@ -296,6 +402,19 @@ class ModelRouter:
                 )
             )
 
+        # Thinking config con budget
+        thinking_cfg = genai_types.ThinkingConfig(include_thoughts=True)
+        if thinking_budget:
+            thinking_cfg = genai_types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_budget=thinking_budget,
+            )
+
+        # Google Search grounding tool
+        tools = None
+        if web_search:
+            tools = [genai_types.Tool(google_search=genai_types.GoogleSearch())]
+
         response = await client.aio.models.generate_content(
             model=api_model,
             contents=gemini_contents,
@@ -303,7 +422,8 @@ class ModelRouter:
                 system_instruction=system_prompt,
                 max_output_tokens=max_tokens,
                 temperature=temperature,
-                thinking_config=genai_types.ThinkingConfig(include_thoughts=True),
+                thinking_config=thinking_cfg,
+                tools=tools,
             ),
         )
         return response
@@ -419,6 +539,7 @@ class ModelRouter:
         thinking_budget: Optional[int],
         tools: Optional[list],
         temperature: float,
+        web_search: bool = False,
     ) -> ModelCallResult:
         """Llama al modelo y normaliza la respuesta."""
 
@@ -459,15 +580,30 @@ class ModelRouter:
                 model, system_prompt, messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                web_search=web_search,
             )
-            text = response.choices[0].message.content or ""
-            usage = response.usage
+            web_sources = []
+            if web_search:
+                # Responses API: extraer texto y fuentes web
+                text = _extract_openai_responses_text(response)
+                web_sources = _extract_openai_web_sources(response)
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+                output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+            else:
+                # Chat Completions API
+                text = response.choices[0].message.content or ""
+                usage = response.usage
+                input_tokens = usage.prompt_tokens if usage else 0
+                output_tokens = usage.completion_tokens if usage else 0
+
             return ModelCallResult(
                 text=text,
                 model_used=model,
                 provider=provider,
-                input_tokens=usage.prompt_tokens if usage else 0,
-                output_tokens=usage.completion_tokens if usage else 0,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                web_sources=web_sources,
                 raw_response=response,
             )
 
@@ -476,8 +612,11 @@ class ModelRouter:
                 model, system_prompt, messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                thinking_budget=thinking_budget,
+                web_search=web_search,
             )
             text = response.text or ""
+            web_sources = _extract_google_web_sources(response)
             usage_meta = getattr(response, "usage_metadata", None)
             input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
             output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
@@ -487,6 +626,7 @@ class ModelRouter:
                 provider=provider,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                web_sources=web_sources,
                 raw_response=response,
             )
 
