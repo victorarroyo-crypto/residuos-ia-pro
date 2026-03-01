@@ -4,8 +4,10 @@ Expone el pipeline de procesamiento de documentos via HTTP.
 """
 
 import gc
+import ipaddress
 import json
 import os
+import socket
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -174,10 +176,30 @@ async def ingest_document(
             detail="Debes enviar un archivo (`file`), una URL (`file_url`) o un `storage_path`.",
         )
 
+    def _check_ssrf(url: str) -> None:
+        """Block requests to private/internal IP addresses."""
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            raise HTTPException(status_code=400, detail="URL sin hostname valido")
+        try:
+            resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            for family, _, _, _, sockaddr in resolved:
+                ip = ipaddress.ip_address(sockaddr[0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No se permiten URLs que apunten a direcciones IP internas",
+                    )
+        except socket.gaierror:
+            raise HTTPException(status_code=400, detail=f"No se puede resolver el hostname: {hostname}")
+
     async def _validate_pdf_url(url: str) -> None:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             raise HTTPException(status_code=400, detail="file_url debe usar http/https")
+
+        _check_ssrf(url)
 
         try:
             async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
