@@ -168,10 +168,13 @@ class ModelRouter:
     ) -> list[str]:
         """Obtiene la cadena configurada por el consultor, o defaults."""
         if model_override and model_override in MODEL_API_IDS:
-            # Override directo desde UI: ese modelo + defaults como fallback
-            defaults = SERVICE_DEFAULTS.get(service, {}).get("standard", {})
+            # Override directo desde UI: ese modelo + fallback del tier correspondiente
+            tier = tier_override or "standard"
+            defaults = SERVICE_DEFAULTS.get(service, {}).get(tier, {})
+            if not defaults:
+                defaults = SERVICE_DEFAULTS.get(service, {}).get("standard", {})
             fallback = list(defaults.get("fallback_chain", []))
-            return self.get_chain(service, "standard", model_override, fallback)
+            return self.get_chain(service, tier, model_override, fallback)
 
         if consultant_id and self._cost_guard:
             config = await self._cost_guard.get_model_config(consultant_id, service)
