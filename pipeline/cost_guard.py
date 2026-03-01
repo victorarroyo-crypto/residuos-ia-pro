@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from supabase import create_client, Client
+from supabase._async.client import AsyncClient, create_client as acreate_client
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +95,12 @@ class CostGuard:
     def __init__(self, supabase_url: str, supabase_key: str):
         self._url = supabase_url
         self._key = supabase_key
+        self._client_cache: Optional[AsyncClient] = None
 
-    def _client(self) -> Client:
-        return create_client(self._url, self._key)
+    async def _client(self) -> AsyncClient:
+        if self._client_cache is None:
+            self._client_cache = await acreate_client(self._url, self._key)
+        return self._client_cache
 
     async def check(self, provider: str, consultant_id: Optional[str]) -> CheckResult:
         """Verifica si el consultor puede hacer una llamada al proveedor.
@@ -109,13 +112,13 @@ class CostGuard:
             return CheckResult(allowed=True)
 
         try:
-            sb = self._client()
+            sb = await self._client()
 
             # Obtener limites del consultor
             limits = await self._get_limits(sb, consultant_id)
 
             # Obtener gasto actual del proveedor
-            spending = sb.rpc("get_provider_spending", {
+            spending = await sb.rpc("get_provider_spending", {
                 "p_consultant_id": consultant_id,
                 "p_provider": provider,
             }).execute()
@@ -151,7 +154,7 @@ class CostGuard:
 
             # Verificar limite global
             if limits.get("block_on_global_limit"):
-                global_spending = sb.rpc("get_global_spending", {
+                global_spending = await sb.rpc("get_global_spending", {
                     "p_consultant_id": consultant_id,
                 }).execute()
                 if global_spending.data and len(global_spending.data) > 0:
@@ -210,7 +213,7 @@ class CostGuard:
         cost = calculate_cost(model, input_tokens, output_tokens)
 
         try:
-            sb = self._client()
+            sb = await self._client()
             row = {
                 "consultant_id": consultant_id,
                 "service": service,
@@ -226,7 +229,7 @@ class CostGuard:
                 "success": success,
                 "metadata": metadata or {},
             }
-            sb.table("api_usage_log").insert(row).execute()
+            await sb.table("api_usage_log").insert(row).execute()
             logger.info(
                 "CostGuard: %s/%s %s — %d in + %d out = $%.4f (%.0fms)",
                 provider, model, operation,
@@ -244,10 +247,10 @@ class CostGuard:
     ) -> dict:
         """Estadisticas de uso para el dashboard."""
         try:
-            sb = self._client()
+            sb = await self._client()
 
             # Obtener uso diario agrupado
-            result = sb.table("api_usage_log") \
+            result = await sb.table("api_usage_log") \
                 .select("created_at, provider, model, service, input_tokens, output_tokens, cost_usd, duration_ms") \
                 .eq("consultant_id", consultant_id) \
                 .gte("created_at", (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()) \
@@ -258,7 +261,7 @@ class CostGuard:
             # Totales por proveedor
             provider_spending = {}
             for provider in ("anthropic", "openai", "google"):
-                spending = sb.rpc("get_provider_spending", {
+                spending = await sb.rpc("get_provider_spending", {
                     "p_consultant_id": consultant_id,
                     "p_provider": provider,
                 }).execute()
@@ -269,7 +272,7 @@ class CostGuard:
                     }
 
             # Global
-            global_spending = sb.rpc("get_global_spending", {
+            global_spending = await sb.rpc("get_global_spending", {
                 "p_consultant_id": consultant_id,
             }).execute()
 
@@ -297,12 +300,12 @@ class CostGuard:
     async def update_limits(self, consultant_id: str, limits: dict) -> bool:
         """Actualiza los limites de coste de un consultor."""
         try:
-            sb = self._client()
+            sb = await self._client()
             allowed_keys = set(DEFAULT_LIMITS.keys())
             clean = {k: v for k, v in limits.items() if k in allowed_keys}
             clean["updated_at"] = "now()"
 
-            sb.table("consultant_cost_limits").upsert({
+            await sb.table("consultant_cost_limits").upsert({
                 "consultant_id": consultant_id,
                 **clean,
             }, on_conflict="consultant_id").execute()
@@ -314,8 +317,8 @@ class CostGuard:
     async def get_model_config(self, consultant_id: str, service: str) -> dict:
         """Obtiene la config de modelo para un servicio."""
         try:
-            sb = self._client()
-            result = sb.table("consultant_model_config") \
+            sb = await self._client()
+            result = await sb.table("consultant_model_config") \
                 .select("*") \
                 .eq("consultant_id", consultant_id) \
                 .eq("service", service) \
@@ -336,8 +339,8 @@ class CostGuard:
     ) -> bool:
         """Actualiza la config de modelo para un servicio."""
         try:
-            sb = self._client()
-            sb.table("consultant_model_config").upsert({
+            sb = await self._client()
+            await sb.table("consultant_model_config").upsert({
                 "consultant_id": consultant_id,
                 "service": service,
                 "preferred_model": preferred_model,
@@ -350,10 +353,10 @@ class CostGuard:
             logger.error(f"CostGuard.update_model_config error: {e}")
             return False
 
-    async def _get_limits(self, sb: Client, consultant_id: str) -> dict:
+    async def _get_limits(self, sb: AsyncClient, consultant_id: str) -> dict:
         """Obtiene limites del consultor, con defaults si no existen."""
         try:
-            result = sb.table("consultant_cost_limits") \
+            result = await sb.table("consultant_cost_limits") \
                 .select("*") \
                 .eq("consultant_id", consultant_id) \
                 .limit(1) \
