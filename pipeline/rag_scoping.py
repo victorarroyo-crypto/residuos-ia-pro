@@ -295,12 +295,23 @@ class RAGScopingService:
             parsed = json.loads(text)
             scores = parsed.get("scores", [])
 
-            if len(scores) != len(results):
-                logger.warning(
-                    f"Rerank: esperaba {len(results)} scores, recibió {len(scores)}. "
-                    f"Usando hybrid_score como fallback."
-                )
-                return results[:top_n]
+            if len(scores) < len(results):
+                # Tolerar scores faltantes: rellenar con 0
+                diff = len(results) - len(scores)
+                if diff <= 3:
+                    logger.info(
+                        f"Rerank: esperaba {len(results)} scores, recibió {len(scores)}. "
+                        f"Rellenando {diff} faltantes con 0."
+                    )
+                    scores.extend([0] * diff)
+                else:
+                    logger.warning(
+                        f"Rerank: esperaba {len(results)} scores, recibió {len(scores)}. "
+                        f"Usando hybrid_score como fallback."
+                    )
+                    return results[:top_n]
+            elif len(scores) > len(results):
+                scores = scores[:len(results)]
 
             for i, r in enumerate(results):
                 r.rerank_score = float(scores[i])

@@ -356,10 +356,10 @@ class CostGuard:
             result = sb.table("consultant_cost_limits") \
                 .select("*") \
                 .eq("consultant_id", consultant_id) \
-                .maybe_single() \
+                .limit(1) \
                 .execute()
-            if result.data:
-                return result.data
+            if result.data and len(result.data) > 0:
+                return result.data[0]
         except Exception:
             pass
         return dict(DEFAULT_LIMITS)
