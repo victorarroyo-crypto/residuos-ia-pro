@@ -1709,31 +1709,30 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
 
                         yield _sse_event("status", {"phase": "thinking"})
 
-                        last_chunk = None
-                        gemini_full_response = None
-                        async for chunk in await gemini_client.aio.models.generate_content_stream(
+                        # Non-streaming: grounding_metadata no se propaga en chunks
+                        # de streaming con AFC (Automatic Function Calling) en google-genai SDK.
+                        # Usamos generate_content y emitimos el texto como SSE.
+                        gemini_response = await gemini_client.aio.models.generate_content(
                             model=api_model,
                             contents=gemini_contents,
                             config=gemini_config,
-                        ):
-                            last_chunk = chunk
-                            gemini_full_response = chunk  # El ultimo chunk tiene grounding_metadata
-                            if chunk.candidates and chunk.candidates[0].content:
-                                for part in chunk.candidates[0].content.parts:
-                                    if part.text and not getattr(part, "thought", False):
-                                        text_streamed = True
-                                        yield _sse_event("text_delta", {"text": part.text})
+                        )
 
-                        # Extract usage from last chunk
-                        if last_chunk:
-                            usage_meta = getattr(last_chunk, "usage_metadata", None)
-                            stream_input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
-                            stream_output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
+                        # Emitir texto como SSE (excluyendo thoughts)
+                        if gemini_response.candidates and gemini_response.candidates[0].content:
+                            for part in gemini_response.candidates[0].content.parts:
+                                if part.text and not getattr(part, "thought", False):
+                                    text_streamed = True
+                                    yield _sse_event("text_delta", {"text": part.text})
 
-                        # Extract web sources from Gemini grounding
-                        if gemini_full_response:
-                            from pipeline.model_router import _extract_google_web_sources
-                            gemini_web_sources = _extract_google_web_sources(gemini_full_response)
+                        # Extract usage
+                        usage_meta = getattr(gemini_response, "usage_metadata", None)
+                        stream_input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
+                        stream_output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
+
+                        # Extract web sources from grounding_metadata (fiable en non-streaming)
+                        from pipeline.model_router import _extract_google_web_sources
+                        gemini_web_sources = _extract_google_web_sources(gemini_response)
 
                         model_used = model_id
                         break  # success
