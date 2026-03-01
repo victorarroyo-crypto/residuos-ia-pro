@@ -21,9 +21,15 @@ import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_VALID_TIERS = {"standard", "pro_plus"}
+_VALID_MODELS = {
+    "claude-opus-4-6", "claude-sonnet-4", "claude-haiku-4-5",
+    "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-5-mini",
+    "gemini-2.5-pro", "gemini-2.5-flash",
+}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("residusia")
@@ -666,6 +672,20 @@ class AdvisorRequest(BaseModel):
     model_override: Optional[str] = None   # Override: 'claude-opus-4-6', 'gpt-5.2', etc.
     tier: Optional[str] = None              # 'standard' or 'pro_plus'
 
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v):
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"tier debe ser 'standard' o 'pro_plus', recibido: {v!r}")
+        return v
+
+    @field_validator("model_override")
+    @classmethod
+    def validate_model(cls, v):
+        if v is not None and v not in _VALID_MODELS:
+            raise ValueError(f"model_override no reconocido: {v!r}")
+        return v
+
 
 class AdvisorResponse(BaseModel):
     answer: str
@@ -1289,6 +1309,15 @@ async def advisor_chat(
     import base64 as b64
     import json
 
+    # Validar tier y model_override antes de procesar
+    if tier and tier not in _VALID_TIERS:
+        raise HTTPException(status_code=422, detail=f"tier invalido: {tier}")
+    if model_override and model_override not in _VALID_MODELS:
+        raise HTTPException(status_code=422, detail=f"model_override invalido: {model_override}")
+
+    # Clamp gdrive_max_files
+    gdrive_max_files = max(1, min(gdrive_max_files, 30))
+
     try:
         # Parse JSON fields
         try:
@@ -1752,11 +1781,25 @@ async def advisor_stream(request: AdvisorRequest):
 # ═══════════════════════════════════════════════════════════════
 
 class AnalyzeRequest(BaseModel):
-    project_id: str
+    project_id: str = Field(pattern=_UUID_PATTERN)
     agents: Optional[list[str]] = None  # None = all agents
     model_override: Optional[str] = None
     tier: Optional[str] = None
     consultant_id: Optional[str] = None
+
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v):
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"tier debe ser 'standard' o 'pro_plus', recibido: {v!r}")
+        return v
+
+    @field_validator("model_override")
+    @classmethod
+    def validate_model(cls, v):
+        if v is not None and v not in _VALID_MODELS:
+            raise ValueError(f"model_override no reconocido: {v!r}")
+        return v
 
 
 @app.post("/api/analyze")
@@ -1768,6 +1811,8 @@ async def analyze_project(request: AnalyzeRequest):
     """
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    await _verify_project_ownership(request.project_id, request.consultant_id)
 
     from pipeline.agents import run_project_analysis
 
@@ -1785,6 +1830,8 @@ async def analyze_project(request: AnalyzeRequest):
             consultant_id=request.consultant_id or "",
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error en analisis del proyecto {request.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1810,6 +1857,11 @@ async def create_session(project_id: str = Form(...), consultant_id: str = Form(
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    if not re.match(_UUID_PATTERN, project_id):
+        raise HTTPException(status_code=400, detail="project_id debe ser UUID valido")
+
+    await _verify_project_ownership(project_id, consultant_id)
+
     from supabase._async.client import create_client as acreate_client
     sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
 
@@ -1826,10 +1878,15 @@ async def create_session(project_id: str = Form(...), consultant_id: str = Form(
 
 
 @app.get("/api/analyze/session/{project_id}")
-async def get_session(project_id: str):
+async def get_session(project_id: str, consultant_id: Optional[str] = None):
     """Get the latest active session for a project."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    if not re.match(_UUID_PATTERN, project_id):
+        raise HTTPException(status_code=400, detail="project_id debe ser UUID valido")
+
+    await _verify_project_ownership(project_id, consultant_id)
 
     from supabase._async.client import create_client as acreate_client
     sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
@@ -1838,6 +1895,7 @@ async def get_session(project_id: str):
         sb.table("analysis_sessions")
         .select("*")
         .eq("project_id", project_id)
+        .eq("consultant_id", consultant_id)
         .neq("phase", "complete")
         .order("created_at", desc=True)
         .limit(1)
@@ -1850,13 +1908,29 @@ async def get_session(project_id: str):
 
 
 @app.patch("/api/analyze/session/{session_id}")
-async def update_session(session_id: str, request: SessionUpdate):
+async def update_session(session_id: str, request: SessionUpdate, consultant_id: Optional[str] = None):
     """Update a session's state (phase, plan, results, etc.)."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    if not re.match(_UUID_PATTERN, session_id):
+        raise HTTPException(status_code=400, detail="session_id debe ser UUID valido")
+
     from supabase._async.client import create_client as acreate_client
     sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
+
+    # Verificar que la sesion pertenece al consultor
+    if consultant_id:
+        session_check = await (
+            sb.table("analysis_sessions")
+            .select("id")
+            .eq("id", session_id)
+            .eq("consultant_id", consultant_id)
+            .single()
+            .execute()
+        )
+        if not session_check.data:
+            raise HTTPException(status_code=403, detail="No tienes acceso a esta sesion")
 
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
     if not updates:
@@ -1884,8 +1958,27 @@ async def _cleanup_analysis_progress(project_id: str):
         logger.warning(f"Could not cleanup analysis_progress for {project_id}: {e}")
 
 
+async def _verify_project_ownership(project_id: str, consultant_id: Optional[str]) -> None:
+    """Verifica que el consultor es dueno del proyecto. Lanza 403 si no."""
+    if not consultant_id:
+        raise HTTPException(status_code=401, detail="consultant_id requerido")
+    from supabase._async.client import create_client as acreate_client
+    sb = await acreate_client(_config.supabase_url, _config.supabase_service_key)
+    result = await (
+        sb.table("projects")
+        .select("id")
+        .eq("id", project_id)
+        .eq("consultant_id", consultant_id)
+        .single()
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=403, detail="No tienes acceso a este proyecto")
+
+
 class PlanRequest(BaseModel):
     project_id: str = Field(pattern=_UUID_PATTERN)
+    consultant_id: Optional[str] = None
 
 
 class ExecuteRequest(BaseModel):
@@ -1896,6 +1989,20 @@ class ExecuteRequest(BaseModel):
     model_override: Optional[str] = None
     tier: Optional[str] = None
     consultant_id: Optional[str] = None
+
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v):
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"tier debe ser 'standard' o 'pro_plus', recibido: {v!r}")
+        return v
+
+    @field_validator("model_override")
+    @classmethod
+    def validate_model(cls, v):
+        if v is not None and v not in _VALID_MODELS:
+            raise ValueError(f"model_override no reconocido: {v!r}")
+        return v
 
 
 class Round2Request(BaseModel):
@@ -1908,12 +2015,28 @@ class Round2Request(BaseModel):
     tier: Optional[str] = None
     consultant_id: Optional[str] = None
 
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v):
+        if v is not None and v not in _VALID_TIERS:
+            raise ValueError(f"tier debe ser 'standard' o 'pro_plus', recibido: {v!r}")
+        return v
+
+    @field_validator("model_override")
+    @classmethod
+    def validate_model(cls, v):
+        if v is not None and v not in _VALID_MODELS:
+            raise ValueError(f"model_override no reconocido: {v!r}")
+        return v
+
 
 @app.post("/api/analyze/plan")
 async def analyze_plan(request: PlanRequest):
     """Fase 0: Carga datos del proyecto y genera un plan de analisis inteligente."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    await _verify_project_ownership(request.project_id, request.consultant_id)
 
     from pipeline.agents import plan_analysis
 
@@ -1925,6 +2048,8 @@ async def analyze_plan(request: PlanRequest):
             anthropic_api_key=_config.anthropic_api_key,
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error planificando analisis {request.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1935,6 +2060,8 @@ async def analyze_execute(request: ExecuteRequest):
     """Fase 2: Ejecuta el analisis con instrucciones del consultor."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    await _verify_project_ownership(request.project_id, request.consultant_id)
 
     from pipeline.agents import run_project_analysis
 
@@ -1956,6 +2083,8 @@ async def analyze_execute(request: ExecuteRequest):
         # Cleanup old progress rows (Realtime already delivered them)
         await _cleanup_analysis_progress(request.project_id)
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         await _cleanup_analysis_progress(request.project_id)
         logger.error(f"Error ejecutando analisis {request.project_id}: {e}")
@@ -1967,6 +2096,8 @@ async def analyze_round2(request: Round2Request):
     """Fase 3: Segunda vuelta con hallazgos previos como contexto."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+
+    await _verify_project_ownership(request.project_id, request.consultant_id)
 
     from pipeline.agents import run_project_analysis
 
@@ -1989,6 +2120,8 @@ async def analyze_round2(request: Round2Request):
         )
         await _cleanup_analysis_progress(request.project_id)
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         await _cleanup_analysis_progress(request.project_id)
         logger.error(f"Error en 2a vuelta {request.project_id}: {e}")
