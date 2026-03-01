@@ -1581,6 +1581,8 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
             text_streamed = False
             model_used = chain[0] if chain else "claude-sonnet-4"
             final = None
+            stream_input_tokens = 0
+            stream_output_tokens = 0
             stream_start = time.monotonic()
             last_keepalive = stream_start
 
@@ -1672,16 +1674,24 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                             ),
                         )
 
+                        last_chunk = None
                         async for chunk in await gemini_client.aio.models.generate_content_stream(
                             model=api_model,
                             contents=gemini_contents,
                             config=gemini_config,
                         ):
+                            last_chunk = chunk
                             if chunk.candidates and chunk.candidates[0].content:
                                 for part in chunk.candidates[0].content.parts:
                                     if part.text and not getattr(part, "thought", False):
                                         text_streamed = True
                                         yield _sse_event("text_delta", {"text": part.text})
+
+                        # Extract usage from last chunk
+                        if last_chunk:
+                            usage_meta = getattr(last_chunk, "usage_metadata", None)
+                            stream_input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
+                            stream_output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
 
                         model_used = model_id
                         break  # success
@@ -1698,6 +1708,11 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                         if oai_text:
                             text_streamed = True
                             yield _sse_event("text_delta", {"text": oai_text})
+
+                        # Extract usage from response
+                        oai_usage = response.usage
+                        stream_input_tokens = oai_usage.prompt_tokens if oai_usage else 0
+                        stream_output_tokens = oai_usage.completion_tokens if oai_usage else 0
 
                         model_used = model_id
                         break  # success
@@ -1752,9 +1767,8 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                         "excerpt": ws["url"],
                     })
 
-            # 8. Record cost
-            stream_input_tokens = 0
-            stream_output_tokens = 0
+            # 8. Record cost (tokens already set by Google/OpenAI branches above;
+            #    for Anthropic, extract from final message)
             if final is not None:
                 stream_input_tokens = final.usage.input_tokens
                 stream_output_tokens = final.usage.output_tokens
