@@ -277,7 +277,7 @@ class ModelRouter:
             "messages": messages,
         }
         if thinking_budget:
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            kwargs["thinking"] = {"type": "adaptive", "budget_tokens": thinking_budget}
         else:
             kwargs["temperature"] = temperature
         if tools:
