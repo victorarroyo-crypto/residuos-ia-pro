@@ -134,7 +134,7 @@ def _extract_google_web_sources(response) -> list[dict]:
             if not grounding:
                 continue
             # grounding_chunks contiene las fuentes
-            for chunk in getattr(grounding, "grounding_chunks", []):
+            for chunk in (getattr(grounding, "grounding_chunks", None) or []):
                 web = getattr(chunk, "web", None)
                 if web:
                     sources.append({
