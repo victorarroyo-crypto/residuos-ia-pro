@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ projectId: string; docId: string }> }
 ) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
+
   const { projectId, docId } = await params;
 
   const admin = getAdminClient();
@@ -13,6 +20,21 @@ export async function DELETE(
   }
 
   try {
+    // Verify the project belongs to the authenticated user
+    const { data: project } = await admin.client
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("consultant_id", user.id)
+      .single();
+
+    if (!project) {
+      return NextResponse.json(
+        { error: "Proyecto no encontrado o no autorizado" },
+        { status: 403 }
+      );
+    }
+
     // Verify the document belongs to this project
     const { data: doc } = await admin.client
       .from("project_documents")
