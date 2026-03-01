@@ -1081,7 +1081,7 @@ async def _run_advisor(
                     model=api_model,
                     max_tokens=32000,
                     thinking={
-                        "type": "enabled",
+                        "type": "adaptive",
                         "budget_tokens": thinking_budget,
                     },
                     tools=[web_search_tool],
