@@ -13,12 +13,28 @@ Por tipo de documento extrae:
 """
 
 import logging
+import os
 import re
 from anthropic import AsyncAnthropic
 
 from .pdf_pipeline import DocType, PageContent, PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_filename_as_title(filename: str) -> str:
+    """Fallback: deriva un título legible del nombre de archivo."""
+    name = os.path.splitext(filename)[0]
+    # Quitar prefijos tipo BOE-A-2022-5809_
+    name = re.sub(r"^BOE-[A-Z]-\d{4}-\d+[_\-]?", "", name)
+    name = re.sub(r"^RD[_\-]", "RD ", name)
+    name = name.replace("_", " ").replace("-", " ")
+    # Colapsar espacios
+    name = re.sub(r"\s{2,}", " ", name).strip()
+    # Capitalizar primera letra
+    if name:
+        name = name[0].upper() + name[1:]
+    return name or filename
 
 # Patrón LER: XX XX XX (con espacios) o XXXXXX (sin espacios) o XX 00 00*
 LER_PATTERN = re.compile(
@@ -37,11 +53,55 @@ class MetadataExtractor:
         self.config = config
         self.claude = AsyncAnthropic(api_key=config.anthropic_api_key, max_retries=4)
 
+    async def extract_title(
+        self,
+        text: str,
+        filename: str,
+        doc_type: str = "",
+    ) -> str:
+        """Extrae un título profesional y legible del contenido del documento.
+
+        Usa Claude Haiku para derivar un título corto a partir del texto.
+        Si falla, limpia el nombre del archivo como fallback.
+        """
+        snippet = text[:1500].strip()
+        if not snippet:
+            return _clean_filename_as_title(filename)
+
+        prompt = (
+            "A partir del siguiente fragmento de un documento y su nombre de archivo, "
+            "genera un título profesional, conciso y legible en español para este documento. "
+            "Máximo 120 caracteres. No uses comillas. "
+            "Si es legislación, incluye el número de ley/decreto y el tema principal. "
+            "Si es un contrato o factura, incluye las partes o el gestor. "
+            "Si es un BREF o documento técnico, incluye el sector.\n\n"
+            f"Nombre de archivo: {filename}\n"
+        )
+        if doc_type:
+            prompt += f"Tipo de documento: {doc_type}\n"
+        prompt += f"\nFragmento del documento:\n{snippet}\n\nTítulo:"
+
+        try:
+            response = await self.claude.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=60,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            title = response.content[0].text.strip().strip('"').strip("«»")
+            if title and len(title) <= 150:
+                logger.info(f"Título extraído por LLM: {title}")
+                return title
+        except Exception as e:
+            logger.warning(f"Error extrayendo título con LLM: {e}")
+
+        return _clean_filename_as_title(filename)
+
     async def extract(
         self,
         pages: list[PageContent],
         doc_type: DocType,
         client_id: str,
+        filename: str = "",
     ) -> dict:
         """Extrae metadatos según el tipo de documento."""
 
@@ -58,6 +118,11 @@ class MetadataExtractor:
             "num_pages": len(pages),
             "num_tables": len(all_tables),
         }
+
+        # Título extraído con LLM
+        base_metadata["extracted_title"] = await self.extract_title(
+            full_text, filename, doc_type.value,
+        )
 
         # Extracción estructurada con LLM según tipo
         extractor_map = {

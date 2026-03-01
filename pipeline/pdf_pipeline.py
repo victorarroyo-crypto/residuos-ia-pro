@@ -207,8 +207,8 @@ class PDFPipeline:
 
         # ── PASO 7: Extraer metadatos estructurados ───────────────────────
         await self._emit_progress(doc_id, "extrayendo_metadatos", 75)
-        metadata = await self.metadata_ex.extract(pages, doc_type, client_id)
-        # metadata incluye: LERs encontrados, fechas, importes, gestores, números expediente
+        metadata = await self.metadata_ex.extract(pages, doc_type, client_id, filename=filename)
+        # metadata incluye: extracted_title, LERs encontrados, fechas, importes, gestores
 
         # ── PASO 8: Almacenar ─────────────────────────────────────────────
         await self._emit_progress(doc_id, "almacenando", 85)

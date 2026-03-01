@@ -29,6 +29,7 @@ from .pdf_pipeline import (
 )
 from .classifier_chunker import DocumentClassifier, SemanticChunker
 from .config import EmbeddingService
+from .metadata_extractor import MetadataExtractor
 from .storage import StorageService
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,7 @@ class TextProcessor:
         self.chunker = SemanticChunker(config)
         self.embedder = EmbeddingService(config)
         self.storage = StorageService(config)
+        self.metadata_ex = MetadataExtractor(config)
 
     async def process(
         self,
@@ -147,6 +149,11 @@ class TextProcessor:
         doc_type = await self.classifier.classify(pages, filename, project_id=project_id)
         logger.info(f"[{filename}] Tipo detectado: {doc_type}")
 
+        # Extraer título con LLM
+        extracted_title = await self.metadata_ex.extract_title(
+            text, filename, doc_type.value,
+        )
+
         # Chunking semántico
         chunks = await self.chunker.chunk(pages, doc_type, doc_id, filename=filename)
         logger.info(f"[{filename}] {len(chunks)} chunks generados")
@@ -177,7 +184,7 @@ class TextProcessor:
             ocr_applied=False,
             ocr_avg_confidence=1.0,
             extraction_warnings=[],
-            metadata={"rag_scope": rag_scope, "format": ext},
+            metadata={"rag_scope": rag_scope, "format": ext, "extracted_title": extracted_title},
             storage_path=storage_path,
         )
 
