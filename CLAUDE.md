@@ -132,18 +132,23 @@ residuos-ia-pro/
         │   ├── dashboard/
         │   │   ├── layout.tsx          # Layout con sidebar
         │   │   ├── page.tsx            # KPIs, alertas, docs recientes
+        │   │   ├── error.tsx           # Error boundary del dashboard
         │   │   ├── advisor/page.tsx    # Chat IA multi-turn + adjuntos + Word
         │   │   ├── knowledge-base/page.tsx  # KB + Drive sync + navegador
         │   │   ├── projects/page.tsx   # Lista proyectos con busqueda
         │   │   ├── projects/new/page.tsx    # Crear proyecto
         │   │   ├── projects/[id]/page.tsx   # Detalle: 7 tabs
         │   │   ├── projects/[id]/upload/page.tsx  # Subir docs
-        │   │   └── settings/page.tsx   # Perfil + Google Drive
+        │   │   └── settings/page.tsx   # Perfil + Google Drive + Usage Dashboard
         │   └── api/                    # API routes (proxy a Python o Supabase directo)
-        │       ├── advisor/            # route.ts, chat/route.ts, stream/route.ts
+        │       ├── advisor/            # route.ts, chat/route.ts, stream/route.ts, drive-context/route.ts
         │       ├── analyze-project/    # route.ts, plan/, execute/, round2/, session/
+        │       ├── available-models/route.ts   # Modelos disponibles
+        │       ├── cost-limits/route.ts        # GET/PUT limites de coste
+        │       ├── model-config/route.ts       # GET/PUT config de modelo
+        │       ├── usage-stats/route.ts        # Estadisticas de uso
         │       ├── gdrive/             # 10 rutas (auth, browse, sync, etc.)
-        │       ├── knowledge-base/     # route.ts, [docId]/, stats/, health/, reprocess/
+        │       ├── knowledge-base/     # route.ts, [docId]/, stats/, health/, reprocess/, reclassify/
         │       ├── rag/                # route.ts, health/
         │       ├── ingest/route.ts
         │       ├── upload-signed-url/route.ts
@@ -157,11 +162,13 @@ residuos-ia-pro/
         │   ├── model-selector.tsx          # Selector de modelo LLM (standard/PRO+)
         │   ├── usage-dashboard.tsx         # Dashboard de uso y costes por proveedor
         │   ├── sidebar.tsx                 # Navegacion principal + logout
+        │   ├── sidebar-context.tsx         # Contexto React para estado del sidebar
         │   └── ui/                         # Componentes shadcn/ui
         │       ├── badge.tsx, button.tsx, card.tsx, progress.tsx, table.tsx
         ├── lib/
         │   ├── env.ts                  # loadEnv() con fallback .env.local → .env
         │   ├── export-word.ts          # Generacion .docx con marca Vandarum
+        │   ├── pipeline.ts             # Helper centralizado: PIPELINE_URL + pipelineHeaders (X-API-Key)
         │   ├── render-markdown.ts      # Markdown → HTML con tablas Tailwind
         │   ├── upload.ts               # Upload dual: base64 (<4MB) / signed URL (>4MB)
         │   ├── utils.ts                # cn() para class merging
@@ -219,6 +226,7 @@ npm run dev                       # Arranca en http://localhost:3000
 | `OPENAI_API_KEY` | API key de OpenAI (embeddings + LLM fallback) |
 | `GEMINI_API_KEY` | API key de Google Gemini (LLM fallback, opcional) |
 | `PIPELINE_API_URL` | URL del backend FastAPI |
+| `PIPELINE_API_KEY` | API key para autenticacion del backend (X-API-Key header) |
 | `FRONTEND_URL` | URL del frontend (para CORS) |
 | `GOOGLE_CLIENT_ID` | OAuth2 Client ID de Google |
 | `GOOGLE_CLIENT_SECRET` | OAuth2 Client Secret de Google |
@@ -233,6 +241,7 @@ npm run dev                       # Arranca en http://localhost:3000
 | `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave publica/anon de Supabase |
 | `PIPELINE_API_URL` | URL del backend FastAPI |
+| `PIPELINE_API_KEY` | API key para autenticacion del backend |
 
 ### Scripts disponibles
 
@@ -302,11 +311,19 @@ npm run dev                       # Arranca en http://localhost:3000
 | POST | `/api/advisor` | Asesor IA (texto, single-turn) |
 | POST | `/api/advisor/chat` | Asesor IA (multi-turn con adjuntos) |
 | POST | `/api/advisor/stream` | Asesor IA (SSE streaming con keepalive) |
+| POST | `/api/advisor/drive-context` | Contexto de Google Drive para advisor |
 | POST | `/api/analyze-project` | Analisis multi-agente de proyecto |
+| GET | `/api/analyze/session/{project_id}` | Obtener sesion de analisis mas reciente |
+| POST | `/api/analyze/session` | Crear nueva sesion de analisis |
+| PATCH | `/api/analyze/session/{session_id}` | Actualizar estado de sesion |
+| POST | `/api/analyze/plan` | Obtener plan de analisis para revision HITL |
+| POST | `/api/analyze/execute` | Ejecutar plan aprobado |
+| POST | `/api/analyze/round2` | Ronda 2 con feedback del consultor |
 | GET | `/api/knowledge-base` | Listar documentos KB |
 | GET | `/api/knowledge-base/stats` | Estadisticas KB |
 | DELETE | `/api/knowledge-base/{doc_id}` | Eliminar documento KB |
 | POST | `/api/knowledge-base/reprocess` | Reprocesar documentos KB |
+| POST | `/api/knowledge-base/reclassify` | Reclasificar tipo de documento |
 | GET | `/api/gdrive/auth-url` | URL OAuth Google Drive |
 | POST | `/api/gdrive/exchange` | Intercambiar codigo OAuth |
 | GET | `/api/gdrive/picker-token` | Token para Google Picker |
@@ -360,6 +377,12 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 | `/api/gdrive/sync-status` | GET | Python `/api/gdrive/sync-status` |
 | `/api/gdrive/sync-toggle` | POST | Python `/api/gdrive/sync-toggle` |
 | `/api/gdrive/disconnect` | DELETE | Python `/api/gdrive/disconnect` |
+| `/api/available-models` | GET | Python `/api/available-models` |
+| `/api/cost-limits` | GET/PUT | Python `/api/cost-limits` |
+| `/api/model-config` | GET/PUT | Python `/api/model-config` |
+| `/api/usage-stats` | GET | Python `/api/usage-stats` |
+| `/api/advisor/drive-context` | POST | Python `/api/advisor/drive-context` |
+| `/api/knowledge-base/reclassify` | POST | Python `/api/knowledge-base/reclassify` |
 | `/api/projects/[projectId]/documents/[docId]` | DELETE | Supabase directo |
 
 ### Paginas Frontend (`web/src/app/`)
@@ -376,7 +399,7 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 | `/dashboard/projects/new` | Crear nuevo proyecto |
 | `/dashboard/projects/[id]` | Detalle proyecto: 7 tabs (resumen, docs, inventario, contratos, alertas, ahorros, analisis IA) |
 | `/dashboard/projects/[id]/upload` | Subir documentos al proyecto |
-| `/dashboard/settings` | Ajustes: perfil, Google Drive, carpeta raiz |
+| `/dashboard/settings` | Ajustes: perfil, Google Drive, carpeta raiz, Usage Dashboard |
 
 ### Componentes Frontend (`web/src/components/`)
 
@@ -390,6 +413,7 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 | `model-selector.tsx` | Client | Selector de modelo LLM y tier (standard/PRO+) para advisor |
 | `usage-dashboard.tsx` | Client | Dashboard de uso por proveedor, costes, limites |
 | `sidebar.tsx` | Client | Menu de navegacion (5 items) + avatar + logout |
+| `sidebar-context.tsx` | Client | Contexto React para estado del sidebar |
 | `ui/badge.tsx` | shadcn | Badges con variantes de estado |
 | `ui/button.tsx` | shadcn | Boton con variantes de tamano/estilo |
 | `ui/card.tsx` | shadcn | Contenedor card |
@@ -402,6 +426,7 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 |---------|---------|
 | `env.ts` | `loadEnv()`: process.env → .env.local → .env con fallback |
 | `export-word.ts` | Genera .docx con branding Vandarum (header teal, footer, disclaimer) |
+| `pipeline.ts` | Helper centralizado: `PIPELINE_URL` + `pipelineHeaders()` con X-API-Key |
 | `render-markdown.ts` | Markdown → HTML con soporte de tablas (clases Tailwind) |
 | `upload.ts` | Upload dual: base64 para <4MB, signed URL para >4MB |
 | `utils.ts` | `cn()` para merge de clases Tailwind (clsx + tailwind-merge) |
@@ -510,7 +535,7 @@ Consultor envía consulta
   ModelRouter.execute()
         │
         ├── 1. get_consultant_chain() → [modelo1, modelo2, modelo3...]
-        │       ├── Si model_override: ese modelo + defaults como fallback
+        │       ├── Si model_override: ese modelo + fallback del tier correspondiente
         │       ├── Si consultant_model_config existe: usar config guardada
         │       └── Si no: usar SERVICE_DEFAULTS[servicio][tier]
         │
@@ -774,6 +799,48 @@ Las tablas del esquema antiguo ya NO existen (migracion 004 ejecutada correctame
 ## Changelog
 
 ### 1 marzo 2026
+
+#### Auditoria completa del repositorio
+
+Auditoria de seguridad y calidad del codigo (~23,500 lineas, 4 areas). **109 hallazgos** (score: 7.5/10):
+
+| Severidad | Hallazgos | Estado |
+|-----------|-----------|--------|
+| **CRITICO (10)** | C1 auth bypass ✅, estado global mutable, deadlock async, JSON parse silencioso, excepciones tragadas, sin timeout LLM, embedding failures, SSRF, path traversal, prompt injection | C1 resuelto |
+| **ALTO (20)** | Exception handlers vacios, sin validacion MIME ✅, background task failures, memoria sin limite, datos sensibles en errores, XSS markdown, sin auth en KB API ✅ | H2, H17, H18 resueltos |
+| **MEDIO (31)** | CORS localhost, sin rate limiting ✅, datetime deprecado, N+1 queries, modelos hardcodeados, sin Error Boundaries, sin CSRF, sin validacion JSON schema | M2 resuelto |
+| **BAJO (19)** | Code splitting, memoizacion, accesibilidad, logging inconsistente, dead code | Deuda tecnica |
+
+**Fortalezas identificadas:** documentacion excepcional, seguridad git, RLS coherente, prompts especializados, HITL bien implementado, Drive resiliente, tipado fuerte, arquitectura limpia, RAG hibrido con reranking, signed URLs.
+
+#### Hardening de seguridad (C1, H2, H17/H18, M2)
+
+Resolucion de hallazgos criticos y altos de la auditoria:
+
+| Hallazgo | Fix aplicado | Archivos |
+|----------|-------------|----------|
+| **C1** Auth bypass endpoints Python | Middleware `X-API-Key` + `pipelineHeaders()` en 20 API routes | `api/server.py`, `web/src/lib/pipeline.ts`, 20 API routes |
+| **H2** Sin validacion MIME | `python-magic` para validacion magic bytes | `pipeline/unified_ingestion.py`, `Dockerfile`, `requirements.txt` |
+| **H17/H18** Sin auth en KB/docs API | Verificacion de `consultant_id` en routes | API routes de KB y documentos |
+| **M2** Sin rate limiting | `slowapi` con limites por endpoint | `api/server.py`, `requirements.txt` |
+| OAuth state validation | Parametro `state` en Google Drive OAuth | `api/server.py`, gdrive routes |
+| Ownership validation | Verificacion de propiedad en analisis y proyectos | `api/server.py`, analyze routes |
+| Tier/model whitelist | Solo modelos validos aceptados | `api/server.py` |
+
+**Dependencias anadidas:** `slowapi==0.1.9`, `python-magic==0.4.27`
+
+#### Fixes de produccion (sesion de debugging)
+
+6 commits para resolver bugs detectados en produccion con tier PRO+:
+
+| Commit | Problema | Fix |
+|--------|----------|-----|
+| `a3e7de8` | Referencias de fuentes RAG demasiado tecnicas | Simplificar a formato legible: tipo + titulo |
+| `4576aac` | Error al crear proyecto: `tipo` no coincide con CHECK constraint | Valores del select alineados con constraint de la DB |
+| `e7d9e18` | Coste de OpenAI y Google no se registraba en advisor streaming | Registrar coste para todos los proveedores, no solo Anthropic |
+| `23e0ebe` | Documentos ingestados sin titulo descriptivo (usaban filename) | Extraccion de titulo con LLM durante ingesta (`metadata_extractor.py`) |
+| `37819e4` | OpenAI rechazaba `max_tokens`; `cost_limits` retornaba 406; reranker crasheaba si Haiku retornaba menos scores | `max_completion_tokens` para OpenAI; fallback a defaults en cost_limits; tolerancia en rerank |
+| `263b126` | `model_override` con tier PRO+ usaba fallback chain standard (Haiku) | Respetar el tier del consultor al construir la cadena de fallback |
 
 #### Model Router multi-proveedor + CostGuard + PRO+
 

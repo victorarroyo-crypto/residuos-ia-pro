@@ -59,18 +59,19 @@ Plataforma SaaS de consultoria ambiental para gestion de residuos industriales e
 ```
 residuos-ia-pro/
 ├── api/
-│   └── server.py                ← FastAPI: todos los endpoints Python
+│   └── server.py                ← FastAPI: todos los endpoints Python (~3,600 lineas)
 ├── pipeline/
 │   ├── unified_ingestion.py     ← Punto de entrada unico de ingestion
 │   ├── pdf_pipeline.py          ← PDFs: OCR, tablas, encriptados
 │   ├── excel_processor.py       ← Excel/CSV
 │   ├── text_processor.py        ← DOCX/TXT/HTML
+│   ├── extractor.py             ← Extraccion general de contenido
 │   ├── classifier_chunker.py    ← Clasificacion + chunking semantico
-│   ├── metadata_extractor.py    ← Extraccion de LER, fechas, precios
+│   ├── metadata_extractor.py    ← Extraccion de LER, fechas, precios, titulos (LLM)
 │   ├── storage.py               ← Persistencia en Supabase
-│   ├── rag_scoping.py           ← Sistema RAG dual (General + Proyecto)
+│   ├── rag_scoping.py           ← Sistema RAG dual (General + Proyecto) + reranking
 │   ├── config.py                ← Config + EmbeddingService
-│   ├── google_drive.py          ← OAuth, sync, descarga de Drive
+│   ├── google_drive.py          ← OAuth, BFS con retry, descarga con retry, sync
 │   ├── model_router.py          ← ModelRouter: fallback chain multi-proveedor
 │   ├── cost_guard.py            ← CostGuard: circuit breaker de costes
 │   └── agents/                  ← LangGraph: agentes de analisis
@@ -79,6 +80,8 @@ residuos-ia-pro/
 │       ├── loader.py            ← Carga datos proyecto desde Supabase
 │       ├── llm.py               ← Wrapper LLM multi-proveedor (usa ModelRouter)
 │       ├── prompts.py           ← System prompts por agente
+│       ├── tools.py             ← Herramientas disponibles para agentes
+│       ├── agent_coordinador.py ← Coordinador: orquesta flujo de analisis
 │       ├── agent_aai.py         ← Autorizacion Ambiental Integrada
 │       ├── agent_contratos.py   ← Contratos con gestores
 │       ├── agent_facturas.py    ← Facturas de gestion
@@ -88,6 +91,7 @@ residuos-ia-pro/
 │       └── agent_redactor.py    ← Generacion de informe final
 ├── web/
 │   ├── src/
+│   │   ├── middleware.ts        ← Refresh sesion Supabase
 │   │   ├── app/
 │   │   │   ├── page.tsx                     ← Landing page
 │   │   │   ├── login/page.tsx               ← Login
@@ -96,36 +100,57 @@ residuos-ia-pro/
 │   │   │   ├── dashboard/
 │   │   │   │   ├── layout.tsx               ← Layout con sidebar
 │   │   │   │   ├── page.tsx                 ← Dashboard: KPIs, alertas, resumen
+│   │   │   │   ├── error.tsx                ← Error boundary del dashboard
 │   │   │   │   ├── advisor/page.tsx         ← Asesor IA: chat + adjuntos + Word
 │   │   │   │   ├── knowledge-base/page.tsx  ← Base de Conocimiento + Drive sync
 │   │   │   │   ├── projects/page.tsx        ← Lista de proyectos
 │   │   │   │   ├── projects/new/page.tsx    ← Crear proyecto
 │   │   │   │   ├── projects/[id]/page.tsx   ← Detalle: docs, inventario, agentes
 │   │   │   │   ├── projects/[id]/upload/    ← Subida de documentos
-│   │   │   │   └── settings/page.tsx        ← Ajustes + Google Drive
-│   │   │   └── api/                         ← 24 API routes (proxy a Python)
+│   │   │   │   └── settings/page.tsx        ← Ajustes + Google Drive + Usage Dashboard
+│   │   │   └── api/                         ← 37 API routes (proxy a Python)
+│   │   │       ├── advisor/                 ← route.ts, chat/, stream/, drive-context/
+│   │   │       ├── analyze-project/         ← route.ts, plan/, execute/, round2/, session/
+│   │   │       ├── available-models/        ← Modelos disponibles
+│   │   │       ├── cost-limits/             ← GET/PUT limites de coste
+│   │   │       ├── model-config/            ← GET/PUT config de modelo
+│   │   │       ├── usage-stats/             ← Estadisticas de uso
+│   │   │       ├── gdrive/                  ← 10 rutas (auth, browse, sync, etc.)
+│   │   │       ├── knowledge-base/          ← CRUD + stats + health + reprocess + reclassify
+│   │   │       ├── rag/                     ← Busqueda + health
+│   │   │       ├── ingest/                  ← Ingestion de documentos
+│   │   │       └── upload-signed-url/       ← URLs firmadas para storage
 │   │   ├── components/
-│   │   │   ├── sidebar.tsx                  ← Navegacion principal
-│   │   │   ├── google-drive-picker.tsx      ← Widget Google Picker
+│   │   │   ├── advisor-chat.tsx             ← Chat UI: markdown, adjuntos, Word export
+│   │   │   ├── analysis-plan-review.tsx     ← HITL: aprobacion de plan
+│   │   │   ├── analysis-progress.tsx        ← Progreso en tiempo real (Realtime)
+│   │   │   ├── analysis-round2.tsx          ← HITL: seguimiento ronda 2
+│   │   │   ├── google-drive-picker.tsx      ← Navegador de archivos Drive
 │   │   │   ├── model-selector.tsx           ← Selector modelo/tier (standard/PRO+)
-│   │   │   ├── usage-dashboard.tsx          ← Dashboard uso y costes
+│   │   │   ├── usage-dashboard.tsx          ← Dashboard uso y costes por proveedor
+│   │   │   ├── sidebar.tsx                  ← Navegacion principal
+│   │   │   ├── sidebar-context.tsx          ← Estado del sidebar
 │   │   │   └── ui/                          ← shadcn/ui (button, card, badge...)
 │   │   ├── lib/
 │   │   │   ├── supabase/                    ← Clientes Supabase (client/server/admin)
+│   │   │   ├── pipeline.ts                  ← Helper: PIPELINE_URL + X-API-Key headers
 │   │   │   ├── export-word.ts               ← Exportar respuesta a Word (.docx)
-│   │   │   ├── upload.ts                    ← Orquestacion de subida de archivos
+│   │   │   ├── render-markdown.ts           ← Markdown → HTML con tablas Tailwind
+│   │   │   ├── upload.ts                    ← Subida de archivos (base64 / signed URL)
+│   │   │   ├── vandarum-logo-data.ts        ← Logo base64 para Word export
 │   │   │   ├── env.ts                       ← Variables de entorno
-│   │   │   └── utils.ts                     ← Utilidades comunes
+│   │   │   └── utils.ts                     ← Utilidades (cn class merge)
 │   │   └── types/
-│   │       └── database.ts                  ← Tipos TypeScript de las tablas
+│   │       └── database.ts                  ← 85+ interfaces TypeScript
 │   ├── vercel.json                          ← Deploy config (region cdg1, timeouts)
 │   ├── next.config.mjs                      ← Next.js config
 │   └── tailwind.config.ts                   ← Colores Vandarum
 ├── supabase/
-│   ├── setup.sql                            ← Esquema completo
+│   ├── setup.sql                            ← Esquema completo (21 tablas)
 │   ├── cost_tracking.sql                    ← Tablas cost tracking + RPC functions
 │   └── verify_data.sql                      ← Diagnostico
-├── CLAUDE.md                                ← Documentacion tecnica + auditoria
+├── brand/                                   ← Assets de marca Vandarum
+├── CLAUDE.md                                ← Documentacion tecnica completa
 └── README.md                                ← Este archivo
 ```
 
@@ -248,7 +273,7 @@ RAG Proyecto (aislado por consultor via RLS):
   project_documents → project_chunks (embeddings 1536 dims)
 ```
 
-### Tablas principales (19)
+### Tablas principales (21)
 
 | Tabla | Descripcion |
 |-------|-------------|
@@ -263,7 +288,9 @@ RAG Proyecto (aislado por consultor via RLS):
 | `waste_managers` | Gestores de residuos autorizados |
 | `invoice_lines` | Lineas de facturas de gestion |
 | `contracts` | Contratos con gestores |
-| `pipeline_progress` | Progreso pipeline de ingesta |
+| `pipeline_progress` | Progreso pipeline de ingesta (Realtime) |
+| `analysis_sessions` | Estado de sesiones HITL de analisis multi-agente |
+| `analysis_progress` | Progreso en tiempo real del analisis (Realtime) |
 | `consultant_gdrive` | Tokens OAuth Google Drive |
 | `gdrive_sync_log` | Log de sincronizaciones |
 | `api_usage_log` | Registro de llamadas API con coste |
@@ -272,13 +299,18 @@ RAG Proyecto (aislado por consultor via RLS):
 | `knowledge_stats` | Vista: estadisticas RAG General |
 | `project_stats` | Vista: estadisticas RAG Proyecto |
 
-### Seguridad (RLS)
+### Seguridad
 
-- Cada consultor solo ve sus propios proyectos y datos derivados
-- Knowledge base: lectura para todos los autenticados, escritura solo service_role
-- Google Drive tokens aislados por consultor
+- **RLS (Row Level Security):** cada consultor solo ve sus propios proyectos y datos derivados
+- **Knowledge base:** lectura para todos los autenticados, escritura solo service_role
+- **Google Drive tokens:** aislados por consultor
+- **API key auth:** todos los endpoints Python protegidos con `X-API-Key` header
+- **Rate limiting:** `slowapi` con limites por endpoint en el backend
+- **File validation:** `python-magic` para validacion de magic bytes (no solo extension)
+- **OAuth state:** validacion de parametro `state` en Google Drive OAuth
+- **Ownership validation:** verificacion de propiedad en analisis y proyectos
 
-Ver `CLAUDE.md` para la auditoria completa de FK, RLS y funciones.
+Ver `CLAUDE.md` para la auditoria completa de FK, RLS, funciones y hallazgos de seguridad.
 
 ---
 
@@ -321,6 +353,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 PIPELINE_API_URL=http://localhost:8000
+PIPELINE_API_KEY=your-secret-key       # Misma clave que en backend
 FRONTEND_URL=http://localhost:3000
 ```
 
@@ -332,6 +365,7 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=AI...                    # Google Gemini (opcional, fallback LLM)
+PIPELINE_API_KEY=your-secret-key       # Auth para endpoints Python
 GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-...
 FRONTEND_URL=http://localhost:3000
@@ -360,8 +394,9 @@ FRONTEND_URL=http://localhost:3000
    └─ Drive: sync → pipeline → knowledge_documents + knowledge_chunks
 5. Pipeline extrae:
    ├─ Texto + tablas + metadata
-   ├─ Codigos LER, fechas, precios
+   ├─ Codigos LER, fechas, precios, titulos (LLM)
    ├─ Clasificacion de tipo de documento
+   ├─ Validacion magic bytes (python-magic)
    └─ Chunks + embeddings para RAG
 6. Consultor pregunta al Asesor IA:
    └─ RAG search → ModelRouter (Claude/GPT/Gemini) → respuesta experta → (opcional) Word
