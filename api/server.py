@@ -1690,11 +1690,9 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                                 )
                             )
 
-                        # Thinking con budget + Google Search grounding
-                        gemini_thinking_cfg = genai_types.ThinkingConfig(
-                            include_thoughts=True,
-                            thinking_budget=thinking_budget,
-                        )
+                        # Google Search grounding (sin thinking — son incompatibles
+                        # en Gemini 2.5 Pro: thinking impide que el modelo ejecute
+                        # Google Search, resultando en grounding_metadata vacío).
                         gemini_tools = [
                             genai_types.Tool(google_search=genai_types.GoogleSearch())
                         ]
@@ -1703,7 +1701,6 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                             system_instruction=system_prompt,
                             max_output_tokens=32000,
                             temperature=0.7,
-                            thinking_config=gemini_thinking_cfg,
                             tools=gemini_tools,
                         )
 
