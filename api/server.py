@@ -3566,11 +3566,11 @@ async def get_cost_limits(request: Request, consultant_id: str = Query(...)):
     result = sb.table("consultant_cost_limits") \
         .select("*") \
         .eq("consultant_id", consultant_id) \
-        .maybe_single() \
+        .limit(1) \
         .execute()
 
     from pipeline.cost_guard import DEFAULT_LIMITS
-    return result.data or DEFAULT_LIMITS
+    return result.data[0] if result.data else DEFAULT_LIMITS
 
 
 @app.put("/api/cost-limits")

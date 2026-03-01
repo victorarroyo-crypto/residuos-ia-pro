@@ -247,9 +247,13 @@ class ModelRouter:
                 content = text if text else str(content)
             openai_messages.append({"role": msg["role"], "content": content})
 
+        # GPT-5+, o3, o4-mini requieren max_completion_tokens en vez de max_tokens
+        _NEW_PARAM_MODELS = {"gpt-5.2", "gpt-5", "gpt-5-mini", "o3", "o4-mini"}
+        token_param = "max_completion_tokens" if model in _NEW_PARAM_MODELS else "max_tokens"
+
         kwargs: dict[str, Any] = {
             "model": api_model,
-            "max_tokens": max_tokens,
+            token_param: max_tokens,
             "temperature": temperature,
             "messages": openai_messages,
         }

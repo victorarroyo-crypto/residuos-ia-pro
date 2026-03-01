@@ -27,6 +27,7 @@ import magic
 from .pdf_pipeline import PDFPipeline
 from .excel_processor import ExcelProcessor
 from .text_processor import TextProcessor
+from .metadata_extractor import MetadataExtractor
 from .rag_scoping import DocumentIngestionRouter, RAGScope
 from .storage import StorageService
 
@@ -135,6 +136,7 @@ class UnifiedIngestionService:
         self.text_processor  = TextProcessor(config)
         self.storage         = StorageService(config)
         self.router          = DocumentIngestionRouter()
+        self.metadata_ex     = MetadataExtractor(config)
 
     async def ingest(
         self,
@@ -265,13 +267,21 @@ class UnifiedIngestionService:
         embedder = EmbeddingService(self.config)
         result.chunks = await embedder.embed_all(result.chunks)
 
+        # Extraer título con LLM desde el contenido de las hojas
+        sheet_text = "\n".join(
+            c.content for c in result.chunks[:3]
+        ) if result.chunks else ""
+        extracted_title = await self.metadata_ex.extract_title(
+            sheet_text, filename, result.excel_type.value,
+        )
+
         # Guardar en Supabase
         sb = await self.storage._get_supabase()
 
         # Registro del documento
         doc_data = {
             "id": result.doc_id,
-            "titulo": filename,
+            "titulo": extracted_title,
             "tipo": result.excel_type.value,
             "naturaleza_pdf": "excel",
             "total_paginas": len(result.sheets),

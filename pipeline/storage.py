@@ -187,7 +187,7 @@ class StorageService:
         """Guarda en knowledge_documents (RAG General)."""
         data = {
             "id": doc.doc_id,
-            "titulo": doc.original_filename,
+            "titulo": doc.metadata.get("extracted_title", doc.original_filename),
             "tipo": self._map_knowledge_tipo(doc.doc_type),
             "naturaleza_pdf": doc.nature.value,
             "total_paginas": doc.total_pages,
@@ -223,7 +223,7 @@ class StorageService:
         data = {
             "id": doc.doc_id,
             "project_id": db_project_id,
-            "titulo": doc.original_filename,
+            "titulo": doc.metadata.get("extracted_title", doc.original_filename),
             "tipo": doc.doc_type.value,
             "naturaleza_pdf": doc.nature.value,
             "total_paginas": doc.total_pages,
