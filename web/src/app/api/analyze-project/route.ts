@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
+import { createClient } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 /**
  * POST /api/analyze-project
@@ -12,6 +14,14 @@ import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
  */
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+    }
+
     const body = await request.json();
     const projectId = body.project_id as string;
     const agents = body.agents as string[] | undefined;
@@ -23,7 +33,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const payload: Record<string, unknown> = { project_id: projectId };
+    // Verificar ownership del proyecto
+    const admin = getAdminClient();
+    if (!admin.ok) {
+      return NextResponse.json({ error: admin.detail }, { status: admin.status });
+    }
+    const { data: project } = await admin.client
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("consultant_id", user.id)
+      .single();
+    if (!project) {
+      return NextResponse.json({ error: "Proyecto no encontrado" }, { status: 403 });
+    }
+
+    const payload: Record<string, unknown> = {
+      project_id: projectId,
+      consultant_id: user.id,
+    };
     if (agents && agents.length > 0) {
       payload.agents = agents;
     }

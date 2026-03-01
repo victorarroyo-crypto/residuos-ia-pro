@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
+import { createClient } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 export const maxDuration = 120;
 
@@ -24,8 +26,17 @@ export const maxDuration = 120;
  */
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+    }
+
     const contentType = request.headers.get("content-type") || "";
     const pipelineForm = new FormData();
+    let projectId: string | undefined;
 
     if (contentType.includes("application/json")) {
       const body = await request.json();
@@ -48,7 +59,10 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      if (body.project_id) pipelineForm.append("project_id", body.project_id);
+      if (body.project_id) {
+        projectId = body.project_id;
+        pipelineForm.append("project_id", body.project_id);
+      }
       if (body.rag_scope) pipelineForm.append("rag_scope", body.rag_scope);
       if (body.password) pipelineForm.append("password", body.password);
     } else {
@@ -58,10 +72,32 @@ export async function POST(request: NextRequest) {
         if (value instanceof Blob) {
           pipelineForm.append(key, value, (value as File).name || "file");
         } else {
+          if (key === "project_id" && typeof value === "string" && value.trim()) {
+            projectId = value;
+          }
           pipelineForm.append(key, value);
         }
       });
     }
+
+    // Ownership check: si hay project_id, verificar que pertenece al usuario
+    if (projectId) {
+      const admin = getAdminClient();
+      if (!admin.ok) {
+        return NextResponse.json({ error: admin.detail }, { status: admin.status });
+      }
+      const { data: project } = await admin.client
+        .from("projects")
+        .select("id")
+        .eq("id", projectId)
+        .eq("consultant_id", user.id)
+        .single();
+      if (!project) {
+        return NextResponse.json({ error: "Proyecto no encontrado" }, { status: 403 });
+      }
+    }
+
+    pipelineForm.append("consultant_id", user.id);
 
     const response = await fetch(`${PIPELINE_URL}/api/ingest`, {
       method: "POST",

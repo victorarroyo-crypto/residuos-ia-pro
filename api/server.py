@@ -30,6 +30,7 @@ _VALID_MODELS = {
     "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-5-mini",
     "gemini-2.5-pro", "gemini-2.5-flash",
 }
+_VALID_AGENTS = {"aai", "contratos", "facturas", "registro", "normativo"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("residusia")
@@ -1990,6 +1991,14 @@ class ExecuteRequest(BaseModel):
     tier: Optional[str] = None
     consultant_id: Optional[str] = None
 
+    @field_validator("agents")
+    @classmethod
+    def validate_agents(cls, v):
+        invalid = [a for a in v if a not in _VALID_AGENTS]
+        if invalid:
+            raise ValueError(f"agentes no reconocidos: {invalid}")
+        return v
+
     @field_validator("tier")
     @classmethod
     def validate_tier(cls, v):
@@ -2014,6 +2023,14 @@ class Round2Request(BaseModel):
     model_override: Optional[str] = None
     tier: Optional[str] = None
     consultant_id: Optional[str] = None
+
+    @field_validator("agents")
+    @classmethod
+    def validate_agents(cls, v):
+        invalid = [a for a in v if a not in _VALID_AGENTS]
+        if invalid:
+            raise ValueError(f"agentes no reconocidos: {invalid}")
+        return v
 
     @field_validator("tier")
     @classmethod
