@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
+import { createClient } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 /**
  * POST /api/analyze-project/plan
@@ -10,6 +12,15 @@ import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
  */
 export async function POST(request: NextRequest) {
   try {
+    // Autenticar usuario
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+    }
+
     const body = await request.json();
     const projectId = body.project_id as string;
 
@@ -20,14 +31,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Verificar ownership del proyecto
+    const admin = getAdminClient();
+    if (!admin.ok) {
+      return NextResponse.json(
+        { error: admin.detail },
+        { status: admin.status }
+      );
+    }
+    const { data: project } = await admin.client
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("consultant_id", user.id)
+      .single();
+
+    if (!project) {
+      return NextResponse.json(
+        { error: "Proyecto no encontrado" },
+        { status: 403 }
+      );
+    }
+
     const response = await fetch(`${PIPELINE_URL}/api/analyze/plan`, {
       method: "POST",
       headers: pipelineHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ project_id: projectId }),
+      body: JSON.stringify({
+        project_id: projectId,
+        consultant_id: user.id,
+      }),
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: "Pipeline error" }));
+      const error = await response
+        .json()
+        .catch(() => ({ detail: "Pipeline error" }));
       return NextResponse.json(
         { error: error.detail || "Error generando plan" },
         { status: response.status }

@@ -193,21 +193,33 @@ export function UsageDashboard({ consultantId }: { consultantId: string }) {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [limits, setLimits] = useState<CostLimits | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState(30);
   const [showRecent, setShowRecent] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [statsRes, limitsRes] = await Promise.all([
-        fetch(`/api/usage-stats?consultant_id=${consultantId}&days=${days}`),
-        fetch(`/api/cost-limits?consultant_id=${consultantId}`),
+        fetch(`/api/usage-stats?days=${days}`),
+        fetch(`/api/cost-limits`),
       ]);
-      if (statsRes.ok) setStats(await statsRes.json());
-      if (limitsRes.ok) setLimits(await limitsRes.json());
-    } catch {
-      // silently fail
+      if (statsRes.ok) {
+        setStats(await statsRes.json());
+      } else {
+        const errData = await statsRes.json().catch(() => ({}));
+        setError(errData.error || `Error cargando estadisticas (${statsRes.status})`);
+      }
+      if (limitsRes.ok) {
+        setLimits(await limitsRes.json());
+      } else if (!error) {
+        const errData = await limitsRes.json().catch(() => ({}));
+        setError(errData.error || `Error cargando limites (${limitsRes.status})`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error de conexion");
     }
     setLoading(false);
   }, [consultantId, days]);
@@ -219,14 +231,19 @@ export function UsageDashboard({ consultantId }: { consultantId: string }) {
   async function handleSaveLimits() {
     if (!limits) return;
     setSaving(true);
+    setError(null);
     try {
-      await fetch("/api/cost-limits", {
+      const res = await fetch("/api/cost-limits", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consultant_id: consultantId, ...limits }),
+        body: JSON.stringify(limits),
       });
-    } catch {
-      // silently fail
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setError(errData.error || `Error guardando limites (${res.status})`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error guardando limites");
     }
     setSaving(false);
   }
@@ -276,6 +293,14 @@ export function UsageDashboard({ consultantId }: { consultantId: string }) {
           </Button>
         </div>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid gap-3 md:grid-cols-4">
