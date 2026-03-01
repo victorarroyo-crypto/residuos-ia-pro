@@ -18,8 +18,9 @@
 **ResidusIA Pro** es una plataforma SaaS para consultores ambientales especializados en gestion de residuos industriales en Espana. Combina:
 
 - **RAG dual** (General + Proyecto) para busqueda semantica en normativa ambiental y documentos de proyecto
-- **Asesor IA** con Claude (extended thinking) para consultas tecnicas multi-turn
+- **Asesor IA** multi-proveedor (Claude, GPT, Gemini) con extended thinking y tier PRO+
 - **Analisis multi-agente** (LangGraph) con 7 agentes especializados + flujo HITL (Human-in-the-Loop)
+- **Model Router** con fallback chain multi-proveedor + CostGuard (circuit breaker de costes)
 - **Pipeline de ingestion** que procesa PDF (digital/OCR/hibrido), Excel, CSV, DOCX, TXT, HTML
 - **Integracion Google Drive** con OAuth2, sync automatico y navegador de archivos
 - **Exportacion profesional** a Word (.docx) con marca Vandarum
@@ -36,8 +37,11 @@ Cada consultor solo ve sus propios proyectos y datos (RLS por `consultant_id`).
 | **UI** | React + Tailwind CSS + shadcn/ui | React 18, TW 3.4 |
 | **Backend API** | FastAPI + Uvicorn | 0.115.0 |
 | **Base de datos** | Supabase (PostgreSQL + Auth + Storage + Realtime) | supabase-js 2.97 |
-| **IA - LLM** | Anthropic Claude (extended thinking) | anthropic >=0.49.0 |
+| **IA - LLM (Anthropic)** | Claude Opus 4.6, Sonnet 4, Haiku 4.5 | anthropic >=0.49.0 |
+| **IA - LLM (OpenAI)** | GPT-5.2, GPT-5, o3, o4-mini, GPT-5 Mini | openai 1.45.0 |
+| **IA - LLM (Google)** | Gemini 2.5 Pro, Gemini 2.5 Flash | google-genai |
 | **IA - Embeddings** | OpenAI text-embedding-3-large | openai 1.45.0 |
+| **IA - Model Router** | Fallback chain multi-proveedor + CostGuard | custom |
 | **IA - Agentes** | LangGraph (multi-agente paralelo) | 0.2.76 |
 | **OCR** | Tesseract + Claude Vision (escaneados) | pytesseract 0.3.13 |
 | **PDF** | pdfplumber + pdf2image + pikepdf | 0.11.0 |
@@ -79,11 +83,13 @@ residuos-ia-pro/
 │   ├── storage.py               # Persistencia: Supabase DB + Storage
 │   ├── rag_scoping.py           # RAG dual: busqueda semantica General y/o Proyecto
 │   ├── google_drive.py          # Google Drive: OAuth, BFS con retry, sync
+│   ├── model_router.py          # ModelRouter: enrutamiento multi-proveedor con fallback chain
+│   ├── cost_guard.py            # CostGuard: circuit breaker de costes por proveedor
 │   └── agents/                  # Agentes LangGraph para analisis multi-agente
 │       ├── __init__.py
 │       ├── graph.py             # Grafo LangGraph: orquestacion del flujo
 │       ├── state.py             # Definicion del estado compartido entre agentes
-│       ├── llm.py               # Configuracion del LLM (Claude) para agentes
+│       ├── llm.py               # Wrapper LLM multi-proveedor para agentes (usa ModelRouter)
 │       ├── prompts.py           # Templates de prompts para cada agente
 │       ├── loader.py            # Carga de documentos del proyecto para analisis
 │       ├── tools.py             # Herramientas disponibles para los agentes
@@ -98,6 +104,7 @@ residuos-ia-pro/
 │
 ├── supabase/
 │   ├── setup.sql                # Esquema base (DDL de tablas, indices, funciones)
+│   ├── cost_tracking.sql        # Tablas de cost tracking (api_usage_log, limits, model_config)
 │   └── verify_data.sql          # Queries de diagnostico
 │
 ├── brand/                       # Assets de marca Vandarum
@@ -147,6 +154,8 @@ residuos-ia-pro/
         │   ├── analysis-progress.tsx       # Barras de progreso en tiempo real (Realtime)
         │   ├── analysis-round2.tsx         # HITL: seguimiento ronda 2
         │   ├── google-drive-picker.tsx     # Navegador de archivos Drive con breadcrumbs
+        │   ├── model-selector.tsx          # Selector de modelo LLM (standard/PRO+)
+        │   ├── usage-dashboard.tsx         # Dashboard de uso y costes por proveedor
         │   ├── sidebar.tsx                 # Navegacion principal + logout
         │   └── ui/                         # Componentes shadcn/ui
         │       ├── badge.tsx, button.tsx, card.tsx, progress.tsx, table.tsx
@@ -207,7 +216,8 @@ npm run dev                       # Arranca en http://localhost:3000
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave publica/anon de Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | Clave service_role (solo backend) |
 | `ANTHROPIC_API_KEY` | API key de Anthropic (Claude) |
-| `OPENAI_API_KEY` | API key de OpenAI (embeddings) |
+| `OPENAI_API_KEY` | API key de OpenAI (embeddings + LLM fallback) |
+| `GEMINI_API_KEY` | API key de Google Gemini (LLM fallback, opcional) |
 | `PIPELINE_API_URL` | URL del backend FastAPI |
 | `FRONTEND_URL` | URL del frontend (para CORS) |
 | `GOOGLE_CLIENT_ID` | OAuth2 Client ID de Google |
@@ -268,12 +278,13 @@ npm run dev                       # Arranca en http://localhost:3000
               ┌────────────────┼────────────────┐
               │                │                │
     ┌─────────▼──────┐ ┌──────▼───────┐ ┌──────▼──────┐
-    │   Supabase     │ │  Anthropic   │ │   OpenAI    │
-    │   PostgreSQL   │ │  Claude      │ │  Embeddings │
-    │   Auth + RLS   │ │  (thinking)  │ │  3-large    │
-    │   Storage      │ │              │ │             │
-    │   Realtime     │ │              │ │             │
-    └────────────────┘ └──────────────┘ └─────────────┘
+    │   Supabase     │ │  ModelRouter │ │   OpenAI    │
+    │   PostgreSQL   │ │  + CostGuard │ │  Embeddings │
+    │   Auth + RLS   │ │  ──────────  │ │  3-large    │
+    │   Storage      │ │  Anthropic   │ │             │
+    │   Realtime     │ │  OpenAI      │ └─────────────┘
+    │   CostTracking │ │  Google      │
+    └────────────────┘ └──────────────┘
 ```
 
 ---
@@ -307,6 +318,12 @@ npm run dev                       # Arranca en http://localhost:3000
 | GET | `/api/gdrive/sync-status` | Estado/historial sync |
 | POST | `/api/gdrive/sync-toggle` | Activar/desactivar auto-sync |
 | DELETE | `/api/gdrive/disconnect` | Desconectar Google Drive |
+| GET | `/api/usage-stats` | Estadisticas de uso y costes (dashboard) |
+| GET | `/api/cost-limits` | Obtener limites de coste del consultor |
+| PUT | `/api/cost-limits` | Actualizar limites de coste |
+| GET | `/api/model-config` | Obtener config de modelo por servicio |
+| PUT | `/api/model-config` | Actualizar config de modelo |
+| GET | `/api/available-models` | Listar modelos disponibles con capacidades |
 
 ### API Routes Next.js (`web/src/app/api/`)
 
@@ -370,6 +387,8 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 | `analysis-progress.tsx` | Client | Barras de progreso en tiempo real (Supabase Realtime) |
 | `analysis-round2.tsx` | Client | HITL: preguntas de seguimiento ronda 2 |
 | `google-drive-picker.tsx` | Client | Navegador de archivos Drive con breadcrumbs y seleccion |
+| `model-selector.tsx` | Client | Selector de modelo LLM y tier (standard/PRO+) para advisor |
+| `usage-dashboard.tsx` | Client | Dashboard de uso por proveedor, costes, limites |
 | `sidebar.tsx` | Client | Menu de navegacion (5 items) + avatar + logout |
 | `ui/badge.tsx` | shadcn | Badges con variantes de estado |
 | `ui/button.tsx` | shadcn | Boton con variantes de tamano/estilo |
@@ -416,6 +435,8 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 | `rag_scoping.py` | RAG dual: busqueda semantica en General y/o Proyecto |
 | `config.py` | Config: API keys, EmbeddingService (OpenAI text-embedding-3-large) |
 | `google_drive.py` | Google Drive: OAuth, listado BFS con retry, descarga con retry, sync |
+| `model_router.py` | Enrutamiento multi-proveedor (Anthropic, OpenAI, Google) con fallback chain |
+| `cost_guard.py` | Circuit breaker de costes: limites diarios/mensuales por proveedor, registro de uso |
 
 ### Agentes LangGraph (`pipeline/agents/`)
 
@@ -425,7 +446,7 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 |--------|---------|
 | `graph.py` | Grafo LangGraph: define nodos, edges, y flujo de ejecucion |
 | `state.py` | Estado compartido entre agentes (TypedDict de LangGraph) |
-| `llm.py` | Configuracion del LLM (Claude) para los agentes |
+| `llm.py` | Wrapper LLM multi-proveedor para agentes (usa ModelRouter + CostGuard) |
 | `prompts.py` | Templates de system/user prompts para cada agente |
 | `loader.py` | Carga documentos del proyecto desde Supabase para el analisis |
 | `tools.py` | Herramientas (tools) disponibles para los agentes |
@@ -478,6 +499,62 @@ Todas actuan como proxy al backend Python o acceden a Supabase directamente, usa
 5. Stale sync: si lleva >120 min running → marcar como error
 ```
 
+### Model Router y Cost Guard
+
+**ModelRouter** (`pipeline/model_router.py`) — enruta llamadas LLM con fallback chain multi-proveedor:
+
+```
+Consultor envía consulta
+        │
+        ▼
+  ModelRouter.execute()
+        │
+        ├── 1. get_consultant_chain() → [modelo1, modelo2, modelo3...]
+        │       ├── Si model_override: ese modelo + defaults como fallback
+        │       ├── Si consultant_model_config existe: usar config guardada
+        │       └── Si no: usar SERVICE_DEFAULTS[servicio][tier]
+        │
+        ├── 2. Para cada modelo en la cadena:
+        │       ├── CostGuard.check(proveedor, consultant_id) → ¿bloqueado?
+        │       │       ├── Si: saltar al siguiente modelo
+        │       │       └── No: continuar
+        │       ├── Llamar al proveedor (Anthropic/OpenAI/Google)
+        │       │       ├── Si exito: CostGuard.record() + return resultado
+        │       │       └── Si error: CostGuard.record(success=false) + siguiente
+        │       └── Repetir hasta exito o agotar cadena
+        │
+        └── 3. Si todos fallan: raise RuntimeError
+```
+
+**Tiers de servicio:**
+
+| Tier | Advisor | Analysis | RAG | Pipeline |
+|------|---------|----------|-----|----------|
+| **standard** | Sonnet 4 → Gemini Pro → GPT-5 → Haiku | Sonnet 4 → GPT-5 → Gemini Pro → Haiku | Haiku → Gemini Flash → GPT-5 Mini | Haiku → Gemini Flash |
+| **pro_plus** | Opus 4.6 → GPT-5.2 → o3 → Gemini Pro → Sonnet 4 | Sonnet 4 → GPT-5.2 → Gemini Pro | - | - |
+
+**CostGuard** (`pipeline/cost_guard.py`) — circuit breaker de costes:
+
+| Concepto | Detalle |
+|----------|---------|
+| Limites diarios/mensuales | Por proveedor (anthropic, openai, google) + global |
+| Defaults | Anthropic: $10/dia, $100/mes. OpenAI: $5/dia, $50/mes. Google: $3/dia, $30/mes |
+| Auto-fallback | Si un proveedor esta bloqueado, el router prueba el siguiente |
+| Alerta | Warning al 80% del limite |
+| Registro | Cada llamada se registra en `api_usage_log` con tokens, coste, duracion |
+
+**Tablas Supabase para cost tracking** (ejecutar `supabase/cost_tracking.sql`):
+
+| Tabla | Descripcion |
+|-------|-------------|
+| `api_usage_log` | Registro de cada llamada: modelo, proveedor, tokens, coste USD, duracion, exito |
+| `consultant_cost_limits` | Limites configurables por consultor: diarios/mensuales por proveedor + global |
+| `consultant_model_config` | Modelo preferido y fallback chain por consultor/servicio |
+
+**Funciones RPC** (creadas por cost_tracking.sql):
+- `get_provider_spending(p_consultant_id, p_provider)` — gasto diario y mensual de un proveedor
+- `get_global_spending(p_consultant_id)` — gasto global diario y mensual
+
 ---
 
 ## Auditoria de Supabase - 25 febrero 2026
@@ -488,7 +565,7 @@ Datos obtenidos directamente de Supabase mediante consultas a `information_schem
 
 ---
 
-### 1. Tablas existentes (18)
+### 1. Tablas existentes (21)
 
 | Tabla | Tipo | PK | Descripcion |
 |-------|------|-----|-------------|
@@ -508,6 +585,9 @@ Datos obtenidos directamente de Supabase mediante consultas a `information_schem
 | `analysis_sessions` | tabla | uuid | Estado de sesiones HITL (plan → execute → results → round2) |
 | `consultant_gdrive` | tabla | uuid | Tokens OAuth de Google Drive por consultor |
 | `gdrive_sync_log` | tabla | uuid | Log de sincronizaciones con Google Drive |
+| `api_usage_log` | tabla | uuid | Registro de cada llamada API con coste (CostGuard) |
+| `consultant_cost_limits` | tabla | consultant_id | Limites de coste por proveedor y globales |
+| `consultant_model_config` | tabla | consultant_id+service | Config de modelo preferido por servicio |
 | `knowledge_stats` | vista | - | Estadisticas agregadas del RAG General |
 | `project_stats` | vista | - | Estadisticas agregadas del RAG Proyecto |
 
@@ -531,6 +611,10 @@ knowledge_documents (text) ──→ knowledge_chunks (text) [RAG General]
 consultant_gdrive (uuid) ──→ auth.users
 gdrive_sync_log (uuid) ──→ consultant_id (sin FK explicita)
 pipeline_progress (text) ──→ sin FK [Realtime: progreso de ingesta de docs]
+
+api_usage_log (uuid) ──→ consultant_id [Registro de cada llamada API + coste]
+consultant_cost_limits (consultant_id PK) ──→ auth.users [Limites por proveedor]
+consultant_model_config (consultant_id+service PK) ──→ auth.users [Config modelo preferido]
 ```
 
 ### 3. Foreign keys verificadas
@@ -668,7 +752,7 @@ Las tablas del esquema antiguo ya NO existen (migracion 004 ejecutada correctame
 
 | Modulo | Tablas | Operaciones |
 |--------|--------|-------------|
-| `api/server.py` | knowledge_documents, knowledge_chunks, consultant_gdrive, gdrive_sync_log, analysis_sessions, analysis_progress | SELECT, UPSERT, UPDATE, DELETE |
+| `api/server.py` | knowledge_documents, knowledge_chunks, consultant_gdrive, gdrive_sync_log, analysis_sessions, analysis_progress, api_usage_log, consultant_cost_limits, consultant_model_config | SELECT, UPSERT, UPDATE, DELETE, INSERT |
 | `pipeline/storage.py` | knowledge_documents, knowledge_chunks, project_documents, project_chunks, waste_inventory, invoice_lines, compliance_alerts | UPSERT |
 | `pipeline/pdf_pipeline.py` | pipeline_progress | UPSERT |
 | `pipeline/agents/graph.py` | analysis_progress | INSERT (via Supabase Realtime) |
@@ -688,6 +772,40 @@ Las tablas del esquema antiguo ya NO existen (migracion 004 ejecutada correctame
 ---
 
 ## Changelog
+
+### 1 marzo 2026
+
+#### Model Router multi-proveedor + CostGuard + PRO+
+
+Sistema completo de enrutamiento de modelos con fallback chain y control de costes:
+
+**Nuevos archivos:**
+- `pipeline/model_router.py` — ModelRouter: fallback chain Anthropic → OpenAI → Google
+- `pipeline/cost_guard.py` — CostGuard: circuit breaker de costes por proveedor
+- `supabase/cost_tracking.sql` — Tablas: api_usage_log, consultant_cost_limits, consultant_model_config
+- `web/src/components/model-selector.tsx` — Selector de modelo y tier (standard/PRO+)
+- `web/src/components/usage-dashboard.tsx` — Dashboard de uso y costes
+
+**Archivos modificados:**
+- `api/server.py` — Advisor y analisis usan ModelRouter; 6 nuevos endpoints (usage-stats, cost-limits, model-config, available-models)
+- `pipeline/agents/llm.py` — Reescrito: call_llm() usa ModelRouter, call_claude() es alias backward-compatible
+- `pipeline/agents/state.py` — Nuevos campos: gemini_api_key, model_override, tier, consultant_id
+- `pipeline/agents/graph.py` — run_project_analysis() acepta params de routing
+- Los 8 agentes (aai, contratos, facturas, registro, normativo, optimizador, redactor, coordinador) — usan routing_kwargs(state)
+
+**Modelos soportados:**
+- Anthropic: Claude Opus 4.6, Sonnet 4, Haiku 4.5
+- OpenAI: GPT-5.2, GPT-5, o3, o4-mini, GPT-5 Mini
+- Google: Gemini 2.5 Pro, Gemini 2.5 Flash
+
+**Nuevos endpoints:**
+
+| Metodo | Ruta | Descripcion |
+|--------|------|-------------|
+| GET | `/api/usage-stats` | Estadisticas de uso y costes |
+| GET/PUT | `/api/cost-limits` | Limites de coste por proveedor |
+| GET/PUT | `/api/model-config` | Config de modelo por servicio |
+| GET | `/api/available-models` | Modelos disponibles con capacidades |
 
 ### 25 febrero 2026
 

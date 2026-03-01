@@ -3296,7 +3296,7 @@ async def get_cost_limits(consultant_id: str = Query(...)):
     result = sb.table("consultant_cost_limits") \
         .select("*") \
         .eq("consultant_id", consultant_id) \
-        .maybeSingle() \
+        .maybe_single() \
         .execute()
 
     from pipeline.cost_guard import DEFAULT_LIMITS
