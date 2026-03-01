@@ -133,6 +133,11 @@ def _extract_google_web_sources(response) -> list[dict]:
             grounding = getattr(candidate, "grounding_metadata", None)
             if not grounding:
                 continue
+            # Debug: log all attributes of grounding_metadata to discover structure
+            gm_attrs = {attr: repr(getattr(grounding, attr, "N/A"))[:200]
+                        for attr in dir(grounding)
+                        if not attr.startswith("_")}
+            logger.info("Gemini grounding_metadata attrs: %s", gm_attrs)
             # grounding_chunks contiene las fuentes
             for chunk in (getattr(grounding, "grounding_chunks", None) or []):
                 web = getattr(chunk, "web", None)
@@ -142,9 +147,9 @@ def _extract_google_web_sources(response) -> list[dict]:
                         "url": getattr(web, "uri", "") or "",
                     })
             # search_entry_point puede tener info adicional
-            support = getattr(grounding, "grounding_supports", [])
-            for s in (support or []):
-                for seg_chunk in getattr(s, "grounding_chunk_indices", []):
+            support = getattr(grounding, "grounding_supports", None) or []
+            for s in support:
+                for seg_chunk in (getattr(s, "grounding_chunk_indices", None) or []):
                     pass  # Ya procesado arriba via grounding_chunks
     except Exception as e:
         logger.warning("Error extrayendo web sources de Gemini: %s", e, exc_info=True)
