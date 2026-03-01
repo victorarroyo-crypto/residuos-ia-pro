@@ -1631,7 +1631,7 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                             model=api_model,
                             max_tokens=32000,
                             thinking={
-                                "type": "enabled",
+                                "type": "adaptive",
                                 "budget_tokens": thinking_budget,
                             },
                             tools=[web_search_tool],
