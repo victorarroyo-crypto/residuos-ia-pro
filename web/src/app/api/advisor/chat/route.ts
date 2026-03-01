@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 // Allow longer execution for file processing (default is 10s on Vercel hobby)
 export const maxDuration = 120;
@@ -137,6 +136,7 @@ export async function POST(request: NextRequest) {
 
     const response = await fetch(`${PIPELINE_URL}/api/advisor/chat`, {
       method: "POST",
+      headers: pipelineHeaders(),
       body: pipelineForm,
       signal: AbortSignal.timeout(115_000), // 115s — just under Vercel's 120s maxDuration
     });

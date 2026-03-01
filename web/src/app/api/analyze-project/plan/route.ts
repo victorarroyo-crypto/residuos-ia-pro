@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 /**
  * POST /api/analyze-project/plan
@@ -23,7 +22,7 @@ export async function POST(request: NextRequest) {
 
     const response = await fetch(`${PIPELINE_URL}/api/analyze/plan`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pipelineHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ project_id: projectId }),
     });
 

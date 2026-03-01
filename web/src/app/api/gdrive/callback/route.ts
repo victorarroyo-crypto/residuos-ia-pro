@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createAuthClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { loadEnv } from "@/lib/env";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");
@@ -119,10 +120,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Fire-and-forget: ask Python backend to create folder structure in background
-    const pipelineUrl = process.env.PIPELINE_API_URL || "http://localhost:8000";
-    fetch(`${pipelineUrl}/api/gdrive/setup-folders`, {
+    fetch(`${PIPELINE_URL}/api/gdrive/setup-folders`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pipelineHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ consultant_id: consultantId }),
     }).catch((err) =>
       console.error("[gdrive/callback] setup-folders fire-and-forget error:", err)

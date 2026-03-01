@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 /**
  * POST /api/knowledge-base/reclassify
@@ -10,7 +9,7 @@ export async function POST() {
   try {
     const response = await fetch(
       `${PIPELINE_URL}/api/knowledge-base/reclassify`,
-      { method: "POST", headers: { "Content-Type": "application/json" } }
+      { method: "POST", headers: pipelineHeaders({ "Content-Type": "application/json" }) }
     );
 
     if (!response.ok) {

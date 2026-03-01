@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 /**
  * GET /api/analyze-project/session?project_id=xxx
@@ -16,7 +15,9 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const response = await fetch(`${PIPELINE_URL}/api/analyze/session/${projectId}`);
+    const response = await fetch(`${PIPELINE_URL}/api/analyze/session/${projectId}`, {
+      headers: pipelineHeaders(),
+    });
     if (!response.ok) {
       const err = await response.json().catch(() => ({ detail: "Error" }));
       return NextResponse.json({ error: err.detail }, { status: response.status });
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest) {
 
     const response = await fetch(`${PIPELINE_URL}/api/analyze/session`, {
       method: "POST",
+      headers: pipelineHeaders(),
       body: form,
     });
 

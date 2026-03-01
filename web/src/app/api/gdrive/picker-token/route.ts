@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 export async function GET(request: NextRequest) {
   const consultantId = request.nextUrl.searchParams.get("consultant_id");
@@ -13,7 +12,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const response = await fetch(
-      `${PIPELINE_URL}/api/gdrive/picker-token?consultant_id=${consultantId}`
+      `${PIPELINE_URL}/api/gdrive/picker-token?consultant_id=${consultantId}`,
+      { headers: pipelineHeaders() }
     );
 
     if (!response.ok) {
