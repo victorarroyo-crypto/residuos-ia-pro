@@ -1080,10 +1080,7 @@ async def _run_advisor(
                 async with claude.messages.stream(
                     model=api_model,
                     max_tokens=32000,
-                    thinking={
-                        "type": "adaptive",
-                        "budget_tokens": thinking_budget,
-                    },
+                    thinking={"type": "adaptive"},
                     tools=[web_search_tool],
                     system=system_prompt,
                     messages=messages,
@@ -1630,10 +1627,7 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                         async with claude.messages.stream(
                             model=api_model,
                             max_tokens=32000,
-                            thinking={
-                                "type": "adaptive",
-                                "budget_tokens": thinking_budget,
-                            },
+                            thinking={"type": "adaptive"},
                             tools=[web_search_tool],
                             system=system_prompt,
                             messages=messages,
