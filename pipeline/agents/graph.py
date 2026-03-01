@@ -54,25 +54,15 @@ ALL_AGENT_IDS = list(AGENT_MAP.keys())
 
 # ─── Progress tracking (via Supabase Realtime) ──────────────────────
 
-_sb_url: str = ""
-_sb_key: str = ""
 
-
-def _configure_progress(supabase_url: str, supabase_key: str):
-    """Set Supabase credentials for progress emission (called once per analysis run)."""
-    global _sb_url, _sb_key
-    _sb_url = supabase_url
-    _sb_key = supabase_key
-
-
-def emit_progress(project_id: str, event: dict):
+def emit_progress(project_id: str, event: dict, supabase_url: str, supabase_key: str):
     """Insert a progress event into analysis_progress table (Supabase Realtime)."""
-    if not _sb_url or not _sb_key:
-        logger.warning("emit_progress called without Supabase credentials configured")
+    if not supabase_url or not supabase_key:
+        logger.warning("emit_progress called without Supabase credentials")
         return
     try:
         from supabase import create_client
-        sb = create_client(_sb_url, _sb_key)
+        sb = create_client(supabase_url, supabase_key)
         sb.table("analysis_progress").insert({
             "project_id": project_id,
             "event_type": event.get("type", "unknown"),
@@ -102,25 +92,31 @@ def _run_async(coro):
 
 def _node_load(state: AnalysisState) -> dict:
     project_id = state.get("project_id", "")
-    emit_progress(project_id, {"type": "load_start"})
+    sb_url = state.get("supabase_url", "")
+    sb_key = state.get("supabase_key", "")
+    emit_progress(project_id, {"type": "load_start"}, sb_url, sb_key)
     result = load_project_data(state)
-    emit_progress(project_id, {"type": "load_done"})
+    emit_progress(project_id, {"type": "load_done"}, sb_url, sb_key)
     return result
 
 
 def _node_optimizador(state: AnalysisState) -> dict:
     project_id = state.get("project_id", "")
-    emit_progress(project_id, {"type": "agent_start", "agent": "optimizador"})
+    sb_url = state.get("supabase_url", "")
+    sb_key = state.get("supabase_key", "")
+    emit_progress(project_id, {"type": "agent_start", "agent": "optimizador"}, sb_url, sb_key)
     result = _run_async(agent_optimizador(state))
-    emit_progress(project_id, {"type": "agent_done", "agent": "optimizador"})
+    emit_progress(project_id, {"type": "agent_done", "agent": "optimizador"}, sb_url, sb_key)
     return result
 
 
 def _node_redactor(state: AnalysisState) -> dict:
     project_id = state.get("project_id", "")
-    emit_progress(project_id, {"type": "agent_start", "agent": "redactor"})
+    sb_url = state.get("supabase_url", "")
+    sb_key = state.get("supabase_key", "")
+    emit_progress(project_id, {"type": "agent_start", "agent": "redactor"}, sb_url, sb_key)
     result = _run_async(agent_redactor(state))
-    emit_progress(project_id, {"type": "agent_done", "agent": "redactor"})
+    emit_progress(project_id, {"type": "agent_done", "agent": "redactor"}, sb_url, sb_key)
     return result
 
 
@@ -139,6 +135,8 @@ def _make_parallel_node(agent_ids: list[str]):
 
     def _node_parallel_analysis(state: AnalysisState) -> dict:
         project_id = state.get("project_id", "")
+        sb_url = state.get("supabase_url", "")
+        sb_key = state.get("supabase_key", "")
         selected = [
             (aid, key, fn)
             for aid in agent_ids
@@ -151,7 +149,7 @@ def _make_parallel_node(agent_ids: list[str]):
 
         # Emit agent start events
         for aid, _, _ in selected:
-            emit_progress(project_id, {"type": "agent_start", "agent": aid})
+            emit_progress(project_id, {"type": "agent_start", "agent": aid}, sb_url, sb_key)
 
         async def _run_agent(aid: str, fn):
             result = await fn(state)
@@ -159,7 +157,7 @@ def _make_parallel_node(agent_ids: list[str]):
                 "type": "agent_done",
                 "agent": aid,
                 "findings_count": len(result.get(AGENT_MAP[aid][0], [])) if isinstance(result, dict) else 0,
-            })
+            }, sb_url, sb_key)
             return result
 
         async def _run_all():
@@ -312,9 +310,6 @@ async def run_project_analysis(
       - errors: list[str]
       - agents_used: list[str]
     """
-    # Configure Supabase credentials for progress emission
-    _configure_progress(supabase_url, supabase_key)
-
     graph = build_analysis_graph(agents)
 
     used_agents = agents if agents else ALL_AGENT_IDS
@@ -371,6 +366,6 @@ async def run_project_analysis(
     )
 
     # Emit completion event
-    emit_progress(project_id, {"type": "complete"})
+    emit_progress(project_id, {"type": "complete"}, supabase_url, supabase_key)
 
     return result

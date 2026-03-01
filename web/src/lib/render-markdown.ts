@@ -3,6 +3,15 @@
  * Used by the analysis report and the advisor chat.
  */
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function convertMarkdownTables(text: string): string {
   // Split into lines and find contiguous table blocks (lines starting with |)
   const lines = text.split("\n");
@@ -43,7 +52,7 @@ function convertMarkdownTables(text: string): string {
         html += "<thead><tr>";
         headers.forEach((h, idx) => {
           const align = aligns[idx] || "left";
-          html += `<th class="border border-border bg-muted px-3 py-2 font-semibold text-${align}">${h}</th>`;
+          html += `<th class="border border-border bg-muted px-3 py-2 font-semibold text-${align}">${escapeHtml(h)}</th>`;
         });
         html += "</tr></thead>";
 
@@ -54,7 +63,7 @@ function convertMarkdownTables(text: string): string {
           html += "<tr>";
           cells.forEach((cell, idx) => {
             const align = aligns[idx] || "left";
-            html += `<td class="border border-border px-3 py-2 text-${align}">${cell}</td>`;
+            html += `<td class="border border-border px-3 py-2 text-${align}">${escapeHtml(cell)}</td>`;
           });
           html += "</tr>";
         }
