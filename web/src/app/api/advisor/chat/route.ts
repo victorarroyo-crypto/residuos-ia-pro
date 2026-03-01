@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
+import { createClient } from "@/lib/supabase/server";
 
 // Allow longer execution for file processing (default is 10s on Vercel hobby)
 export const maxDuration = 120;
@@ -23,6 +24,14 @@ export const maxDuration = 120;
  */
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+    }
+
     const contentType = request.headers.get("content-type") || "";
     let query: string;
     let conversationHistory: string | undefined;
@@ -73,9 +82,8 @@ export async function POST(request: NextRequest) {
         analysisContextStr = JSON.stringify(body.analysis_context);
       }
 
-      if (typeof body.consultant_id === "string" && body.consultant_id.trim()) {
-        consultantId = body.consultant_id;
-      }
+      // Siempre usar user.id del session (no confiar en body)
+      consultantId = user.id;
       if (typeof body.gdrive_folder_id === "string" && body.gdrive_folder_id.trim()) {
         gdriveFolderId = body.gdrive_folder_id;
       }
@@ -99,8 +107,8 @@ export async function POST(request: NextRequest) {
       if (p && typeof p === "string") projectId = p;
       const u = formData.get("urls");
       if (u && typeof u === "string") urls = u;
-      const c = formData.get("consultant_id");
-      if (c && typeof c === "string") consultantId = c;
+      // Siempre usar user.id del session (no confiar en formData)
+      consultantId = user.id;
       const gf = formData.get("gdrive_folder_id");
       if (gf && typeof gf === "string") gdriveFolderId = gf;
       const gm = formData.get("gdrive_max_files");

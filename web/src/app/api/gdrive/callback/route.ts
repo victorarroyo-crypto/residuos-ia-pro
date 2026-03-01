@@ -30,12 +30,20 @@ export async function GET(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const consultantId = state || user?.id;
-  if (!consultantId) {
+  if (!user) {
     settingsUrl.searchParams.set("gdrive", "error");
     settingsUrl.searchParams.set("gdrive_error", "no_user");
     return NextResponse.redirect(settingsUrl);
   }
+
+  // Validar que state coincide con el usuario autenticado (prevenir CSRF OAuth)
+  if (state && state !== user.id) {
+    settingsUrl.searchParams.set("gdrive", "error");
+    settingsUrl.searchParams.set("gdrive_error", "state_mismatch");
+    return NextResponse.redirect(settingsUrl);
+  }
+
+  const consultantId = user.id;
 
   try {
     // Build the redirect_uri that was used in the auth request (must match)

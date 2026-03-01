@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { loadEnv } from "@/lib/env";
 
 type RpcChunk = {
@@ -49,6 +50,14 @@ function cSourceToScope(source?: string): "general" | "project" {
 }
 
 export async function POST(request: NextRequest) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  }
+
   const admin = getAdminClient();
   if (!admin.ok) {
     return NextResponse.json({ error: admin.detail }, { status: admin.status });
@@ -66,6 +75,19 @@ export async function POST(request: NextRequest) {
         { error: "Se requiere un campo 'query'" },
         { status: 400 }
       );
+    }
+
+    // Ownership check: si scope=project o combined con project_id, verificar ownership
+    if (projectId && (scope === "project" || scope === "combined")) {
+      const { data: project } = await admin.client
+        .from("projects")
+        .select("id")
+        .eq("id", projectId)
+        .eq("consultant_id", user.id)
+        .single();
+      if (!project) {
+        return NextResponse.json({ error: "Proyecto no encontrado" }, { status: 403 });
+      }
     }
 
     const openaiKey = loadEnv("OPENAI_API_KEY");
