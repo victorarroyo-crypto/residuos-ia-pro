@@ -1731,6 +1731,38 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                         from pipeline.model_router import _extract_google_web_sources
                         gemini_web_sources = _extract_google_web_sources(gemini_response)
 
+                        # ── DIAGNOSTIC: inspeccionar respuesta Gemini ──
+                        _cand0 = gemini_response.candidates[0] if gemini_response.candidates else None
+                        _gm = getattr(_cand0, "grounding_metadata", None) if _cand0 else None
+                        _fc = getattr(_cand0, "finish_reason", None) if _cand0 else None
+                        # Log: finish_reason, whether grounding_metadata exists,
+                        # its type, and non-private attributes
+                        if _gm:
+                            _gm_attrs = {
+                                a: repr(getattr(_gm, a, "N/A"))[:300]
+                                for a in dir(_gm)
+                                if not a.startswith("_")
+                            }
+                            logger.info(
+                                "DIAG Gemini: finish=%s, gm_type=%s, gm_attrs=%s",
+                                _fc, type(_gm).__name__, _gm_attrs,
+                            )
+                        else:
+                            # No grounding_metadata — check if model made tool calls
+                            _parts = (_cand0.content.parts if _cand0 and _cand0.content else [])
+                            _part_types = [
+                                (getattr(p, "function_call", None) and "function_call")
+                                or (getattr(p, "thought", False) and "thought")
+                                or ("text" if getattr(p, "text", None) else "other")
+                                for p in _parts
+                            ]
+                            logger.info(
+                                "DIAG Gemini: finish=%s, NO grounding_metadata, "
+                                "parts=%d types=%s, response_keys=%s",
+                                _fc, len(_parts), _part_types,
+                                [a for a in dir(gemini_response) if not a.startswith("_")],
+                            )
+
                         model_used = model_id
                         break  # success
 
