@@ -228,8 +228,8 @@ class ExcelProcessor:
                 df = pd.read_csv(io.BytesIO(csv_bytes), sep=sep, encoding="utf-8-sig")
                 if df.shape[1] > 1:
                     return {filename: df}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("CSV parse fallido para %s: %s", filename, e)
         return {}
 
     def _detect_header_row(self, df: pd.DataFrame) -> int:
@@ -341,8 +341,8 @@ class ExcelProcessor:
             dates = pd.to_datetime(df[date_cols[0]], errors="coerce").dropna()
             if len(dates) > 0:
                 return f"{dates.min().strftime('%Y-%m')} a {dates.max().strftime('%Y-%m')}"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Extraccion de rango de fechas fallida: %s", e)
         return None
 
     def _extract_total_eur(self, df: pd.DataFrame) -> Optional[float]:
@@ -355,8 +355,8 @@ class ExcelProcessor:
             try:
                 numeric = pd.to_numeric(df[col], errors="coerce").dropna()
                 total += numeric.sum()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Columna '%s' no se pudo sumar como EUR: %s", col, e)
         return total if total > 0 else None
 
     def _extract_structured_data(
@@ -445,7 +445,8 @@ Filas de datos: {df.shape[0]} | Columnas: {df.shape[1]}
         # Tabla en markdown
         try:
             table_md = df_sample.fillna("").to_markdown(index=False)
-        except Exception:
+        except Exception as e:
+            logger.debug("to_markdown fallido, usando to_string: %s", e)
             table_md = df_sample.fillna("").to_string(index=False)
 
         # Para tablas de costes, añadir resumen LLM (muy valioso para el RAG)
@@ -556,7 +557,8 @@ Sé preciso con los números. No inventes datos que no estén en la tabla."""
                     block_df = pd.DataFrame(block)
                     try:
                         block_text = block_df.fillna("").to_markdown(index=False)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Block to_markdown fallido: %s", e)
                         block_text = block_df.fillna("").to_string(index=False)
 
                     content = header_context + f"[Filas {i+1}-{i+len(block)}]\n" + block_text

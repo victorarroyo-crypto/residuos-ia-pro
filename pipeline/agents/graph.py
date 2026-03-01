@@ -76,18 +76,13 @@ def emit_progress(project_id: str, event: dict, supabase_url: str, supabase_key:
 # ─── Wrappers sync para nodos que son async ─────────────────────────
 
 def _run_async(coro):
-    """Ejecuta una corrutina en un nuevo event loop si no hay uno activo."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+    """Ejecuta una corrutina creando un event loop nuevo.
 
-    if loop and loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    else:
-        return asyncio.run(coro)
+    Diseñado para ser llamado desde worker threads (sin event loop propio).
+    Las funciones async de nivel superior (plan_analysis, run_project_analysis)
+    usan asyncio.to_thread() para delegar aqui sin bloquear el loop de FastAPI.
+    """
+    return asyncio.run(coro)
 
 
 def _node_load(state: AnalysisState) -> dict:
@@ -178,10 +173,11 @@ def _make_parallel_node(agent_ids: list[str]):
             merged[findings_key] = []
 
         # Rellenar con resultados reales
-        for i, (_, findings_key, _) in enumerate(selected):
+        for i, (aid, findings_key, _) in enumerate(selected):
             result = results[i]
             if isinstance(result, Exception):
-                merged["errors"].append(f"Error en agente {findings_key}: {result}")
+                logger.error("Agente '%s' fallo con excepcion: %s", aid, result, exc_info=result)
+                merged["errors"].append(f"Agente {aid} fallo: {result}")
             elif isinstance(result, dict):
                 merged[findings_key] = result.get(findings_key, [])
                 merged["errors"].extend(result.get("errors", []))
@@ -264,8 +260,10 @@ async def plan_analysis(
     if not pd.get("project"):
         return {"analysis_plan": {}, "errors": state.get("errors", ["Proyecto no encontrado"])}
 
-    # Paso 2: Coordinador genera plan
-    coord_result = _run_async(agent_coordinador(state))
+    # Paso 2: Coordinador genera plan (en worker thread para no bloquear event loop)
+    coord_result = await asyncio.to_thread(
+        lambda: asyncio.run(agent_coordinador(state))
+    )
     state.update(coord_result)
 
     plan = state.get("analysis_plan", {})
@@ -328,8 +326,8 @@ async def run_project_analysis(
         f" | instrucciones: {'si' if consultant_instructions else 'no'}"
     )
 
-    # Invoke el grafo sincronamente (LangGraph maneja internamente)
-    final_state = graph.invoke(initial_state)
+    # Ejecutar grafo en worker thread para no bloquear el event loop de FastAPI
+    final_state = await asyncio.to_thread(graph.invoke, initial_state)
 
     # Agrupar todos los hallazgos
     all_findings = []

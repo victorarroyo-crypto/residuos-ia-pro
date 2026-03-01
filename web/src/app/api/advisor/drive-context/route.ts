@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
       detail.includes("fetch") ||
       detail.includes("ECONNREFUSED") ||
       detail.includes("ENOTFOUND")
-        ? `Pipeline API no disponible (${PIPELINE_URL}).`
+        ? `Pipeline API no disponible. Contacta al administrador.`
         : `Error al cargar contexto de Drive: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }

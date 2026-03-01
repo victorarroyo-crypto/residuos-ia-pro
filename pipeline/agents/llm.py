@@ -14,6 +14,7 @@ import logging
 import re
 from typing import Any
 
+import httpx
 from anthropic import AsyncAnthropic
 
 from .tools import ToolExecutor
@@ -33,7 +34,11 @@ async def call_claude(
     temperature: float = 0.2,
 ) -> dict[str, Any] | str:
     """Llama a Claude y devuelve JSON parseado o texto."""
-    client = AsyncAnthropic(api_key=api_key, max_retries=4)
+    client = AsyncAnthropic(
+        api_key=api_key,
+        max_retries=4,
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
 
     response = await client.messages.create(
         model=model,
@@ -71,7 +76,11 @@ async def call_claude_with_tools(
     3. Enviar resultados de vuelta
     4. Repetir hasta que Claude responda con texto final
     """
-    client = AsyncAnthropic(api_key=api_key, max_retries=4)
+    client = AsyncAnthropic(
+        api_key=api_key,
+        max_retries=4,
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
 
     messages = [{"role": "user", "content": user_message}]
     response = None
@@ -168,5 +177,8 @@ def parse_json_response(text: str) -> dict[str, Any]:
                         except json.JSONDecodeError:
                             break
 
-    logger.warning("No se pudo extraer JSON de la respuesta, devolviendo vacio")
+    logger.error(
+        "No se pudo extraer JSON de la respuesta del LLM. Primeros 500 chars: %s",
+        text[:500],
+    )
     return {"findings": [], "error": "No se pudo parsear la respuesta del LLM"}
