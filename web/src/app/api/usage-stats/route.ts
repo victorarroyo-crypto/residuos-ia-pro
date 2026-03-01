@@ -1,31 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadEnv } from "@/lib/env";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
+import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: NextRequest) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
-  const consultantId = searchParams.get("consultant_id");
   const days = searchParams.get("days") || "30";
-
-  if (!consultantId) {
-    return NextResponse.json({ error: "consultant_id required" }, { status: 400 });
-  }
-
-  const pipelineUrl = loadEnv("PIPELINE_API_URL");
-  if (!pipelineUrl) {
-    return NextResponse.json({ error: "PIPELINE_API_URL not configured" }, { status: 503 });
-  }
 
   try {
     const res = await fetch(
-      `${pipelineUrl}/api/usage-stats?consultant_id=${consultantId}&days=${days}`,
-      { cache: "no-store" }
+      `${PIPELINE_URL}/api/usage-stats?consultant_id=${user.id}&days=${days}`,
+      { headers: pipelineHeaders(), cache: "no-store" }
     );
     const data = await res.json();
-    return NextResponse.json(data);
+    return NextResponse.json(data, { status: res.status });
   } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error("[usage-stats] Error:", detail);
     return NextResponse.json(
-      { error: `Error fetching usage stats: ${e}` },
-      { status: 500 }
+      { error: `Error fetching usage stats: ${detail}` },
+      { status: 502 }
     );
   }
 }
