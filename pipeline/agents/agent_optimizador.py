@@ -8,7 +8,7 @@ de ahorro priorizadas por EUR/ano.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_OPTIMIZADOR
-from .llm import call_claude
+from .llm import call_claude, routing_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ async def agent_optimizador(state: AnalysisState) -> dict:
             api_key=state["anthropic_api_key"],
             system_prompt=SYSTEM_OPTIMIZADOR,
             user_message=context,
+            **routing_kwargs(state),
         )
 
         opportunities: list[Finding] = []

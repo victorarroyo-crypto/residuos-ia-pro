@@ -8,7 +8,7 @@ informe ejecutivo en Markdown.
 import logging
 from .state import AnalysisState
 from .prompts import SYSTEM_REDACTOR
-from .llm import call_claude
+from .llm import call_claude, routing_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,7 @@ async def agent_redactor(state: AnalysisState) -> dict:
             user_message=context,
             expect_json=False,
             max_tokens=6000,
+            **routing_kwargs(state),
         )
 
         logger.info(f"Agente Redactor: informe generado ({len(str(report))} chars)")

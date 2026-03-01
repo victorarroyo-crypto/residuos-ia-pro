@@ -8,7 +8,7 @@ fuera de mercado y gestores no autorizados.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_CONTRATOS, build_instructions_block, build_agent_focus_block, build_previous_findings_block
-from .llm import call_claude_with_tools
+from .llm import call_claude_with_tools, routing_kwargs
 from .tools import CONTRATOS_TOOLS, ToolExecutor
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,7 @@ async def agent_contratos(state: AnalysisState) -> dict:
             user_message=context,
             tools=CONTRATOS_TOOLS,
             tool_executor=executor,
+            **routing_kwargs(state),
         )
 
         findings: list[Finding] = []

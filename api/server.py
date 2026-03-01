@@ -95,6 +95,10 @@ async def lifespan(app: FastAPI):
         gemini_api_key=gemini_key,
         cost_guard=_cost_guard,
     )
+
+    # Share ModelRouter with agent LLM layer
+    from pipeline.agents.llm import init_model_router
+    init_model_router(_model_router, _cost_guard)
     logger.info("CostGuard + ModelRouter inicializados ✓")
 
     # Clean up zombie syncs left by previous server instances (e.g. redeploy)
@@ -925,19 +929,7 @@ async def _run_advisor(
     messages = _truncate_history(conversation_history)
     messages.append({"role": "user", "content": user_content_blocks})
 
-    # 6. Call Claude with extended thinking + web search
-    claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
-
-    # Web search tool: Claude decides when to search the web.
-    # Anthropic executes the search server-side (uses Brave Search).
-    # Cost: ~$0.01 per search. Max 3 searches per query.
-    web_search_tool = {
-        "type": "web_search_20250305",
-        "name": "web_search",
-        "max_uses": 2,
-    }
-
-    # Build system prompt, injecting analysis context if available
+    # 6. Build system prompt, injecting analysis context if available
     system_prompt = ADVISOR_SYSTEM_PROMPT
     if _is_professional_report_mode(query, analysis_context):
         system_prompt += ADVISOR_REPORT_MODE_ADDENDUM
@@ -947,6 +939,15 @@ async def _run_advisor(
     # Adaptive thinking: less budget on follow-ups (context already established)
     thinking_budget = 10000 if conversation_history else 24000
 
+    # 7. Resolve model via ModelRouter chain
+    effective_tier = tier or "standard"
+    chain = await _model_router.get_consultant_chain(
+        service="advisor",
+        consultant_id=consultant_id,
+        tier_override=effective_tier,
+        model_override=model_override,
+    )
+
     answer = ""
     web_sources: list[dict] = []
     model_used = "claude-sonnet-4"
@@ -954,94 +955,103 @@ async def _run_advisor(
     output_tokens = 0
     call_start = time.monotonic()
 
-    try:
-        async with claude.messages.stream(
-            model="claude-sonnet-4-20250514",
-            max_tokens=32000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            },
-            tools=[web_search_tool],
-            system=system_prompt,
-            messages=messages,
-        ) as stream:
-            final_response = await stream.get_final_message()
+    # Web search tool (Anthropic-only feature)
+    web_search_tool = {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 2,
+    }
 
-        input_tokens = final_response.usage.input_tokens
-        output_tokens = final_response.usage.output_tokens
+    # Try each model in the fallback chain
+    last_error = None
+    for i, model_id in enumerate(chain):
+        provider = MODEL_PROVIDERS.get(model_id, "unknown")
 
-        for block in final_response.content:
-            if block.type == "text":
-                answer = block.text
-            elif block.type == "web_search_tool_result":
-                for item in getattr(block, "content", []):
-                    if getattr(item, "type", None) == "web_search_result":
-                        web_sources.append({
-                            "title": getattr(item, "title", ""),
-                            "url": getattr(item, "url", ""),
-                            "scope": "web",
-                        })
+        # Cost Guard check
+        if _cost_guard and consultant_id:
+            check = await _cost_guard.check(provider, consultant_id)
+            if not check.allowed:
+                logger.info("CostGuard blocked %s for advisor: %s", model_id, check.reason)
+                continue
 
-    except Exception as claude_err:
-        is_overloaded = "overloaded" in str(claude_err).lower()
-        if is_overloaded and _config.gemini_api_key:
-            logger.warning("Claude overloaded in advisor/chat, falling back to Gemini 2.5 Pro")
-            model_used = "gemini-2.5-pro"
+        try:
+            if provider == "anthropic":
+                from anthropic import AsyncAnthropic
+                claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
+                api_model = MODEL_API_IDS.get(model_id, model_id)
 
-            from google import genai
-            from google.genai import types as genai_types
+                async with claude.messages.stream(
+                    model=api_model,
+                    max_tokens=32000,
+                    thinking={
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget,
+                    },
+                    tools=[web_search_tool],
+                    system=system_prompt,
+                    messages=messages,
+                ) as stream:
+                    final_response = await stream.get_final_message()
 
-            gemini_client = genai.Client(api_key=_config.gemini_api_key)
+                input_tokens = final_response.usage.input_tokens
+                output_tokens = final_response.usage.output_tokens
 
-            gemini_contents = []
-            for msg in messages:
-                role = "user" if msg["role"] == "user" else "model"
-                content = msg["content"]
-                if isinstance(content, list):
-                    text = " ".join(
-                        b["text"] for b in content
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    )
-                    content = text if text else str(content)
-                gemini_contents.append(
-                    genai_types.Content(
-                        role=role,
-                        parts=[genai_types.Part(text=content)],
-                    )
+                for block in final_response.content:
+                    if block.type == "text":
+                        answer = block.text
+                    elif block.type == "web_search_tool_result":
+                        for item in getattr(block, "content", []):
+                            if getattr(item, "type", None) == "web_search_result":
+                                web_sources.append({
+                                    "title": getattr(item, "title", ""),
+                                    "url": getattr(item, "url", ""),
+                                    "scope": "web",
+                                })
+
+            elif provider == "openai":
+                response = await _model_router.call_openai(
+                    model_id, system_prompt, messages, max_tokens=32000,
                 )
+                answer = response.choices[0].message.content or ""
+                usage = response.usage
+                input_tokens = usage.prompt_tokens if usage else 0
+                output_tokens = usage.completion_tokens if usage else 0
 
-            response = await gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro",
-                contents=gemini_contents,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=32000,
-                    temperature=0.7,
-                    thinking_config=genai_types.ThinkingConfig(
-                        include_thoughts=True,
-                    ),
-                ),
-            )
-            answer = response.text or ""
-            usage_meta = getattr(response, "usage_metadata", None)
-            if usage_meta:
-                input_tokens = getattr(usage_meta, "prompt_token_count", 0)
-                output_tokens = getattr(usage_meta, "candidates_token_count", 0)
-        else:
-            raise
+            elif provider == "google":
+                response = await _model_router.call_google(
+                    model_id, system_prompt, messages, max_tokens=32000,
+                )
+                answer = response.text or ""
+                usage_meta = getattr(response, "usage_metadata", None)
+                input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
+                output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
+            else:
+                continue
+
+            model_used = model_id
+            last_error = None
+            break  # success
+
+        except Exception as e:
+            last_error = e
+            is_overloaded = "overloaded" in str(e).lower()
+            logger.warning("Advisor: %s failed (overloaded=%s): %s", model_id, is_overloaded, str(e)[:200])
+            continue
+
+    if last_error and not answer:
+        raise last_error
 
     call_duration = int((time.monotonic() - call_start) * 1000)
 
-    # 7. Record cost
+    # 8. Record cost
     if _cost_guard:
         await _cost_guard.record(
             model=model_used, service="advisor", operation="advisor_chat",
             input_tokens=input_tokens, output_tokens=output_tokens,
             duration_ms=call_duration, consultant_id=consultant_id,
             project_id=project_id,
-            metadata={"web_searches": len(web_sources), "tier": tier or "standard",
-                       "thinking_budget": thinking_budget},
+            metadata={"web_searches": len(web_sources), "tier": effective_tier,
+                       "thinking_budget": thinking_budget, "chain": chain},
         )
 
     # 8. Combine RAG sources + web sources (deduplicated by document)
@@ -1189,6 +1199,9 @@ async def advisor_query(request: AdvisorRequest):
             image_blocks=image_blocks,
             url_list=request.urls or [],
             analysis_context=request.analysis_context,
+            consultant_id=request.consultant_id,
+            model_override=request.model_override,
+            tier=request.tier,
         )
         return result
 
@@ -1212,6 +1225,8 @@ async def advisor_chat(
     consultant_id: Optional[str] = Form(default=None),
     gdrive_folder_id: Optional[str] = Form(default=None),
     gdrive_max_files: int = Form(default=12),
+    model_override: Optional[str] = Form(default=None),
+    tier: Optional[str] = Form(default=None),
     files: list[UploadFile] = File(default=[]),
 ):
     """
@@ -1356,6 +1371,9 @@ async def advisor_chat(
             image_blocks=image_blocks,
             url_list=url_list,
             analysis_context=parsed_analysis_context,
+            consultant_id=consultant_id,
+            model_override=model_override,
+            tier=tier,
         )
         return result
 
@@ -1432,8 +1450,20 @@ async def advisor_stream(request: AdvisorRequest):
             # 4. Adaptive thinking budget
             thinking_budget = 10000 if request.conversation_history else 24000
 
-            # 5. Stream Claude response
-            claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
+            system_prompt = ADVISOR_SYSTEM_PROMPT
+            if _is_professional_report_mode(request.query, request.analysis_context):
+                system_prompt += ADVISOR_REPORT_MODE_ADDENDUM
+            if request.analysis_context:
+                system_prompt += _build_analysis_context_addendum(request.analysis_context)
+
+            # 5. Resolve model chain via ModelRouter
+            effective_tier = request.tier or "standard"
+            chain = await _model_router.get_consultant_chain(
+                service="advisor",
+                consultant_id=request.consultant_id,
+                tier_override=effective_tier,
+                model_override=request.model_override,
+            )
 
             web_search_tool = {
                 "type": "web_search_20250305",
@@ -1441,108 +1471,136 @@ async def advisor_stream(request: AdvisorRequest):
                 "max_uses": 2,
             }
 
-            system_prompt = ADVISOR_SYSTEM_PROMPT
-            if _is_professional_report_mode(request.query, request.analysis_context):
-                system_prompt += ADVISOR_REPORT_MODE_ADDENDUM
-            if request.analysis_context:
-                system_prompt += _build_analysis_context_addendum(request.analysis_context)
+            # 5b. Try each model in the fallback chain
+            text_streamed = False
+            model_used = chain[0] if chain else "claude-sonnet-4"
+            final = None
+            stream_start = time.monotonic()
+            last_keepalive = stream_start
 
-            # 5b. Try Claude first, fallback to Gemini on overloaded
-            use_gemini_fallback = False
+            for chain_idx, model_id in enumerate(chain):
+                provider = MODEL_PROVIDERS.get(model_id, "unknown")
 
-            try:
-                text_streamed = False
-                last_keepalive = time.monotonic()
-                async with claude.messages.stream(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=32000,
-                    thinking={
-                        "type": "enabled",
-                        "budget_tokens": thinking_budget,
-                    },
-                    tools=[web_search_tool],
-                    system=system_prompt,
-                    messages=messages,
-                ) as stream:
-                    async for event in stream:
-                        if event.type == "text":
+                # Cost Guard check
+                if _cost_guard and request.consultant_id:
+                    check = await _cost_guard.check(provider, request.consultant_id)
+                    if not check.allowed:
+                        logger.info("CostGuard blocked %s for stream: %s", model_id, check.reason)
+                        continue
+
+                try:
+                    if provider == "anthropic":
+                        from anthropic import AsyncAnthropic
+                        claude = AsyncAnthropic(api_key=_config.anthropic_api_key, max_retries=4)
+                        api_model = MODEL_API_IDS.get(model_id, model_id)
+
+                        async with claude.messages.stream(
+                            model=api_model,
+                            max_tokens=32000,
+                            thinking={
+                                "type": "enabled",
+                                "budget_tokens": thinking_budget,
+                            },
+                            tools=[web_search_tool],
+                            system=system_prompt,
+                            messages=messages,
+                        ) as stream:
+                            async for event in stream:
+                                if event.type == "text":
+                                    text_streamed = True
+                                    last_keepalive = time.monotonic()
+                                    yield _sse_event("text_delta", {"text": event.text})
+                                elif event.type == "content_block_start":
+                                    block = getattr(event, "content_block", None)
+                                    if block:
+                                        btype = getattr(block, "type", None)
+                                        if btype == "thinking":
+                                            yield _sse_event("status", {"phase": "thinking"})
+                                        elif btype in ("server_tool_use", "web_search_tool_result"):
+                                            yield _sse_event("status", {"phase": "web_search"})
+                                    last_keepalive = time.monotonic()
+                                else:
+                                    now = time.monotonic()
+                                    if now - last_keepalive >= 5:
+                                        yield ": keepalive\n\n"
+                                        last_keepalive = now
+
+                            final = await stream.get_final_message()
+
+                        model_used = model_id
+                        break  # success
+
+                    elif provider == "google":
+                        from google import genai
+                        from google.genai import types as genai_types
+
+                        if chain_idx > 0:
+                            yield _sse_event("status", {"phase": "fallback_" + model_id})
+
+                        gemini_client = genai.Client(api_key=_config.gemini_api_key)
+                        api_model = MODEL_API_IDS.get(model_id, model_id)
+
+                        gemini_contents = []
+                        for msg in messages:
+                            role = "user" if msg["role"] == "user" else "model"
+                            content = msg["content"]
+                            if isinstance(content, list):
+                                text = " ".join(
+                                    b["text"] for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                                content = text if text else str(content)
+                            gemini_contents.append(
+                                genai_types.Content(
+                                    role=role,
+                                    parts=[genai_types.Part(text=content)],
+                                )
+                            )
+
+                        gemini_config = genai_types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            max_output_tokens=32000,
+                            temperature=0.7,
+                            thinking_config=genai_types.ThinkingConfig(
+                                include_thoughts=True,
+                            ),
+                        )
+
+                        async for chunk in await gemini_client.aio.models.generate_content_stream(
+                            model=api_model,
+                            contents=gemini_contents,
+                            config=gemini_config,
+                        ):
+                            if chunk.candidates and chunk.candidates[0].content:
+                                for part in chunk.candidates[0].content.parts:
+                                    if part.text and not getattr(part, "thought", False):
+                                        text_streamed = True
+                                        yield _sse_event("text_delta", {"text": part.text})
+
+                        model_used = model_id
+                        break  # success
+
+                    elif provider == "openai":
+                        # OpenAI: non-streaming fallback (emit all text at once)
+                        if chain_idx > 0:
+                            yield _sse_event("status", {"phase": "fallback_" + model_id})
+
+                        response = await _model_router.call_openai(
+                            model_id, system_prompt, messages, max_tokens=32000,
+                        )
+                        oai_text = response.choices[0].message.content or ""
+                        if oai_text:
                             text_streamed = True
-                            last_keepalive = time.monotonic()
-                            yield _sse_event("text_delta", {"text": event.text})
-                        elif event.type == "content_block_start":
-                            block = getattr(event, "content_block", None)
-                            if block:
-                                btype = getattr(block, "type", None)
-                                if btype == "thinking":
-                                    yield _sse_event("status", {"phase": "thinking"})
-                                elif btype in ("server_tool_use", "web_search_tool_result"):
-                                    yield _sse_event("status", {"phase": "web_search"})
-                            last_keepalive = time.monotonic()
-                        else:
-                            now = time.monotonic()
-                            if now - last_keepalive >= 5:
-                                yield ": keepalive\n\n"
-                                last_keepalive = now
+                            yield _sse_event("text_delta", {"text": oai_text})
 
-                    final = await stream.get_final_message()
+                        model_used = model_id
+                        break  # success
 
-            except Exception as claude_err:
-                is_overloaded = "overloaded" in str(claude_err).lower()
-                if is_overloaded and _config.gemini_api_key:
-                    logger.warning("Claude overloaded, switching to Gemini 2.5 Pro fallback")
-                    use_gemini_fallback = True
-                    text_streamed = False
-                    final = None
-                else:
-                    raise
-
-            # 5c. Gemini 2.5 Pro fallback (streaming)
-            if use_gemini_fallback:
-                from google import genai
-                from google.genai import types as genai_types
-
-                yield _sse_event("status", {"phase": "fallback_gemini"})
-
-                gemini_client = genai.Client(api_key=_config.gemini_api_key)
-
-                # Build Gemini contents from messages
-                gemini_contents = []
-                for msg in messages:
-                    role = "user" if msg["role"] == "user" else "model"
-                    content = msg["content"]
-                    if isinstance(content, list):
-                        # Extract text from content blocks
-                        text = " ".join(
-                            b["text"] for b in content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                        content = text if text else str(content)
-                    gemini_contents.append(
-                        genai_types.Content(
-                            role=role,
-                            parts=[genai_types.Part(text=content)],
-                        )
-                    )
-
-                gemini_config = genai_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=32000,
-                    temperature=0.7,
-                    thinking_config=genai_types.ThinkingConfig(
-                        include_thoughts=True,
-                    ),
-                )
-
-                async for chunk in await gemini_client.aio.models.generate_content_stream(
-                    model="gemini-2.5-pro",
-                    contents=gemini_contents,
-                    config=gemini_config,
-                ):
-                    if chunk.candidates and chunk.candidates[0].content:
-                        for part in chunk.candidates[0].content.parts:
-                            if part.text and not getattr(part, "thought", False):
-                                text_streamed = True
-                                yield _sse_event("text_delta", {"text": part.text})
+                except Exception as e:
+                    is_overloaded = "overloaded" in str(e).lower()
+                    logger.warning("Advisor stream: %s failed (overloaded=%s): %s",
+                                   model_id, is_overloaded, str(e)[:200])
+                    continue
 
             # 6. Fallback: if streaming produced nothing, extract from final
             if final is not None:
@@ -1562,7 +1620,7 @@ async def advisor_stream(request: AdvisorRequest):
                     "text": "No se pudo generar una respuesta. Intenta reformular tu pregunta.",
                 })
 
-            # 7. Extract web sources from final message (Claude only)
+            # 7. Extract web sources from final message (Anthropic only)
             web_sources: list[dict] = []
             if final is not None:
                 for block in final.content:
@@ -1588,8 +1646,6 @@ async def advisor_stream(request: AdvisorRequest):
                         "excerpt": ws["url"],
                     })
 
-            model_used = "gemini-2.5-pro" if use_gemini_fallback else "claude-sonnet-4"
-
             # 8. Record cost
             stream_input_tokens = 0
             stream_output_tokens = 0
@@ -1597,7 +1653,7 @@ async def advisor_stream(request: AdvisorRequest):
                 stream_input_tokens = final.usage.input_tokens
                 stream_output_tokens = final.usage.output_tokens
 
-            stream_duration = int((time.monotonic() - (last_keepalive - 5 if last_keepalive else 0)) * 1000) if last_keepalive else 0
+            stream_duration = int((time.monotonic() - stream_start) * 1000)
             cost = calculate_cost(model_used, stream_input_tokens, stream_output_tokens)
 
             if _cost_guard:
@@ -1608,14 +1664,15 @@ async def advisor_stream(request: AdvisorRequest):
                     consultant_id=request.consultant_id,
                     project_id=request.project_id,
                     metadata={"web_searches": len(web_sources),
-                              "tier": getattr(request, "tier", "standard") or "standard",
-                              "thinking_budget": thinking_budget},
+                              "tier": effective_tier,
+                              "thinking_budget": thinking_budget,
+                              "chain": chain},
                 )
 
             logger.info(
-                "Advisor stream: model=%s, RAG=%s, web=%s (%d), history=%d msgs, "
+                "Advisor stream: model=%s, tier=%s, RAG=%s, web=%s (%d), history=%d msgs, "
                 "tokens=%d in + %d out, cost=$%.4f",
-                model_used, has_rag_context, bool(web_sources), len(web_sources),
+                model_used, effective_tier, has_rag_context, bool(web_sources), len(web_sources),
                 len(request.conversation_history),
                 stream_input_tokens, stream_output_tokens, cost,
             )
@@ -1647,6 +1704,9 @@ async def advisor_stream(request: AdvisorRequest):
 class AnalyzeRequest(BaseModel):
     project_id: str
     agents: Optional[list[str]] = None  # None = all agents
+    model_override: Optional[str] = None
+    tier: Optional[str] = None
+    consultant_id: Optional[str] = None
 
 
 @app.post("/api/analyze")
@@ -1668,7 +1728,11 @@ async def analyze_project(request: AnalyzeRequest):
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
+            gemini_api_key=_config.gemini_api_key,
             agents=request.agents,
+            model_override=request.model_override or "",
+            tier=request.tier or "standard",
+            consultant_id=request.consultant_id or "",
         )
         return result
     except Exception as e:
@@ -1779,6 +1843,9 @@ class ExecuteRequest(BaseModel):
     agents: list[str]
     consultant_instructions: str = ""
     agent_focus: dict[str, str] = {}
+    model_override: Optional[str] = None
+    tier: Optional[str] = None
+    consultant_id: Optional[str] = None
 
 
 class Round2Request(BaseModel):
@@ -1787,6 +1854,9 @@ class Round2Request(BaseModel):
     consultant_instructions: str = ""
     agent_focus: dict[str, str] = {}
     previous_findings: list[dict] = []
+    model_override: Optional[str] = None
+    tier: Optional[str] = None
+    consultant_id: Optional[str] = None
 
 
 @app.post("/api/analyze/plan")
@@ -1825,9 +1895,13 @@ async def analyze_execute(request: ExecuteRequest):
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
+            gemini_api_key=_config.gemini_api_key,
             agents=request.agents,
             consultant_instructions=request.consultant_instructions,
             agent_focus=request.agent_focus,
+            model_override=request.model_override or "",
+            tier=request.tier or "standard",
+            consultant_id=request.consultant_id or "",
         )
         # Cleanup old progress rows (Realtime already delivered them)
         await _cleanup_analysis_progress(request.project_id)
@@ -1853,11 +1927,15 @@ async def analyze_round2(request: Round2Request):
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
+            gemini_api_key=_config.gemini_api_key,
             agents=request.agents,
             consultant_instructions=request.consultant_instructions,
             agent_focus=request.agent_focus,
             round_number=2,
             previous_findings=request.previous_findings,
+            model_override=request.model_override or "",
+            tier=request.tier or "standard",
+            consultant_id=request.consultant_id or "",
         )
         await _cleanup_analysis_progress(request.project_id)
         return result

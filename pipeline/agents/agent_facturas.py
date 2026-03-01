@@ -8,7 +8,7 @@ anomalias de precio, cantidad y tendencias.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_FACTURAS, build_instructions_block, build_agent_focus_block, build_previous_findings_block
-from .llm import call_claude_with_tools
+from .llm import call_claude_with_tools, routing_kwargs
 from .tools import FACTURAS_TOOLS, ToolExecutor
 
 logger = logging.getLogger(__name__)
@@ -107,6 +107,7 @@ async def agent_facturas(state: AnalysisState) -> dict:
             user_message=context,
             tools=FACTURAS_TOOLS,
             tool_executor=executor,
+            **routing_kwargs(state),
         )
 
         findings: list[Finding] = []
