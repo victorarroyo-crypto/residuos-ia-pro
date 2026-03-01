@@ -31,11 +31,15 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from pipeline import UnifiedIngestionService, PipelineConfigImpl, RAGScopingService, RAGScope
+from pipeline.cost_guard import CostGuard, calculate_cost, get_provider, MODEL_PRICING
+from pipeline.model_router import ModelRouter, MODEL_API_IDS, MODEL_PROVIDERS, SERVICE_DEFAULTS
 
 
 service: UnifiedIngestionService | None = None
 rag_service: RAGScopingService | None = None
 _config: PipelineConfigImpl | None = None
+_cost_guard: CostGuard | None = None
+_model_router: ModelRouter | None = None
 
 # Strong references to background tasks so GC doesn't kill them.
 # See: https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
@@ -44,7 +48,7 @@ _background_tasks: set[asyncio.Task] = set()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global service, rag_service, _config
+    global service, rag_service, _config, _cost_guard, _model_router
 
     supabase_url = os.environ.get(
         "SUPABASE_URL", os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "")
@@ -82,6 +86,16 @@ async def lifespan(app: FastAPI):
     )
     service = UnifiedIngestionService(_config)
     rag_service = RAGScopingService(_config)
+
+    # Cost Guard & Model Router
+    _cost_guard = CostGuard(supabase_url, supabase_key)
+    _model_router = ModelRouter(
+        anthropic_api_key=_config.anthropic_api_key,
+        openai_api_key=_config.openai_api_key,
+        gemini_api_key=gemini_key,
+        cost_guard=_cost_guard,
+    )
+    logger.info("CostGuard + ModelRouter inicializados ✓")
 
     # Clean up zombie syncs left by previous server instances (e.g. redeploy)
     try:
@@ -594,6 +608,9 @@ class AdvisorRequest(BaseModel):
     # Legacy single-file support (backward compatibility)
     file_content: Optional[str] = None
     file_name: Optional[str] = None
+    # Model selection
+    model_override: Optional[str] = None   # Override: 'claude-opus-4-6', 'gpt-5.2', etc.
+    tier: Optional[str] = None              # 'standard' or 'pro_plus'
 
 
 class AdvisorResponse(BaseModel):
@@ -832,6 +849,9 @@ async def _run_advisor(
     image_blocks: list[dict],
     url_list: list[str],
     analysis_context: Optional[dict] = None,
+    consultant_id: Optional[str] = None,
+    model_override: Optional[str] = None,
+    tier: Optional[str] = None,
 ) -> dict:
     """
     Core advisor logic: RAG search → build prompt → Claude with thinking.
@@ -929,7 +949,10 @@ async def _run_advisor(
 
     answer = ""
     web_sources: list[dict] = []
-    model_used = "claude-opus-4"
+    model_used = "claude-sonnet-4"
+    input_tokens = 0
+    output_tokens = 0
+    call_start = time.monotonic()
 
     try:
         async with claude.messages.stream(
@@ -944,6 +967,9 @@ async def _run_advisor(
             messages=messages,
         ) as stream:
             final_response = await stream.get_final_message()
+
+        input_tokens = final_response.usage.input_tokens
+        output_tokens = final_response.usage.output_tokens
 
         for block in final_response.content:
             if block.type == "text":
@@ -998,10 +1024,27 @@ async def _run_advisor(
                 ),
             )
             answer = response.text or ""
+            usage_meta = getattr(response, "usage_metadata", None)
+            if usage_meta:
+                input_tokens = getattr(usage_meta, "prompt_token_count", 0)
+                output_tokens = getattr(usage_meta, "candidates_token_count", 0)
         else:
             raise
 
-    # 7. Combine RAG sources + web sources (deduplicated by document)
+    call_duration = int((time.monotonic() - call_start) * 1000)
+
+    # 7. Record cost
+    if _cost_guard:
+        await _cost_guard.record(
+            model=model_used, service="advisor", operation="advisor_chat",
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            duration_ms=call_duration, consultant_id=consultant_id,
+            project_id=project_id,
+            metadata={"web_searches": len(web_sources), "tier": tier or "standard",
+                       "thinking_budget": thinking_budget},
+        )
+
+    # 8. Combine RAG sources + web sources (deduplicated by document)
     sources = _deduplicate_sources(rag_response.results)
 
     # Add web sources (deduplicated by URL)
@@ -1019,10 +1062,13 @@ async def _run_advisor(
             })
 
     web_search_used = len(web_sources) > 0
+    cost = calculate_cost(model_used, input_tokens, output_tokens)
     logger.info(
-        "Advisor: RAG=%s, web_search=%s (%d results), docs=%d, images=%d",
-        has_rag_context, web_search_used, len(web_sources),
+        "Advisor: model=%s, RAG=%s, web_search=%s (%d results), docs=%d, images=%d, "
+        "tokens=%d in + %d out, cost=$%.4f, duration=%dms",
+        model_used, has_rag_context, web_search_used, len(web_sources),
         len(processed_docs), len(image_blocks),
+        input_tokens, output_tokens, cost, call_duration,
     )
 
     return {
@@ -1030,6 +1076,10 @@ async def _run_advisor(
         "sources": sources,
         "rag_context_used": has_rag_context,
         "web_search_used": web_search_used,
+        "model_used": model_used,
+        "cost_usd": cost,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
     }
 
 
@@ -1538,17 +1588,45 @@ async def advisor_stream(request: AdvisorRequest):
                         "excerpt": ws["url"],
                     })
 
-            model_used = "gemini-2.5-pro" if use_gemini_fallback else "claude-opus-4"
+            model_used = "gemini-2.5-pro" if use_gemini_fallback else "claude-sonnet-4"
+
+            # 8. Record cost
+            stream_input_tokens = 0
+            stream_output_tokens = 0
+            if final is not None:
+                stream_input_tokens = final.usage.input_tokens
+                stream_output_tokens = final.usage.output_tokens
+
+            stream_duration = int((time.monotonic() - (last_keepalive - 5 if last_keepalive else 0)) * 1000) if last_keepalive else 0
+            cost = calculate_cost(model_used, stream_input_tokens, stream_output_tokens)
+
+            if _cost_guard:
+                await _cost_guard.record(
+                    model=model_used, service="advisor", operation="advisor_stream",
+                    input_tokens=stream_input_tokens, output_tokens=stream_output_tokens,
+                    duration_ms=stream_duration,
+                    consultant_id=request.consultant_id,
+                    project_id=request.project_id,
+                    metadata={"web_searches": len(web_sources),
+                              "tier": getattr(request, "tier", "standard") or "standard",
+                              "thinking_budget": thinking_budget},
+                )
+
             logger.info(
-                "Advisor stream: model=%s, RAG=%s, web=%s (%d), history=%d msgs",
+                "Advisor stream: model=%s, RAG=%s, web=%s (%d), history=%d msgs, "
+                "tokens=%d in + %d out, cost=$%.4f",
                 model_used, has_rag_context, bool(web_sources), len(web_sources),
                 len(request.conversation_history),
+                stream_input_tokens, stream_output_tokens, cost,
             )
 
             yield _sse_event("done", {
                 "web_search_used": len(web_sources) > 0,
                 "web_sources": web_source_list,
                 "model_used": model_used,
+                "cost_usd": cost,
+                "input_tokens": stream_input_tokens,
+                "output_tokens": stream_output_tokens,
             })
 
         except Exception as e:
@@ -3086,6 +3164,137 @@ async def advisor_drive_context(request: DriveContextRequest):
         "processed_files": len(file_metadata),
         "truncated": truncated,
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# COST MANAGEMENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════
+
+
+class CostLimitsUpdate(BaseModel):
+    consultant_id: str
+    anthropic_daily_limit: Optional[float] = None
+    anthropic_monthly_limit: Optional[float] = None
+    openai_daily_limit: Optional[float] = None
+    openai_monthly_limit: Optional[float] = None
+    google_daily_limit: Optional[float] = None
+    google_monthly_limit: Optional[float] = None
+    global_daily_limit: Optional[float] = None
+    global_monthly_limit: Optional[float] = None
+    alert_threshold_pct: Optional[int] = None
+    auto_fallback: Optional[bool] = None
+    block_on_global_limit: Optional[bool] = None
+
+
+class ModelConfigUpdate(BaseModel):
+    consultant_id: str
+    service: str
+    preferred_model: str
+    fallback_chain: list[str] = []
+    tier: str = "standard"
+
+
+@app.get("/api/usage-stats")
+async def usage_stats(
+    consultant_id: str = Query(...),
+    days: int = Query(default=30),
+):
+    """Estadisticas de uso y costes para el dashboard."""
+    if _cost_guard is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    stats = await _cost_guard.get_stats(consultant_id, days)
+    return stats
+
+
+@app.get("/api/cost-limits")
+async def get_cost_limits(consultant_id: str = Query(...)):
+    """Obtener limites de coste del consultor."""
+    if _cost_guard is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from supabase import create_client
+    sb = create_client(_config.supabase_url, _config.supabase_service_key)
+    result = sb.table("consultant_cost_limits") \
+        .select("*") \
+        .eq("consultant_id", consultant_id) \
+        .maybeSingle() \
+        .execute()
+
+    from pipeline.cost_guard import DEFAULT_LIMITS
+    return result.data or DEFAULT_LIMITS
+
+
+@app.put("/api/cost-limits")
+async def update_cost_limits(request: CostLimitsUpdate):
+    """Actualizar limites de coste del consultor."""
+    if _cost_guard is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    limits = {k: v for k, v in request.model_dump().items()
+              if k != "consultant_id" and v is not None}
+    ok = await _cost_guard.update_limits(request.consultant_id, limits)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Error al actualizar limites")
+    return {"status": "ok"}
+
+
+@app.get("/api/model-config")
+async def get_model_config(
+    consultant_id: str = Query(...),
+    service: str = Query(default="advisor"),
+):
+    """Obtener config de modelo para un servicio."""
+    if _cost_guard is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    config = await _cost_guard.get_model_config(consultant_id, service)
+    if not config:
+        defaults = SERVICE_DEFAULTS.get(service, {}).get("standard", {})
+        return {
+            "preferred_model": defaults.get("preferred_model", "claude-sonnet-4"),
+            "fallback_chain": defaults.get("fallback_chain", []),
+            "tier": "standard",
+        }
+    return config
+
+
+@app.put("/api/model-config")
+async def update_model_config(request: ModelConfigUpdate):
+    """Actualizar config de modelo para un servicio."""
+    if _cost_guard is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    ok = await _cost_guard.update_model_config(
+        request.consultant_id, request.service,
+        request.preferred_model, request.fallback_chain, request.tier,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Error al actualizar config")
+    return {"status": "ok"}
+
+
+@app.get("/api/available-models")
+async def available_models():
+    """Lista de modelos disponibles con precios y capacidades."""
+    from pipeline.model_router import MODEL_CAPABILITIES
+    models = []
+    for model_id, pricing in MODEL_PRICING.items():
+        if model_id == "text-embedding-3-large":
+            continue  # No mostrar embeddings como opcion de LLM
+        caps = MODEL_CAPABILITIES.get(model_id, {})
+        models.append({
+            "id": model_id,
+            "provider": pricing["provider"],
+            "input_price": pricing["input"],
+            "output_price": pricing["output"],
+            "thinking": caps.get("thinking", False),
+            "web_search": caps.get("web_search", False),
+            "vision": caps.get("vision", False),
+            "max_tokens": caps.get("max_tokens", 8192),
+            "context": caps.get("context", 200000),
+        })
+    return {"models": models, "defaults": SERVICE_DEFAULTS}
 
 
 if __name__ == "__main__":
