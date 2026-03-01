@@ -35,9 +35,13 @@ _VALID_MODELS = {
 }
 _VALID_AGENTS = {"aai", "contratos", "facturas", "registro", "normativo"}
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("residusia")
 logger.setLevel(logging.INFO)
+
+# Silence noisy HTTP client loggers — these flood Railway logs as false "errors"
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Ensure the project root is in the Python path (works locally and in Docker)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
