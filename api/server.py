@@ -22,6 +22,9 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Reque
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 _UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _VALID_TIERS = {"standard", "pro_plus"}
@@ -143,6 +146,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Rate Limiting ────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Demasiadas solicitudes. Intenta de nuevo en unos momentos.",
+            "retry_after": exc.detail,
+        },
+    )
+
+
 _frontend_url = os.environ.get("FRONTEND_URL", "")
 _cors_origins = [_frontend_url] if _frontend_url else []
 if os.environ.get("ENVIRONMENT", "development") != "production":
@@ -187,7 +206,9 @@ async def health():
 
 
 @app.post("/api/ingest")
+@limiter.limit("10/minute")
 async def ingest_document(
+    request: Request,
     file: UploadFile = File(default=None),
     file_url: str = Form(default=None),
     storage_path: str = Form(default=None),
@@ -363,7 +384,8 @@ class RAGQueryResponse(BaseModel):
 
 
 @app.post("/api/rag/query", response_model=RAGQueryResponse)
-async def rag_query(request: RAGQueryRequest):
+@limiter.limit("30/minute")
+async def rag_query(request: Request, payload: RAGQueryRequest):
     """
     Consulta al RAG de documentos normativos y técnicos.
     Busca chunks relevantes y genera una respuesta con Claude.
@@ -373,18 +395,18 @@ async def rag_query(request: RAGQueryRequest):
 
     # Determinar scopes a consultar
     scopes = None
-    if request.scope == "general":
+    if payload.scope == "general":
         scopes = [RAGScope.GENERAL]
-    elif request.scope == "project":
+    elif payload.scope == "project":
         scopes = [RAGScope.PROJECT]
 
     try:
         # Buscar en el RAG
         rag_response = await rag_service.search(
-            query=request.query,
-            project_id=request.project_id,
+            query=payload.query,
+            project_id=payload.project_id,
             scopes=scopes,
-            top_k_per_scope=request.top_k,
+            top_k_per_scope=payload.top_k,
         )
 
         # Generar respuesta con Claude usando el contexto recuperado
@@ -402,7 +424,7 @@ async def rag_query(request: RAGQueryRequest):
         user_prompt = (
             f"{rag_response.context_text}\n\n"
             f"Basándote en el contexto anterior, responde a esta pregunta:\n"
-            f"{request.query}"
+            f"{payload.query}"
         )
 
         try:
@@ -456,7 +478,7 @@ async def rag_query(request: RAGQueryRequest):
         return RAGQueryResponse(
             answer=answer,
             sources=sources,
-            query=request.query,
+            query=payload.query,
             scope_used=scope_used,
         )
 
@@ -1208,7 +1230,8 @@ def _sse_event(event_type: str, data) -> str:
 # ─── Advisor endpoint: JSON (text-only, through Vercel proxy) ────
 
 @app.post("/api/advisor")
-async def advisor_query(request: AdvisorRequest):
+@limiter.limit("20/minute")
+async def advisor_query(request: Request, payload: AdvisorRequest):
     """
     Asesor IA - JSON endpoint (for text-only queries through Vercel proxy).
     For file uploads, use POST /api/advisor/chat with FormData.
@@ -1217,12 +1240,12 @@ async def advisor_query(request: AdvisorRequest):
 
     try:
         # Normalize files
-        files = list(request.files or [])
-        if not files and request.file_content:
+        files = list(payload.files or [])
+        if not files and payload.file_content:
             files.append(FileAttachment(
-                name=request.file_name or "archivo",
+                name=payload.file_name or "archivo",
                 type="document",
-                content=request.file_content[:15000],
+                content=payload.file_content[:15000],
             ))
 
         processed_docs: list[tuple[str, str]] = []
@@ -1250,29 +1273,29 @@ async def advisor_query(request: AdvisorRequest):
             else:
                 processed_docs.append((f.name, f.content[:15000]))
 
-        if request.consultant_id and request.gdrive_folder_id:
+        if payload.consultant_id and payload.gdrive_folder_id:
             gd_docs, gd_warnings = await _collect_gdrive_docs_for_advisor(
-                consultant_id=request.consultant_id,
-                folder_id=request.gdrive_folder_id,
-                max_files=request.gdrive_max_files,
+                consultant_id=payload.consultant_id,
+                folder_id=payload.gdrive_folder_id,
+                max_files=payload.gdrive_max_files,
             )
             processed_docs.extend(gd_docs)
             for w in gd_warnings:
                 processed_docs.append(("google_drive_notice", w))
 
-        history = [{"role": m.role, "content": m.content} for m in request.conversation_history]
+        history = [{"role": m.role, "content": m.content} for m in payload.conversation_history]
 
         result = await _run_advisor(
-            query=request.query,
+            query=payload.query,
             conversation_history=history,
-            project_id=request.project_id,
+            project_id=payload.project_id,
             processed_docs=processed_docs,
             image_blocks=image_blocks,
-            url_list=request.urls or [],
-            analysis_context=request.analysis_context,
-            consultant_id=request.consultant_id,
-            model_override=request.model_override,
-            tier=request.tier,
+            url_list=payload.urls or [],
+            analysis_context=payload.analysis_context,
+            consultant_id=payload.consultant_id,
+            model_override=payload.model_override,
+            tier=payload.tier,
         )
         return result
 
@@ -1286,7 +1309,9 @@ async def advisor_query(request: AdvisorRequest):
 # ─── Advisor endpoint: FormData (file uploads, direct from browser) ──
 
 @app.post("/api/advisor/chat")
+@limiter.limit("20/minute")
 async def advisor_chat(
+    request: Request,
     query: str = Form(...),
     conversation_history: str = Form(default="[]"),
     project_id: Optional[str] = Form(default=None),
@@ -1467,7 +1492,8 @@ async def advisor_chat(
 # ─── Advisor endpoint: SSE streaming (no timeout) ────────────
 
 @app.post("/api/advisor/stream")
-async def advisor_stream(request: AdvisorRequest):
+@limiter.limit("20/minute")
+async def advisor_stream(request: Request, payload: AdvisorRequest):
     """
     SSE streaming endpoint for the advisor.
     Returns Server-Sent Events instead of a single JSON response.
@@ -1489,12 +1515,12 @@ async def advisor_stream(request: AdvisorRequest):
 
             # 1. RAG search
             scopes = [RAGScope.GENERAL]
-            if request.project_id:
+            if payload.project_id:
                 scopes.append(RAGScope.PROJECT)
 
             rag_response = await rag_service.search(
-                query=request.query,
-                project_id=request.project_id,
+                query=payload.query,
+                project_id=payload.project_id,
                 scopes=scopes,
                 top_k_per_scope=12,
                 similarity_threshold=0.50,
@@ -1512,37 +1538,37 @@ async def advisor_stream(request: AdvisorRequest):
                     "CONTEXTO DE LA BASE DE CONOCIMIENTO:\n"
                     f"{rag_response.context_text}\n"
                 )
-            if request.drive_context:
-                n_files = len(request.drive_files) if request.drive_files else 0
+            if payload.drive_context:
+                n_files = len(payload.drive_files) if payload.drive_files else 0
                 text_parts.append(
                     f"DOCUMENTOS DE GOOGLE DRIVE ({n_files} archivos cargados como contexto):\n"
-                    f"{request.drive_context}\n"
+                    f"{payload.drive_context}\n"
                 )
-            text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{request.query}")
+            text_parts.append(f"PREGUNTA DEL CONSULTOR:\n{payload.query}")
 
             user_content = "\n---\n".join(text_parts)
 
             # 3. Build messages with truncated history
-            history = [{"role": m.role, "content": m.content} for m in request.conversation_history]
+            history = [{"role": m.role, "content": m.content} for m in payload.conversation_history]
             messages = _truncate_history(history)
             messages.append({"role": "user", "content": user_content})
 
             # 4. Adaptive thinking budget
-            thinking_budget = 10000 if request.conversation_history else 24000
+            thinking_budget = 10000 if payload.conversation_history else 24000
 
             system_prompt = ADVISOR_SYSTEM_PROMPT
-            if _is_professional_report_mode(request.query, request.analysis_context):
+            if _is_professional_report_mode(payload.query, payload.analysis_context):
                 system_prompt += ADVISOR_REPORT_MODE_ADDENDUM
-            if request.analysis_context:
-                system_prompt += _build_analysis_context_addendum(request.analysis_context)
+            if payload.analysis_context:
+                system_prompt += _build_analysis_context_addendum(payload.analysis_context)
 
             # 5. Resolve model chain via ModelRouter
-            effective_tier = request.tier or "standard"
+            effective_tier = payload.tier or "standard"
             chain = await _model_router.get_consultant_chain(
                 service="advisor",
-                consultant_id=request.consultant_id,
+                consultant_id=payload.consultant_id,
                 tier_override=effective_tier,
-                model_override=request.model_override,
+                model_override=payload.model_override,
             )
 
             web_search_tool = {
@@ -1555,6 +1581,8 @@ async def advisor_stream(request: AdvisorRequest):
             text_streamed = False
             model_used = chain[0] if chain else "claude-sonnet-4"
             final = None
+            stream_input_tokens = 0
+            stream_output_tokens = 0
             stream_start = time.monotonic()
             last_keepalive = stream_start
 
@@ -1562,8 +1590,8 @@ async def advisor_stream(request: AdvisorRequest):
                 provider = MODEL_PROVIDERS.get(model_id, "unknown")
 
                 # Cost Guard check
-                if _cost_guard and request.consultant_id:
-                    check = await _cost_guard.check(provider, request.consultant_id)
+                if _cost_guard and payload.consultant_id:
+                    check = await _cost_guard.check(provider, payload.consultant_id)
                     if not check.allowed:
                         logger.info("CostGuard blocked %s for stream: %s", model_id, check.reason)
                         continue
@@ -1646,16 +1674,24 @@ async def advisor_stream(request: AdvisorRequest):
                             ),
                         )
 
+                        last_chunk = None
                         async for chunk in await gemini_client.aio.models.generate_content_stream(
                             model=api_model,
                             contents=gemini_contents,
                             config=gemini_config,
                         ):
+                            last_chunk = chunk
                             if chunk.candidates and chunk.candidates[0].content:
                                 for part in chunk.candidates[0].content.parts:
                                     if part.text and not getattr(part, "thought", False):
                                         text_streamed = True
                                         yield _sse_event("text_delta", {"text": part.text})
+
+                        # Extract usage from last chunk
+                        if last_chunk:
+                            usage_meta = getattr(last_chunk, "usage_metadata", None)
+                            stream_input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
+                            stream_output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
 
                         model_used = model_id
                         break  # success
@@ -1672,6 +1708,11 @@ async def advisor_stream(request: AdvisorRequest):
                         if oai_text:
                             text_streamed = True
                             yield _sse_event("text_delta", {"text": oai_text})
+
+                        # Extract usage from response
+                        oai_usage = response.usage
+                        stream_input_tokens = oai_usage.prompt_tokens if oai_usage else 0
+                        stream_output_tokens = oai_usage.completion_tokens if oai_usage else 0
 
                         model_used = model_id
                         break  # success
@@ -1726,9 +1767,8 @@ async def advisor_stream(request: AdvisorRequest):
                         "excerpt": ws["url"],
                     })
 
-            # 8. Record cost
-            stream_input_tokens = 0
-            stream_output_tokens = 0
+            # 8. Record cost (tokens already set by Google/OpenAI branches above;
+            #    for Anthropic, extract from final message)
             if final is not None:
                 stream_input_tokens = final.usage.input_tokens
                 stream_output_tokens = final.usage.output_tokens
@@ -1741,8 +1781,8 @@ async def advisor_stream(request: AdvisorRequest):
                     model=model_used, service="advisor", operation="advisor_stream",
                     input_tokens=stream_input_tokens, output_tokens=stream_output_tokens,
                     duration_ms=stream_duration,
-                    consultant_id=request.consultant_id,
-                    project_id=request.project_id,
+                    consultant_id=payload.consultant_id,
+                    project_id=payload.project_id,
                     metadata={"web_searches": len(web_sources),
                               "tier": effective_tier,
                               "thinking_budget": thinking_budget,
@@ -1753,7 +1793,7 @@ async def advisor_stream(request: AdvisorRequest):
                 "Advisor stream: model=%s, tier=%s, RAG=%s, web=%s (%d), history=%d msgs, "
                 "tokens=%d in + %d out, cost=$%.4f",
                 model_used, effective_tier, has_rag_context, bool(web_sources), len(web_sources),
-                len(request.conversation_history),
+                len(payload.conversation_history),
                 stream_input_tokens, stream_output_tokens, cost,
             )
 
@@ -1804,7 +1844,8 @@ class AnalyzeRequest(BaseModel):
 
 
 @app.post("/api/analyze")
-async def analyze_project(request: AnalyzeRequest):
+@limiter.limit("5/minute")
+async def analyze_project(request: Request, payload: AnalyzeRequest):
     """
     Lanza el analisis multi-agente (LangGraph) para un proyecto.
     El consultor elige que agentes ejecutar via el campo 'agents'.
@@ -1813,28 +1854,28 @@ async def analyze_project(request: AnalyzeRequest):
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    await _verify_project_ownership(request.project_id, request.consultant_id)
+    await _verify_project_ownership(payload.project_id, payload.consultant_id)
 
     from pipeline.agents import run_project_analysis
 
     try:
         result = await run_project_analysis(
-            project_id=request.project_id,
+            project_id=payload.project_id,
             supabase_url=_config.supabase_url,
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
             gemini_api_key=_config.gemini_api_key,
-            agents=request.agents,
-            model_override=request.model_override or "",
-            tier=request.tier or "standard",
-            consultant_id=request.consultant_id or "",
+            agents=payload.agents,
+            model_override=payload.model_override or "",
+            tier=payload.tier or "standard",
+            consultant_id=payload.consultant_id or "",
         )
         return result
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error en analisis del proyecto {request.project_id}: {e}")
+        logger.error(f"Error en analisis del proyecto {payload.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1853,7 +1894,8 @@ class SessionUpdate(BaseModel):
 
 
 @app.post("/api/analyze/session")
-async def create_session(project_id: str = Form(...), consultant_id: str = Form(...)):
+@limiter.limit("10/minute")
+async def create_session(request: Request, project_id: str = Form(...), consultant_id: str = Form(...)):
     """Create a new HITL analysis session."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -1879,7 +1921,8 @@ async def create_session(project_id: str = Form(...), consultant_id: str = Form(
 
 
 @app.get("/api/analyze/session/{project_id}")
-async def get_session(project_id: str, consultant_id: Optional[str] = None):
+@limiter.limit("30/minute")
+async def get_session(request: Request, project_id: str, consultant_id: Optional[str] = None):
     """Get the latest active session for a project."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -2048,18 +2091,19 @@ class Round2Request(BaseModel):
 
 
 @app.post("/api/analyze/plan")
-async def analyze_plan(request: PlanRequest):
+@limiter.limit("5/minute")
+async def analyze_plan(request: Request, payload: PlanRequest):
     """Fase 0: Carga datos del proyecto y genera un plan de analisis inteligente."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    await _verify_project_ownership(request.project_id, request.consultant_id)
+    await _verify_project_ownership(payload.project_id, payload.consultant_id)
 
     from pipeline.agents import plan_analysis
 
     try:
         result = await plan_analysis(
-            project_id=request.project_id,
+            project_id=payload.project_id,
             supabase_url=_config.supabase_url,
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
@@ -2068,80 +2112,82 @@ async def analyze_plan(request: PlanRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error planificando analisis {request.project_id}: {e}")
+        logger.error(f"Error planificando analisis {payload.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/analyze/execute")
-async def analyze_execute(request: ExecuteRequest):
+@limiter.limit("5/minute")
+async def analyze_execute(request: Request, payload: ExecuteRequest):
     """Fase 2: Ejecuta el analisis con instrucciones del consultor."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    await _verify_project_ownership(request.project_id, request.consultant_id)
+    await _verify_project_ownership(payload.project_id, payload.consultant_id)
 
     from pipeline.agents import run_project_analysis
 
     try:
         result = await run_project_analysis(
-            project_id=request.project_id,
+            project_id=payload.project_id,
             supabase_url=_config.supabase_url,
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
             gemini_api_key=_config.gemini_api_key,
-            agents=request.agents,
-            consultant_instructions=request.consultant_instructions,
-            agent_focus=request.agent_focus,
-            model_override=request.model_override or "",
-            tier=request.tier or "standard",
-            consultant_id=request.consultant_id or "",
+            agents=payload.agents,
+            consultant_instructions=payload.consultant_instructions,
+            agent_focus=payload.agent_focus,
+            model_override=payload.model_override or "",
+            tier=payload.tier or "standard",
+            consultant_id=payload.consultant_id or "",
         )
         # Cleanup old progress rows (Realtime already delivered them)
-        await _cleanup_analysis_progress(request.project_id)
+        await _cleanup_analysis_progress(payload.project_id)
         return result
     except HTTPException:
         raise
     except Exception as e:
-        await _cleanup_analysis_progress(request.project_id)
-        logger.error(f"Error ejecutando analisis {request.project_id}: {e}")
+        await _cleanup_analysis_progress(payload.project_id)
+        logger.error(f"Error ejecutando analisis {payload.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/analyze/round2")
-async def analyze_round2(request: Round2Request):
+@limiter.limit("5/minute")
+async def analyze_round2(request: Request, payload: Round2Request):
     """Fase 3: Segunda vuelta con hallazgos previos como contexto."""
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    await _verify_project_ownership(request.project_id, request.consultant_id)
+    await _verify_project_ownership(payload.project_id, payload.consultant_id)
 
     from pipeline.agents import run_project_analysis
 
     try:
         result = await run_project_analysis(
-            project_id=request.project_id,
+            project_id=payload.project_id,
             supabase_url=_config.supabase_url,
             supabase_key=_config.supabase_service_key,
             anthropic_api_key=_config.anthropic_api_key,
             openai_api_key=_config.openai_api_key,
             gemini_api_key=_config.gemini_api_key,
-            agents=request.agents,
-            consultant_instructions=request.consultant_instructions,
-            agent_focus=request.agent_focus,
+            agents=payload.agents,
+            consultant_instructions=payload.consultant_instructions,
+            agent_focus=payload.agent_focus,
             round_number=2,
-            previous_findings=request.previous_findings,
-            model_override=request.model_override or "",
-            tier=request.tier or "standard",
-            consultant_id=request.consultant_id or "",
+            previous_findings=payload.previous_findings,
+            model_override=payload.model_override or "",
+            tier=payload.tier or "standard",
+            consultant_id=payload.consultant_id or "",
         )
-        await _cleanup_analysis_progress(request.project_id)
+        await _cleanup_analysis_progress(payload.project_id)
         return result
     except HTTPException:
         raise
     except Exception as e:
-        await _cleanup_analysis_progress(request.project_id)
-        logger.error(f"Error en 2a vuelta {request.project_id}: {e}")
+        await _cleanup_analysis_progress(payload.project_id)
+        logger.error(f"Error en 2a vuelta {payload.project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2150,7 +2196,9 @@ async def analyze_round2(request: Round2Request):
 # ═══════════════════════════════════════════════════════════════
 
 @app.get("/api/knowledge-base")
+@limiter.limit("60/minute")
 async def list_knowledge_base(
+    request: Request,
     doc_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
@@ -2181,7 +2229,8 @@ async def list_knowledge_base(
 
 
 @app.get("/api/knowledge-base/stats")
-async def knowledge_base_stats():
+@limiter.limit("60/minute")
+async def knowledge_base_stats(request: Request):
     """Estadísticas de la base de conocimiento general."""
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -2215,7 +2264,8 @@ async def knowledge_base_stats():
 
 
 @app.delete("/api/knowledge-base/{doc_id}")
-async def delete_knowledge_base_document(doc_id: str):
+@limiter.limit("30/minute")
+async def delete_knowledge_base_document(request: Request, doc_id: str):
     """Elimina un documento de la base de conocimiento general."""
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -2271,7 +2321,9 @@ def _gdrive_redirect_uri() -> str:
 
 
 @app.get("/api/gdrive/auth-url")
+@limiter.limit("10/minute")
 async def gdrive_auth_url(
+    request: Request,
     consultant_id: str = Query(...),
     redirect_uri: Optional[str] = Query(None),
 ):
@@ -2301,7 +2353,8 @@ class GDriveExchangeRequest(BaseModel):
 
 
 @app.post("/api/gdrive/exchange")
-async def gdrive_exchange(request: GDriveExchangeRequest):
+@limiter.limit("10/minute")
+async def gdrive_exchange(request: Request, payload: GDriveExchangeRequest):
     """
     Exchange OAuth code for tokens, save to DB, and create Drive folder structure.
     """
@@ -2314,9 +2367,9 @@ async def gdrive_exchange(request: GDriveExchangeRequest):
     from pipeline.google_drive import exchange_code, GoogleDriveService
 
     # Exchange code for tokens (redirect_uri must match the one used in auth request)
-    uri = request.redirect_uri or _gdrive_redirect_uri()
+    uri = payload.redirect_uri or _gdrive_redirect_uri()
     tokens = exchange_code(
-        code=request.code,
+        code=payload.code,
         client_id=_gdrive_client_id,
         client_secret=_gdrive_client_secret,
         redirect_uri=uri,
@@ -2334,7 +2387,7 @@ async def gdrive_exchange(request: GDriveExchangeRequest):
     # Save tokens and folder IDs to database
     sb = await rag_service._get_supabase()
     await sb.table("consultant_gdrive").upsert({
-        "consultant_id": request.consultant_id,
+        "consultant_id": payload.consultant_id,
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
         "token_expiry": tokens.get("token_expiry"),
@@ -2350,7 +2403,8 @@ async def gdrive_exchange(request: GDriveExchangeRequest):
 
 
 @app.get("/api/gdrive/picker-token")
-async def gdrive_picker_token(consultant_id: str = Query(...)):
+@limiter.limit("20/minute")
+async def gdrive_picker_token(request: Request, consultant_id: str = Query(...)):
     """Return a fresh access token for the Google Picker on the frontend."""
     if not _gdrive_configured():
         raise HTTPException(status_code=501, detail="Google Drive no configurado.")
@@ -2398,7 +2452,8 @@ class GDriveSetupFoldersRequest(BaseModel):
 
 
 @app.post("/api/gdrive/setup-folders")
-async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
+@limiter.limit("5/minute")
+async def gdrive_setup_folders(request: Request, payload: GDriveSetupFoldersRequest):
     """
     Create Drive folder structure using tokens already saved in DB.
     If root_folder_id is provided (from Picker), use it as root.
@@ -2415,7 +2470,7 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
     result = await (
         sb.table("consultant_gdrive")
         .select("access_token, refresh_token, root_folder_id")
-        .eq("consultant_id", request.consultant_id)
+        .eq("consultant_id", payload.consultant_id)
         .execute()
     )
 
@@ -2425,7 +2480,7 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
     data = result.data[0]
 
     # Skip if folder structure already exists (unless user is re-picking a folder)
-    if data.get("root_folder_id") and not request.root_folder_id:
+    if data.get("root_folder_id") and not payload.root_folder_id:
         return {"status": "done", "root_folder_id": data["root_folder_id"], "already_exists": True}
 
     from pipeline.google_drive import GoogleDriveService
@@ -2438,24 +2493,24 @@ async def gdrive_setup_folders(request: GDriveSetupFoldersRequest):
     )
 
     # If user picked a root folder via Picker, save it immediately
-    if request.root_folder_id:
+    if payload.root_folder_id:
         await (
             sb.table("consultant_gdrive")
-            .update({"root_folder_id": request.root_folder_id})
-            .eq("consultant_id", request.consultant_id)
+            .update({"root_folder_id": payload.root_folder_id})
+            .eq("consultant_id", payload.consultant_id)
             .execute()
         )
 
     # Fire-and-forget: run folder creation in background
     task = asyncio.create_task(
-        _run_setup_folders(request.consultant_id, gd, sb, request.root_folder_id)
+        _run_setup_folders(payload.consultant_id, gd, sb, payload.root_folder_id)
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
     return {
         "status": "running",
-        "root_folder_id": request.root_folder_id,
+        "root_folder_id": payload.root_folder_id,
         "message": "Creando estructura de carpetas en segundo plano. Esto puede tardar 1-2 minutos.",
     }
 
@@ -2481,7 +2536,8 @@ async def _run_setup_folders(
 
 
 @app.get("/api/gdrive/status")
-async def gdrive_status(consultant_id: str = Query(...)):
+@limiter.limit("30/minute")
+async def gdrive_status(request: Request, consultant_id: str = Query(...)):
     """Check if the consultant has connected Google Drive."""
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -2541,7 +2597,9 @@ async def _get_gdrive_service(consultant_id: str):
 
 
 @app.get("/api/gdrive/browse")
+@limiter.limit("30/minute")
 async def gdrive_browse(
+    request: Request,
     consultant_id: str = Query(...),
     folder_id: str = Query(...),
     page_token: Optional[str] = Query(None),
@@ -2589,7 +2647,8 @@ class GDriveIngestRequest(BaseModel):
 
 
 @app.post("/api/gdrive/ingest-file")
-async def gdrive_ingest_file(request: GDriveIngestRequest):
+@limiter.limit("10/minute")
+async def gdrive_ingest_file(request: Request, payload: GDriveIngestRequest):
     """
     Download a file from Google Drive and ingest it through the pipeline.
     Stores drive_file_id on the resulting document for sync tracking.
@@ -2597,13 +2656,13 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
     if service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    gd, sb = await _get_gdrive_service(request.consultant_id)
+    gd, sb = await _get_gdrive_service(payload.consultant_id)
 
     # Check if already indexed
     existing = await (
         sb.table("knowledge_documents")
         .select("id")
-        .eq("drive_file_id", request.file_id)
+        .eq("drive_file_id", payload.file_id)
         .execute()
     )
     if existing.data:
@@ -2614,7 +2673,7 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
 
     # Download from Drive
     try:
-        file_bytes, filename, mime_type = gd.download_file(request.file_id)
+        file_bytes, filename, mime_type = gd.download_file(payload.file_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error descargando de Drive: {e}")
 
@@ -2643,14 +2702,14 @@ async def gdrive_ingest_file(request: GDriveIngestRequest):
         if doc_id:
             await (
                 sb.table("knowledge_documents")
-                .update({"drive_file_id": request.file_id})
+                .update({"drive_file_id": payload.file_id})
                 .eq("id", doc_id)
                 .execute()
             )
 
         return {
             **result.to_dict(),
-            "drive_file_id": request.file_id,
+            "drive_file_id": payload.file_id,
             "source_filename": filename,
         }
     except Exception as e:
@@ -2667,7 +2726,8 @@ class GDriveSyncRequest(BaseModel):
 
 
 @app.post("/api/gdrive/sync")
-async def gdrive_sync(request: GDriveSyncRequest):
+@limiter.limit("3/minute")
+async def gdrive_sync(request: Request, payload: GDriveSyncRequest):
     """
     Scan Google Drive for new documents and ingest them automatically.
     Creates a sync log entry, launches the heavy work as a background task,
@@ -2678,7 +2738,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     try:
-        gd, sb = await _get_gdrive_service(request.consultant_id)
+        gd, sb = await _get_gdrive_service(payload.consultant_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2686,13 +2746,13 @@ async def gdrive_sync(request: GDriveSyncRequest):
         raise HTTPException(status_code=500, detail=f"Error obteniendo servicio GDrive: {e}")
 
     # Determine root folder
-    folder_id = request.folder_id
+    folder_id = payload.folder_id
     if not folder_id:
         try:
             gdrive_row = await (
                 sb.table("consultant_gdrive")
                 .select("root_folder_id")
-                .eq("consultant_id", request.consultant_id)
+                .eq("consultant_id", payload.consultant_id)
                 .execute()
             )
         except Exception as e:
@@ -2707,7 +2767,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
         running_check = await (
             sb.table("gdrive_sync_log")
             .select("id, started_at")
-            .eq("consultant_id", request.consultant_id)
+            .eq("consultant_id", payload.consultant_id)
             .eq("status", "running")
             .limit(1)
             .execute()
@@ -2756,7 +2816,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
         sync_log = await (
             sb.table("gdrive_sync_log")
             .insert({
-                "consultant_id": request.consultant_id,
+                "consultant_id": payload.consultant_id,
                 "status": "running",
             })
             .execute()
@@ -2775,7 +2835,7 @@ async def gdrive_sync(request: GDriveSyncRequest):
         """Wrapper to ensure exceptions from background task are always logged."""
         try:
             logger.info("Sync %s: background task STARTING", sync_id)
-            await _run_sync_job(sync_id, request.consultant_id, folder_id, gd, sb)
+            await _run_sync_job(sync_id, payload.consultant_id, folder_id, gd, sb)
             logger.info("Sync %s: background task FINISHED", sync_id)
         except Exception as e:
             logger.error("Sync %s: background task CRASHED: %s", sync_id, e, exc_info=True)
@@ -3075,7 +3135,8 @@ async def _run_sync_job(
 
 
 @app.get("/api/gdrive/sync-status")
-async def gdrive_sync_status(consultant_id: str = Query(...)):
+@limiter.limit("30/minute")
+async def gdrive_sync_status(request: Request, consultant_id: str = Query(...)):
     """
     Get sync status: last sync info + auto-sync setting.
     """
@@ -3123,7 +3184,8 @@ class GDriveAutoSyncToggle(BaseModel):
 
 
 @app.post("/api/gdrive/sync-toggle")
-async def gdrive_sync_toggle(request: GDriveAutoSyncToggle):
+@limiter.limit("10/minute")
+async def gdrive_sync_toggle(request: Request, payload: GDriveAutoSyncToggle):
     """Toggle auto-sync on/off."""
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -3131,15 +3193,16 @@ async def gdrive_sync_toggle(request: GDriveAutoSyncToggle):
     sb = await rag_service._get_supabase()
     await (
         sb.table("consultant_gdrive")
-        .update({"auto_sync_enabled": request.enabled})
-        .eq("consultant_id", request.consultant_id)
+        .update({"auto_sync_enabled": payload.enabled})
+        .eq("consultant_id", payload.consultant_id)
         .execute()
     )
-    return {"success": True, "auto_sync_enabled": request.enabled}
+    return {"success": True, "auto_sync_enabled": payload.enabled}
 
 
 @app.delete("/api/gdrive/disconnect")
-async def gdrive_disconnect(consultant_id: str = Query(...)):
+@limiter.limit("5/minute")
+async def gdrive_disconnect(request: Request, consultant_id: str = Query(...)):
     """Disconnect Google Drive (delete stored tokens)."""
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -3157,7 +3220,8 @@ async def gdrive_disconnect(consultant_id: str = Query(...)):
 
 # ─── RAG Health Check ──────────────────────────────────────────────
 @app.get("/api/rag/health")
-async def rag_health():
+@limiter.limit("60/minute")
+async def rag_health(request: Request):
     """Diagnóstico del sistema RAG: docs sin chunks, estadísticas."""
     if rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -3173,7 +3237,8 @@ class ReprocessRequest(BaseModel):
     scope: str = "knowledge"  # "knowledge" or "project"
 
 @app.post("/api/reprocess")
-async def reprocess_documents(req: ReprocessRequest):
+@limiter.limit("5/minute")
+async def reprocess_documents(request: Request, req: ReprocessRequest):
     """Re-procesa documentos que no tienen chunks (o los tienen con error)."""
     if service is None or rag_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -3248,7 +3313,8 @@ async def reprocess_documents(req: ReprocessRequest):
 
 # ─── Reclassify existing KB documents ────────────────────────────
 @app.post("/api/knowledge-base/reclassify")
-async def reclassify_knowledge_documents():
+@limiter.limit("3/minute")
+async def reclassify_knowledge_documents(request: Request):
     """
     Re-classify all knowledge_documents that have chunks,
     using the current KB classification logic (filename + content signals).
@@ -3366,22 +3432,23 @@ class DriveContextRequest(BaseModel):
 
 
 @app.post("/api/advisor/drive-context")
-async def advisor_drive_context(request: DriveContextRequest):
+@limiter.limit("20/minute")
+async def advisor_drive_context(request: Request, payload: DriveContextRequest):
     """
     Extract text from files in a Google Drive folder for ephemeral advisor context.
     Downloads, extracts text, and returns concatenated content — nothing is persisted.
     """
-    gd, _sb = await _get_gdrive_service(request.consultant_id)
+    gd, _sb = await _get_gdrive_service(payload.consultant_id)
 
     # 1. List files in folder
-    if request.recursive:
+    if payload.recursive:
         all_files = gd.list_all_files_recursive(
-            request.folder_id,
+            payload.folder_id,
             supported_extensions=DRIVE_CONTEXT_EXTENSIONS,
             max_folders=50,
         )
     else:
-        listing = gd.list_folder(request.folder_id)
+        listing = gd.list_folder(payload.folder_id)
         all_files = [
             f for f in listing["items"]
             if not f["isFolder"]
@@ -3473,7 +3540,9 @@ class ModelConfigUpdate(BaseModel):
 
 
 @app.get("/api/usage-stats")
+@limiter.limit("60/minute")
 async def usage_stats(
+    request: Request,
     consultant_id: str = Query(...),
     days: int = Query(default=30),
 ):
@@ -3486,7 +3555,8 @@ async def usage_stats(
 
 
 @app.get("/api/cost-limits")
-async def get_cost_limits(consultant_id: str = Query(...)):
+@limiter.limit("60/minute")
+async def get_cost_limits(request: Request, consultant_id: str = Query(...)):
     """Obtener limites de coste del consultor."""
     if _cost_guard is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
@@ -3504,21 +3574,24 @@ async def get_cost_limits(consultant_id: str = Query(...)):
 
 
 @app.put("/api/cost-limits")
-async def update_cost_limits(request: CostLimitsUpdate):
+@limiter.limit("10/minute")
+async def update_cost_limits(request: Request, payload: CostLimitsUpdate):
     """Actualizar limites de coste del consultor."""
     if _cost_guard is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    limits = {k: v for k, v in request.model_dump().items()
+    limits = {k: v for k, v in payload.model_dump().items()
               if k != "consultant_id" and v is not None}
-    ok = await _cost_guard.update_limits(request.consultant_id, limits)
+    ok = await _cost_guard.update_limits(payload.consultant_id, limits)
     if not ok:
         raise HTTPException(status_code=500, detail="Error al actualizar limites")
     return {"status": "ok"}
 
 
 @app.get("/api/model-config")
+@limiter.limit("60/minute")
 async def get_model_config(
+    request: Request,
     consultant_id: str = Query(...),
     service: str = Query(default="advisor"),
 ):
@@ -3538,14 +3611,15 @@ async def get_model_config(
 
 
 @app.put("/api/model-config")
-async def update_model_config(request: ModelConfigUpdate):
+@limiter.limit("10/minute")
+async def update_model_config(request: Request, payload: ModelConfigUpdate):
     """Actualizar config de modelo para un servicio."""
     if _cost_guard is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
     ok = await _cost_guard.update_model_config(
-        request.consultant_id, request.service,
-        request.preferred_model, request.fallback_chain, request.tier,
+        payload.consultant_id, payload.service,
+        payload.preferred_model, payload.fallback_chain, payload.tier,
     )
     if not ok:
         raise HTTPException(status_code=500, detail="Error al actualizar config")
@@ -3553,7 +3627,8 @@ async def update_model_config(request: ModelConfigUpdate):
 
 
 @app.get("/api/available-models")
-async def available_models():
+@limiter.limit("60/minute")
+async def available_models(request: Request):
     """Lista de modelos disponibles con precios y capacidades."""
     from pipeline.model_router import MODEL_CAPABILITIES
     models = []

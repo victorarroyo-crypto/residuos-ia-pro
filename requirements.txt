@@ -40,3 +40,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-multipart==0.0.9
 httpx>=0.27.0                      # HTTP client async para fetch de URLs
+
+# Seguridad
+slowapi==0.1.9                     # rate limiting por IP para FastAPI
+python-magic==0.4.27               # validación de tipo de archivo por magic bytes

@@ -792,40 +792,25 @@ export function AdvisorChat({
                 const projectSources = msg.sources.filter(s => s.scope === "project");
                 const kbSources = msg.sources.filter(s => s.scope === "general");
                 const webSources = msg.sources.filter(s => s.scope === "web");
+                const docSources = [...projectSources, ...kbSources];
+                const multiSection = docSources.length > 0 && webSources.length > 0;
                 return (
                   <div className="mt-2 border-t border-border/30 pt-1.5">
                     <p className="text-xs font-medium mb-1 opacity-70 flex items-center gap-1">
                       <BookOpen className="h-3 w-3" />
-                      Documentación consultada
+                      Fuentes consultadas
                     </p>
                     <div className="space-y-1">
-                      {projectSources.length > 0 && (
+                      {docSources.length > 0 && (
                         <div>
-                          {(kbSources.length > 0 || webSources.length > 0) && (
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Proyecto</p>
+                          {multiSection && (
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Documentos</p>
                           )}
                           <div className="space-y-0.5">
-                            {projectSources.map((src, j) => (
-                              <div key={`p-${j}`} className="flex items-center gap-1.5 text-xs opacity-70">
+                            {docSources.map((src, j) => (
+                              <div key={`d-${j}`} className="flex items-center gap-1.5 text-xs opacity-70">
                                 <FileText className="h-3 w-3 shrink-0 text-vandarum-teal" />
                                 <span className="truncate">{src.title}</span>
-                                <Badge variant="outline" className="text-[10px] py-0 shrink-0">{src.doc_type}</Badge>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {kbSources.length > 0 && (
-                        <div>
-                          {(projectSources.length > 0 || webSources.length > 0) && (
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Base de conocimiento</p>
-                          )}
-                          <div className="space-y-0.5">
-                            {kbSources.map((src, j) => (
-                              <div key={`k-${j}`} className="flex items-center gap-1.5 text-xs opacity-70">
-                                <FileText className="h-3 w-3 shrink-0" />
-                                <span className="truncate">{src.title}</span>
-                                <Badge variant="outline" className="text-[10px] py-0 shrink-0">{src.doc_type}</Badge>
                               </div>
                             ))}
                           </div>
@@ -833,7 +818,7 @@ export function AdvisorChat({
                       )}
                       {webSources.length > 0 && (
                         <div>
-                          {(projectSources.length > 0 || kbSources.length > 0) && (
+                          {multiSection && (
                             <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Web</p>
                           )}
                           <div className="space-y-0.5">
