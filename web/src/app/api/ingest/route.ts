@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
       detail.includes("fetch") ||
       detail.includes("ECONNREFUSED") ||
       detail.includes("ENOTFOUND")
-        ? `Pipeline API no disponible (${PIPELINE_URL}). Asegurate de que el servidor Python esta corriendo.`
+        ? `Pipeline API no disponible. Contacta al administrador.`
         : `Error al conectar con Pipeline API: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }

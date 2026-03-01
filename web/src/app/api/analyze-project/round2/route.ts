@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
 
     const message =
       detail.includes("fetch") || detail.includes("ECONNREFUSED")
-        ? `Pipeline API no disponible (${PIPELINE_URL}).`
+        ? `Pipeline API no disponible. Contacta al administrador.`
         : `Error en 2a vuelta: ${detail}`;
 
     return NextResponse.json({ error: message }, { status: 502 });

@@ -28,7 +28,7 @@ export async function POST() {
     const detail = error instanceof Error ? error.message : String(error);
     const message =
       detail.includes("fetch") || detail.includes("ECONNREFUSED")
-        ? `Pipeline API no disponible (${PIPELINE_URL}).`
+        ? `Pipeline API no disponible. Contacta al administrador.`
         : `Error al reclasificar: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }

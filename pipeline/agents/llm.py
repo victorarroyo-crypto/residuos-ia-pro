@@ -20,6 +20,9 @@ import re
 import time
 from typing import Any, Optional
 
+import httpx
+from anthropic import AsyncAnthropic
+
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 5
@@ -104,8 +107,11 @@ async def call_llm(
         )
     else:
         # Fallback: direct Anthropic call (no router available)
-        from anthropic import AsyncAnthropic
-        client = AsyncAnthropic(api_key=api_key, max_retries=4)
+        client = AsyncAnthropic(
+            api_key=api_key,
+            max_retries=4,
+            timeout=httpx.Timeout(300.0, connect=10.0),
+        )
         response = await client.messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -182,7 +188,6 @@ async def call_claude_with_tools(
     3. Enviar resultados de vuelta
     4. Repetir hasta que responda con texto final
     """
-    from anthropic import AsyncAnthropic
     from pipeline.model_router import MODEL_API_IDS, MODEL_PROVIDERS
 
     # Resolve which model to use
@@ -218,7 +223,11 @@ async def call_claude_with_tools(
                     project_id=project_id,
                 )
 
-    client = AsyncAnthropic(api_key=api_key, max_retries=4)
+    client = AsyncAnthropic(
+        api_key=api_key,
+        max_retries=4,
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
     messages = [{"role": "user", "content": user_message}]
     response = None
     total_input_tokens = 0
@@ -339,5 +348,8 @@ def parse_json_response(text: str) -> dict[str, Any]:
                         except json.JSONDecodeError:
                             break
 
-    logger.warning("No se pudo extraer JSON de la respuesta, devolviendo vacio")
+    logger.error(
+        "No se pudo extraer JSON de la respuesta del LLM. Primeros 500 chars: %s",
+        text[:500],
+    )
     return {"findings": [], "error": "No se pudo parsear la respuesta del LLM"}

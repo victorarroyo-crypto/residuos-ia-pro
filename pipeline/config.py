@@ -22,6 +22,9 @@ RERANK_MODEL = "claude-haiku-4-5-20251001"
 RERANK_MAX_TOKENS = 256
 RERANK_CANDIDATE_MULTIPLIER = 3  # Pedir 3x más candidatos del SQL para reranking
 
+# Threshold de similitud unificado para busquedas RAG (vectorial + full-text)
+RAG_SIMILARITY_THRESHOLD = 0.50
+
 
 @dataclass
 class PipelineConfigImpl(PipelineConfig):
@@ -42,6 +45,7 @@ class EmbeddingService:
         """Genera embeddings para todos los chunks en lotes."""
         # Subdividir chunks que excedan el límite de tokens de OpenAI
         chunks = self._split_oversized_chunks(chunks)
+        failed_batches = 0
 
         for i in range(0, len(chunks), EMBED_BATCH_SIZE):
             batch = chunks[i:i + EMBED_BATCH_SIZE]
@@ -49,14 +53,24 @@ class EmbeddingService:
 
             response = await self._embed_with_retry(texts, i)
             if response is None:
-                logger.error(f"Batch {i}: agotados retries de embedding")
+                logger.error(
+                    f"Batch {i}: agotados retries de embedding — "
+                    f"{len(batch)} chunks sin embedding"
+                )
+                failed_batches += 1
                 continue
 
             for j, embedding_data in enumerate(response.data):
                 batch[j].embedding = embedding_data.embedding
 
         embedded = sum(1 for c in chunks if c.embedding is not None)
-        logger.info(f"Embeddings: {embedded}/{len(chunks)} chunks")
+        total = len(chunks)
+        logger.info(f"Embeddings: {embedded}/{total} chunks")
+        if failed_batches > 0:
+            logger.warning(
+                f"ATENCION: {total - embedded} chunks perdieron embedding "
+                f"({failed_batches} batches fallidos). No seran buscables por RAG."
+            )
         return chunks
 
     def _split_oversized_chunks(self, chunks: list[DocumentChunk]) -> list[DocumentChunk]:

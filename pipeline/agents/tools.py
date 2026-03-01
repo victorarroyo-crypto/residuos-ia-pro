@@ -15,6 +15,8 @@ from typing import Any
 from openai import AsyncOpenAI
 from supabase._async.client import AsyncClient, create_client as acreate_client
 
+from ..config import RAG_SIMILARITY_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 # ─── Definiciones de herramientas (esquemas para Claude API) ───────────
@@ -77,7 +79,7 @@ class ToolExecutor:
 
     _EMBED_MODEL = "text-embedding-3-large"
     _EMBED_DIMS = 1536
-    _MATCH_THRESHOLD = 0.50
+    _MATCH_THRESHOLD = RAG_SIMILARITY_THRESHOLD
     _MATCH_COUNT = 10
 
     def __init__(
@@ -97,6 +99,12 @@ class ToolExecutor:
         if not self._sb:
             self._sb = await acreate_client(self._sb_url, self._sb_key)
         return self._sb
+
+    async def close(self):
+        """Cierra conexiones abiertas (Supabase AsyncClient)."""
+        if self._sb:
+            await self._sb.aclose()
+            self._sb = None
 
     async def execute(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         """Ejecuta una herramienta y devuelve resultado como texto."""

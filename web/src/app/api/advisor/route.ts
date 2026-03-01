@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
     const message = isTimeout
       ? "El asesor tardo demasiado en responder. Intenta con menos archivos o una pregunta mas corta."
       : isNetwork
-        ? `Pipeline API no disponible (${PIPELINE_URL}). Asegurate de que el servidor Python esta corriendo.`
+        ? `Pipeline API no disponible. Contacta al administrador.`
         : `Error en asesor: ${detail}`;
 
     return NextResponse.json(

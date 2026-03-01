@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
     console.error("[gdrive/sync] Error:", detail);
     const message =
       detail.includes("fetch") || detail.includes("ECONNREFUSED") || detail.includes("ENOTFOUND")
-        ? `Pipeline API no disponible (${PIPELINE_URL}). Verifica que el servidor Python esta activo y PIPELINE_API_URL esta configurado.`
+        ? `Pipeline API no disponible. Contacta al administrador.`
         : `Error al conectar con Pipeline API: ${detail}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }

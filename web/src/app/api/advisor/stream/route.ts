@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
       detail.includes("ENOTFOUND");
 
     const message = isNetwork
-      ? `Pipeline API no disponible (${PIPELINE_URL}). Asegurate de que el servidor Python esta corriendo.`
+      ? `Pipeline API no disponible. Contacta al administrador.`
       : `Error en asesor: ${detail}`;
 
     return NextResponse.json({ error: message }, { status: 502 });

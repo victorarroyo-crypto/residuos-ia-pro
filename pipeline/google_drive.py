@@ -284,8 +284,9 @@ class GoogleDriveService:
         if cached:
             return cached
 
+        safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
         q = (
-            f"name='{name}' "
+            f"name='{safe_name}' "
             f"and mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false"
         )

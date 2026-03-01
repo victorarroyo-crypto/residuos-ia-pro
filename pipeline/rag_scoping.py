@@ -32,7 +32,12 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from supabase._async.client import AsyncClient, create_client as acreate_client
 
-from .config import RERANK_MODEL, RERANK_MAX_TOKENS, RERANK_CANDIDATE_MULTIPLIER
+from .config import (
+    RERANK_MODEL,
+    RERANK_MAX_TOKENS,
+    RERANK_CANDIDATE_MULTIPLIER,
+    RAG_SIMILARITY_THRESHOLD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +105,7 @@ class RAGScopingService:
         scopes: list[RAGScope] = None,
         doc_type_filter: Optional[str] = None,
         top_k_per_scope: int = 5,
-        similarity_threshold: float = 0.70,
+        similarity_threshold: float = RAG_SIMILARITY_THRESHOLD,
     ) -> RAGResponse:
         if scopes is None:
             scopes = [RAGScope.GENERAL, RAGScope.PROJECT]
