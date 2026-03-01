@@ -13,12 +13,14 @@ import {
   FolderOpen,
   CheckCircle2,
   AlertTriangle,
+  BarChart3,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/client";
 import { GoogleDrivePicker } from "@/components/google-drive-picker";
+import { UsageDashboard } from "@/components/usage-dashboard";
 
 function SettingsSection({
   icon: Icon,
@@ -52,8 +54,11 @@ interface GDriveStatus {
   configured?: boolean;
 }
 
+type SettingsTab = "general" | "costs";
+
 function SettingsContent() {
   const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [nombre, setNombre] = useState("");
   const [email, setEmail] = useState("");
   const [userId, setUserId] = useState("");
@@ -257,6 +262,40 @@ function SettingsContent() {
         </p>
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-1 border-b">
+        <button
+          onClick={() => setActiveTab("general")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "general"
+              ? "border-vandarum-teal text-vandarum-teal"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          General
+        </button>
+        <button
+          onClick={() => setActiveTab("costs")}
+          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "costs"
+              ? "border-vandarum-teal text-vandarum-teal"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <BarChart3 className="h-3.5 w-3.5" />
+          Costes IA
+        </button>
+      </div>
+
+      {/* Tab: Costes IA */}
+      {activeTab === "costs" && userId && (
+        <div className="max-w-4xl">
+          <UsageDashboard consultantId={userId} />
+        </div>
+      )}
+
+      {/* Tab: General */}
+      {activeTab === "general" && (
       <div className="grid gap-6 max-w-2xl">
         {/* Profile */}
         <SettingsSection
@@ -432,6 +471,7 @@ function SettingsContent() {
           </div>
         </SettingsSection>
       </div>
+      )}
     </div>
   );
 }

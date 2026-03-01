@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { exportToWord } from "@/lib/export-word";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { createClient } from "@/lib/supabase/client";
+import { ModelSelector } from "@/components/model-selector";
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -238,6 +239,10 @@ export function AdvisorChat({
   const [driveContextFiles, setDriveContextFiles] = useState<{ name: string; chars_extracted: number }[]>([]);
   const [driveContextFolder, setDriveContextFolder] = useState<string>("");
 
+  // Model selection
+  const [selectedModel, setSelectedModel] = useState<string>("claude-sonnet-4");
+  const [selectedTier, setSelectedTier] = useState<string>("standard");
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -401,6 +406,9 @@ export function AdvisorChat({
           analysis_context: analysisContext ?? undefined,
           drive_context: driveContext || undefined,
           drive_files: driveContextFiles.length > 0 ? driveContextFiles : undefined,
+          consultant_id: consultantId || undefined,
+          model_override: selectedModel !== "claude-sonnet-4" ? selectedModel : undefined,
+          tier: selectedTier !== "standard" ? selectedTier : undefined,
         }),
         signal: abort.signal,
       });
@@ -515,6 +523,8 @@ export function AdvisorChat({
     driveContextFiles,
     driveContextFolder,
     setMessages,
+    selectedModel,
+    selectedTier,
   ]);
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1114,6 +1124,14 @@ export function AdvisorChat({
               <FolderOpen className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
             </Button>
           )}
+          <ModelSelector
+            selectedModel={selectedModel}
+            selectedTier={selectedTier}
+            onModelChange={setSelectedModel}
+            onTierChange={setSelectedTier}
+            compact={compact}
+            disabled={loading || streaming}
+          />
           <input
             ref={inputRef}
             type="text"
