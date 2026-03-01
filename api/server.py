@@ -1052,7 +1052,7 @@ async def _run_advisor(
     output_tokens = 0
     call_start = time.monotonic()
 
-    # Web search tool (Anthropic-only feature)
+    # Web search tool (Anthropic-only, Gemini/OpenAI have their own)
     web_search_tool = {
         "type": "web_search_20250305",
         "name": "web_search",
@@ -1106,19 +1106,38 @@ async def _run_advisor(
                                 })
 
             elif provider == "openai":
+                # Responses API con web_search_preview
                 response = await _model_router.call_openai(
-                    model_id, system_prompt, messages, max_tokens=32000,
+                    model_id, system_prompt, messages,
+                    max_tokens=32000, web_search=True,
                 )
-                answer = response.choices[0].message.content or ""
-                usage = response.usage
-                input_tokens = usage.prompt_tokens if usage else 0
-                output_tokens = usage.completion_tokens if usage else 0
+                from pipeline.model_router import (
+                    _extract_openai_responses_text,
+                    _extract_openai_web_sources,
+                )
+                answer = _extract_openai_responses_text(response)
+                oai_ws = _extract_openai_web_sources(response)
+                for ws in oai_ws:
+                    ws["scope"] = "web"
+                web_sources.extend(oai_ws)
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+                output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
 
             elif provider == "google":
+                # Google con thinking budget + Google Search grounding
                 response = await _model_router.call_google(
-                    model_id, system_prompt, messages, max_tokens=32000,
+                    model_id, system_prompt, messages,
+                    max_tokens=32000,
+                    thinking_budget=thinking_budget,
+                    web_search=True,
                 )
                 answer = response.text or ""
+                from pipeline.model_router import _extract_google_web_sources
+                google_ws = _extract_google_web_sources(response)
+                for ws in google_ws:
+                    ws["scope"] = "web"
+                web_sources.extend(google_ws)
                 usage_meta = getattr(response, "usage_metadata", None)
                 input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
                 output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
@@ -1589,6 +1608,8 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
             stream_output_tokens = 0
             stream_start = time.monotonic()
             last_keepalive = stream_start
+            gemini_web_sources: list[dict] = []
+            oai_web_sources: list[dict] = []
 
             for chain_idx, model_id in enumerate(chain):
                 provider = MODEL_PROVIDERS.get(model_id, "unknown")
@@ -1669,22 +1690,34 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                                 )
                             )
 
+                        # Thinking con budget + Google Search grounding
+                        gemini_thinking_cfg = genai_types.ThinkingConfig(
+                            include_thoughts=True,
+                            thinking_budget=thinking_budget,
+                        )
+                        gemini_tools = [
+                            genai_types.Tool(google_search=genai_types.GoogleSearch())
+                        ]
+
                         gemini_config = genai_types.GenerateContentConfig(
                             system_instruction=system_prompt,
                             max_output_tokens=32000,
                             temperature=0.7,
-                            thinking_config=genai_types.ThinkingConfig(
-                                include_thoughts=True,
-                            ),
+                            thinking_config=gemini_thinking_cfg,
+                            tools=gemini_tools,
                         )
 
+                        yield _sse_event("status", {"phase": "thinking"})
+
                         last_chunk = None
+                        gemini_full_response = None
                         async for chunk in await gemini_client.aio.models.generate_content_stream(
                             model=api_model,
                             contents=gemini_contents,
                             config=gemini_config,
                         ):
                             last_chunk = chunk
+                            gemini_full_response = chunk  # El ultimo chunk tiene grounding_metadata
                             if chunk.candidates and chunk.candidates[0].content:
                                 for part in chunk.candidates[0].content.parts:
                                     if part.text and not getattr(part, "thought", False):
@@ -1697,26 +1730,39 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                             stream_input_tokens = getattr(usage_meta, "prompt_token_count", 0) if usage_meta else 0
                             stream_output_tokens = getattr(usage_meta, "candidates_token_count", 0) if usage_meta else 0
 
+                        # Extract web sources from Gemini grounding
+                        if gemini_full_response:
+                            from pipeline.model_router import _extract_google_web_sources
+                            gemini_web_sources = _extract_google_web_sources(gemini_full_response)
+
                         model_used = model_id
                         break  # success
 
                     elif provider == "openai":
-                        # OpenAI: non-streaming fallback (emit all text at once)
+                        # OpenAI: usa Responses API con web_search_preview
                         if chain_idx > 0:
                             yield _sse_event("status", {"phase": "fallback_" + model_id})
 
                         response = await _model_router.call_openai(
-                            model_id, system_prompt, messages, max_tokens=32000,
+                            model_id, system_prompt, messages,
+                            max_tokens=32000, web_search=True,
                         )
-                        oai_text = response.choices[0].message.content or ""
+
+                        # Responses API: extraer texto y fuentes
+                        from pipeline.model_router import (
+                            _extract_openai_responses_text,
+                            _extract_openai_web_sources,
+                        )
+                        oai_text = _extract_openai_responses_text(response)
+                        oai_web_sources = _extract_openai_web_sources(response)
                         if oai_text:
                             text_streamed = True
                             yield _sse_event("text_delta", {"text": oai_text})
 
-                        # Extract usage from response
-                        oai_usage = response.usage
-                        stream_input_tokens = oai_usage.prompt_tokens if oai_usage else 0
-                        stream_output_tokens = oai_usage.completion_tokens if oai_usage else 0
+                        # Extract usage from Responses API
+                        oai_usage = getattr(response, "usage", None)
+                        stream_input_tokens = getattr(oai_usage, "input_tokens", 0) if oai_usage else 0
+                        stream_output_tokens = getattr(oai_usage, "output_tokens", 0) if oai_usage else 0
 
                         model_used = model_id
                         break  # success
@@ -1745,8 +1791,9 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                     "text": "No se pudo generar una respuesta. Intenta reformular tu pregunta.",
                 })
 
-            # 7. Extract web sources from final message (Anthropic only)
+            # 7. Extract web sources from all providers
             web_sources: list[dict] = []
+            # Anthropic: from final message
             if final is not None:
                 for block in final.content:
                     if getattr(block, "type", None) == "web_search_tool_result":
@@ -1756,6 +1803,10 @@ async def advisor_stream(request: Request, payload: AdvisorRequest):
                                     "title": getattr(item, "title", ""),
                                     "url": getattr(item, "url", ""),
                                 })
+            # Google: from grounding_metadata (set in google branch above)
+            web_sources.extend(gemini_web_sources)
+            # OpenAI: from Responses API annotations (set in openai branch above)
+            web_sources.extend(oai_web_sources)
 
             seen_urls: set[str] = set()
             web_source_list = []
