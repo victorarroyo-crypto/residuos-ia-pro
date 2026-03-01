@@ -19,6 +19,7 @@ Uso:
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from supabase import create_client, Client
@@ -249,7 +250,7 @@ class CostGuard:
             result = sb.table("api_usage_log") \
                 .select("created_at, provider, model, service, input_tokens, output_tokens, cost_usd, duration_ms") \
                 .eq("consultant_id", consultant_id) \
-                .gte("created_at", f"now() - interval '{days} days'") \
+                .gte("created_at", (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()) \
                 .order("created_at", desc=True) \
                 .limit(1000) \
                 .execute()
@@ -318,7 +319,7 @@ class CostGuard:
                 .select("*") \
                 .eq("consultant_id", consultant_id) \
                 .eq("service", service) \
-                .maybeSingle() \
+                .maybe_single() \
                 .execute()
             return result.data or {}
         except Exception as e:
@@ -355,7 +356,7 @@ class CostGuard:
             result = sb.table("consultant_cost_limits") \
                 .select("*") \
                 .eq("consultant_id", consultant_id) \
-                .maybeSingle() \
+                .maybe_single() \
                 .execute()
             if result.data:
                 return result.data
