@@ -8,7 +8,7 @@ incumplimientos de plazos legales.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_REGISTRO, build_instructions_block, build_agent_focus_block, build_previous_findings_block
-from .llm import call_claude
+from .llm import call_claude, routing_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,7 @@ async def agent_registro(state: AnalysisState) -> dict:
             api_key=state["anthropic_api_key"],
             system_prompt=SYSTEM_REGISTRO,
             user_message=context,
+            **routing_kwargs(state),
         )
 
         findings: list[Finding] = []

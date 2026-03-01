@@ -8,7 +8,7 @@ de datos existen.
 
 import logging
 from .state import AnalysisState, AnalysisPlan, AgentPlan
-from .llm import call_claude
+from .llm import call_claude, routing_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +168,7 @@ async def agent_coordinador(state: AnalysisState) -> dict:
             api_key=state["anthropic_api_key"],
             system_prompt=SYSTEM_COORDINADOR,
             user_message=context,
+            **routing_kwargs(state),
         )
 
         agents = []

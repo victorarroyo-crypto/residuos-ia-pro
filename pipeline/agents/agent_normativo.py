@@ -12,7 +12,7 @@ precargado. Esto le permite hacer múltiples búsquedas dirigidas.
 import logging
 from .state import AnalysisState, Finding
 from .prompts import SYSTEM_NORMATIVO, build_instructions_block, build_agent_focus_block, build_previous_findings_block
-from .llm import call_claude_with_tools
+from .llm import call_claude_with_tools, routing_kwargs
 from .tools import NORMATIVO_TOOLS, ToolExecutor
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,7 @@ async def agent_normativo(state: AnalysisState) -> dict:
             user_message=context,
             tools=NORMATIVO_TOOLS,
             tool_executor=executor,
+            **routing_kwargs(state),
         )
 
         findings: list[Finding] = []

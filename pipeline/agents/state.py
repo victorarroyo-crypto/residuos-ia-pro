@@ -59,6 +59,12 @@ class AnalysisState(TypedDict, total=False):
     supabase_key: str
     anthropic_api_key: str
     openai_api_key: str
+    gemini_api_key: str
+
+    # Model routing
+    model_override: str           # modelo preferido (ej. "claude-opus-4-6")
+    tier: str                     # "standard" o "pro_plus"
+    consultant_id: str
 
     # HITL: instrucciones del consultor y foco por agente
     consultant_instructions: str       # instrucciones libres del consultor
