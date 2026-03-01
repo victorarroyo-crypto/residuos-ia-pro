@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 // Downloading + extracting files can take a while
 export const maxDuration = 120;
@@ -27,7 +26,7 @@ export async function POST(request: NextRequest) {
       `${PIPELINE_URL}/api/advisor/drive-context`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: pipelineHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
       }
     );

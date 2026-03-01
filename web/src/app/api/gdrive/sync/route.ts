@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 // Allow up to 60s for the initial handshake with Pipeline.
 // The actual sync runs in background on the Pipeline server.
@@ -16,7 +15,7 @@ export async function POST(request: NextRequest) {
     try {
       const response = await fetch(`${PIPELINE_URL}/api/gdrive/sync`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: pipelineHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
         signal: controller.signal,
       });

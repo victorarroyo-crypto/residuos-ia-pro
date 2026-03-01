@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 /**
  * GET /api/rag/health
@@ -8,7 +7,9 @@ const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
  */
 export async function GET() {
   try {
-    const response = await fetch(`${PIPELINE_URL}/api/rag/health`);
+    const response = await fetch(`${PIPELINE_URL}/api/rag/health`, {
+      headers: pipelineHeaders(),
+    });
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: "Pipeline error" }));

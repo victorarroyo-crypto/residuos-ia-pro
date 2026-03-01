@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 /**
  * PATCH /api/analyze-project/session/[id]
@@ -16,7 +15,7 @@ export async function PATCH(
       `${PIPELINE_URL}/api/analyze/session/${params.id}`,
       {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: pipelineHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
       }
     );

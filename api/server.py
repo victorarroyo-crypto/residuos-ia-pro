@@ -16,9 +16,9 @@ import logging
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -142,6 +142,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── API Key authentication ───────────────────────────────────────
+# When PIPELINE_API_KEY is set, all endpoints (except /health) require
+# the header X-API-Key to match.  If PIPELINE_API_KEY is empty/unset,
+# authentication is skipped (local development).
+_PIPELINE_API_KEY = os.environ.get("PIPELINE_API_KEY", "")
+if _PIPELINE_API_KEY:
+    logger.info("PIPELINE_API_KEY configured — API key authentication enabled ✓")
+else:
+    logger.warning("PIPELINE_API_KEY not set — API endpoints are UNPROTECTED")
+
+
+@app.middleware("http")
+async def _verify_api_key(request: Request, call_next):
+    if request.url.path == "/health" or request.method == "OPTIONS":
+        return await call_next(request)
+    if _PIPELINE_API_KEY:
+        provided = request.headers.get("x-api-key", "")
+        if provided != _PIPELINE_API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key"},
+            )
+    return await call_next(request)
 
 
 @app.get("/health")

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPELINE_URL = process.env.PIPELINE_API_URL || "http://localhost:8000";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
 export async function GET(request: NextRequest) {
   try {
@@ -22,7 +21,8 @@ export async function GET(request: NextRequest) {
     if (pageToken) params.set("page_token", pageToken);
 
     const response = await fetch(
-      `${PIPELINE_URL}/api/gdrive/browse?${params.toString()}`
+      `${PIPELINE_URL}/api/gdrive/browse?${params.toString()}`,
+      { headers: pipelineHeaders() }
     );
 
     if (!response.ok) {
