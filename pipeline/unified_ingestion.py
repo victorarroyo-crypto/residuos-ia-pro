@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import magic
+
 from .pdf_pipeline import PDFPipeline
 from .excel_processor import ExcelProcessor
 from .text_processor import TextProcessor
@@ -43,6 +45,51 @@ SUPPORTED_EXTENSIONS = {
     "htm":  "text",
     "md":   "text",
 }
+
+# MIME types permitidos por tipo de archivo.
+# python-magic detecta el tipo real del contenido independientemente de la extensión.
+_ALLOWED_MIMES: dict[str, set[str]] = {
+    "pdf":  {"application/pdf"},
+    "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+             "application/zip", "application/octet-stream"},
+    "xlsm": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+             "application/zip", "application/octet-stream"},
+    "xls":  {"application/vnd.ms-excel", "application/octet-stream",
+             "application/x-ole-storage", "application/CDFV2"},
+    "csv":  {"text/plain", "text/csv", "application/csv", "text/x-csv"},
+    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+             "application/zip", "application/octet-stream"},
+    "doc":  {"application/msword", "application/octet-stream",
+             "application/x-ole-storage", "application/CDFV2"},
+    "txt":  {"text/plain", "text/x-python", "text/x-c", "text/x-java"},
+    "html": {"text/html", "text/plain"},
+    "htm":  {"text/html", "text/plain"},
+    "md":   {"text/plain", "text/x-python", "text/markdown"},
+}
+
+
+def _validate_magic_bytes(file_bytes: bytes, ext: str) -> str | None:
+    """
+    Valida que los magic bytes del archivo coincidan con la extensión declarada.
+    Retorna None si es válido, o un mensaje de error si no coincide.
+    """
+    allowed = _ALLOWED_MIMES.get(ext)
+    if not allowed:
+        return None  # extensión sin regla → no bloquear
+
+    try:
+        detected = magic.from_buffer(file_bytes[:8192], mime=True)
+    except Exception as e:
+        logger.warning("Error detectando MIME con magic: %s (se permite el archivo)", e)
+        return None  # si magic falla, no bloquear
+
+    if detected in allowed:
+        return None  # OK
+
+    return (
+        f"El contenido real del archivo ({detected}) no coincide con la extensión "
+        f"declarada (.{ext}). Posible archivo manipulado."
+    )
 
 
 @dataclass
@@ -110,6 +157,18 @@ class UnifiedIngestionService:
                 storage_path=None, supabase_doc_id=None,
                 ler_codes_found=[], warnings=[],
                 error=f"Formato no soportado: .{ext}. Formatos válidos: PDF, Excel, CSV",
+            )
+
+        # Validar magic bytes: el contenido real debe coincidir con la extensión
+        magic_error = _validate_magic_bytes(file_bytes, ext)
+        if magic_error:
+            logger.warning("Magic bytes rechazados: %s → %s", filename, magic_error)
+            return IngestionResult(
+                success=False, doc_id="", filename=filename,
+                doc_type="rechazado", rag_scope="unknown", num_chunks=0,
+                storage_path=None, supabase_doc_id=None,
+                ler_codes_found=[], warnings=[],
+                error=magic_error,
             )
 
         logger.info(f"Ingesta: {filename} ({file_type}) | proyecto={project_id}")
