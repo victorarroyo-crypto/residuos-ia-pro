@@ -297,3 +297,64 @@ export interface Contract {
   alertar_dias_antes: number;
   created_at: string | null;
 }
+
+// ── Cost Tracking ──────────────────────────────────────────
+
+export interface ApiUsageLog {
+  id: string;
+  created_at: string;
+  consultant_id: string | null;
+  service: string;
+  operation: string;
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  duration_ms: number;
+  project_id: string | null;
+  success: boolean;
+  metadata: Record<string, unknown>;
+}
+
+export interface ConsultantModelConfig {
+  id: string;
+  consultant_id: string;
+  service: string;
+  preferred_model: string;
+  fallback_chain: string[];
+  tier: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConsultantCostLimits {
+  id: string;
+  consultant_id: string;
+  anthropic_daily_limit: number;
+  anthropic_monthly_limit: number;
+  openai_daily_limit: number;
+  openai_monthly_limit: number;
+  google_daily_limit: number;
+  google_monthly_limit: number;
+  global_daily_limit: number;
+  global_monthly_limit: number;
+  alert_threshold_pct: number;
+  auto_fallback: boolean;
+  block_on_global_limit: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AvailableModel {
+  id: string;
+  provider: string;
+  input_price: number;
+  output_price: number;
+  thinking: boolean;
+  web_search: boolean;
+  vision: boolean;
+  max_tokens: number;
+  context: number;
+}

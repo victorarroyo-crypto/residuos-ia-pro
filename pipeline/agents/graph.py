@@ -281,11 +281,16 @@ async def run_project_analysis(
     supabase_key: str,
     anthropic_api_key: str,
     openai_api_key: str = "",
+    gemini_api_key: str = "",
     agents: list[str] | None = None,
     consultant_instructions: str = "",
     agent_focus: dict[str, str] | None = None,
     round_number: int = 1,
     previous_findings: list[dict] | None = None,
+    # Model routing
+    model_override: str = "",
+    tier: str = "standard",
+    consultant_id: str = "",
 ) -> dict:
     """Ejecuta el analisis de un proyecto con los agentes seleccionados.
 
@@ -313,10 +318,14 @@ async def run_project_analysis(
         "supabase_key": supabase_key,
         "anthropic_api_key": anthropic_api_key,
         "openai_api_key": openai_api_key,
+        "gemini_api_key": gemini_api_key,
         "consultant_instructions": consultant_instructions,
         "agent_focus": agent_focus or {},
         "round_number": round_number,
         "previous_findings": previous_findings or [],
+        "model_override": model_override,
+        "tier": tier,
+        "consultant_id": consultant_id,
         "errors": [],
     }
 

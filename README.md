@@ -1,6 +1,6 @@
 # ResidusIA Pro
 
-Plataforma SaaS de consultoria ambiental para gestion de residuos industriales en Espana. Combina inteligencia artificial (Claude, OpenAI), RAG dual, agentes LangGraph y Google Drive para ofrecer un asistente experto, analisis automatizado de proyectos y gestion documental completa.
+Plataforma SaaS de consultoria ambiental para gestion de residuos industriales en Espana. Combina inteligencia artificial multi-proveedor (Anthropic Claude, OpenAI GPT, Google Gemini) con enrutamiento inteligente (ModelRouter + CostGuard), RAG dual, agentes LangGraph y Google Drive para ofrecer un asistente experto, analisis automatizado de proyectos y gestion documental completa.
 
 ---
 
@@ -27,7 +27,10 @@ Plataforma SaaS de consultoria ambiental para gestion de residuos industriales e
 │  Google Drive Sync   │     │  Storage (S3)    │
 └─────────────────────┘     └──────────────────┘
           │
-          ├── Claude Sonnet 4 (LLM)
+          ├── ModelRouter + CostGuard (fallback chain)
+          │     ├── Anthropic: Claude Opus 4.6, Sonnet 4, Haiku 4.5
+          │     ├── OpenAI: GPT-5.2, GPT-5, o3, o4-mini
+          │     └── Google: Gemini 2.5 Pro, Gemini 2.5 Flash
           ├── OpenAI text-embedding-3-large (embeddings)
           └── Google Drive API (OAuth2)
 ```
@@ -40,7 +43,10 @@ Plataforma SaaS de consultoria ambiental para gestion de residuos industriales e
 | Backend API | Python FastAPI (async) | Ingestion, RAG, advisor, agentes |
 | Base de datos | Supabase (PostgreSQL + pgvector) | Datos, embeddings, auth, RLS |
 | Almacenamiento | Supabase Storage (S3) | PDFs, Excel, documentos originales |
-| LLM | Claude Sonnet 4 (Anthropic) | Asesor IA, clasificacion, agentes |
+| LLM (Anthropic) | Claude Opus 4.6, Sonnet 4, Haiku 4.5 | Asesor IA, agentes, clasificacion |
+| LLM (OpenAI) | GPT-5.2, GPT-5, o3, o4-mini, GPT-5 Mini | Fallback LLM |
+| LLM (Google) | Gemini 2.5 Pro, Gemini 2.5 Flash | Fallback LLM |
+| Model Router | Custom (fallback chain + CostGuard) | Enrutamiento multi-proveedor con control de costes |
 | Embeddings | OpenAI text-embedding-3-large (1536 dims) | Busqueda semantica RAG |
 | Agentes | LangGraph StateGraph | Analisis paralelo de proyectos |
 | Drive | Google Drive API + OAuth2 | Sync automatico de documentos |
@@ -65,11 +71,13 @@ residuos-ia-pro/
 │   ├── rag_scoping.py           ← Sistema RAG dual (General + Proyecto)
 │   ├── config.py                ← Config + EmbeddingService
 │   ├── google_drive.py          ← OAuth, sync, descarga de Drive
+│   ├── model_router.py          ← ModelRouter: fallback chain multi-proveedor
+│   ├── cost_guard.py            ← CostGuard: circuit breaker de costes
 │   └── agents/                  ← LangGraph: agentes de analisis
 │       ├── graph.py             ← StateGraph (orquestador)
 │       ├── state.py             ← AnalysisState (TypedDict)
 │       ├── loader.py            ← Carga datos proyecto desde Supabase
-│       ├── llm.py               ← Config LLM para agentes
+│       ├── llm.py               ← Wrapper LLM multi-proveedor (usa ModelRouter)
 │       ├── prompts.py           ← System prompts por agente
 │       ├── agent_aai.py         ← Autorizacion Ambiental Integrada
 │       ├── agent_contratos.py   ← Contratos con gestores
@@ -99,6 +107,8 @@ residuos-ia-pro/
 │   │   ├── components/
 │   │   │   ├── sidebar.tsx                  ← Navegacion principal
 │   │   │   ├── google-drive-picker.tsx      ← Widget Google Picker
+│   │   │   ├── model-selector.tsx           ← Selector modelo/tier (standard/PRO+)
+│   │   │   ├── usage-dashboard.tsx          ← Dashboard uso y costes
 │   │   │   └── ui/                          ← shadcn/ui (button, card, badge...)
 │   │   ├── lib/
 │   │   │   ├── supabase/                    ← Clientes Supabase (client/server/admin)
@@ -113,6 +123,7 @@ residuos-ia-pro/
 │   └── tailwind.config.ts                   ← Colores Vandarum
 ├── supabase/
 │   ├── setup.sql                            ← Esquema completo
+│   ├── cost_tracking.sql                    ← Tablas cost tracking + RPC functions
 │   └── verify_data.sql                      ← Diagnostico
 ├── CLAUDE.md                                ← Documentacion tecnica + auditoria
 └── README.md                                ← Este archivo
@@ -125,15 +136,19 @@ residuos-ia-pro/
 ### 1. Asesor IA Experto (`/dashboard/advisor`)
 
 Chat interactivo con un experto en gestion de residuos industriales:
+- **Multi-proveedor:** Claude, GPT, Gemini con fallback automatico via ModelRouter
+- **Tier Standard:** Claude Sonnet 4 (fallback: Gemini Pro → GPT-5 → Haiku)
+- **Tier PRO+:** Claude Opus 4.6 (fallback: GPT-5.2 → o3 → Gemini Pro → Sonnet 4)
 - **Adjuntos:** hasta 6 archivos (PDF, Excel, Word, imagenes) o URLs por consulta
 - **RAG dual:** busca en Base de Conocimiento (normativa) y documentos de proyecto
 - **Busqueda web:** para datos actualizados (precios, BOE reciente, gestores)
 - **Extended thinking:** 24,000 tokens de razonamiento interno
+- **CostGuard:** control automatico de costes con limites por proveedor
 - **Exportar a Word:** boton para descargar la respuesta como .docx con marca Vandarum
 
 **Flujo:**
 ```
-Pregunta + adjuntos → RAG search (top_k=12) → Claude Sonnet 4 + web search → Respuesta estructurada
+Pregunta + adjuntos → RAG search (top_k=12) → ModelRouter (fallback chain) + web search → Respuesta estructurada
 ```
 
 ### 2. Analisis Automatizado de Proyectos (`/dashboard/projects/[id]`)
@@ -184,7 +199,32 @@ Archivo → Detectar formato → Extraer texto/tablas → Clasificar tipo doc
 - Sync resiliente: retry con backoff exponencial, BFS iterativo
 - Auto-sync cada 6h cuando la pagina esta abierta
 
-### 6. Gestion de Proyectos (`/dashboard/projects`)
+### 6. Model Router y Control de Costes
+
+**ModelRouter** — enrutamiento inteligente de llamadas LLM con fallback automatico:
+
+| Proveedor | Modelos | Casos de uso |
+|-----------|---------|-------------|
+| **Anthropic** | Opus 4.6, Sonnet 4, Haiku 4.5 | Advisor PRO+, agentes, clasificacion |
+| **OpenAI** | GPT-5.2, GPT-5, o3, o4-mini, GPT-5 Mini | Fallback LLM, analisis |
+| **Google** | Gemini 2.5 Pro, Gemini 2.5 Flash | Fallback LLM, RAG |
+
+**CostGuard** — circuit breaker que evita exceso de gasto:
+- Limites diarios y mensuales por proveedor + global
+- Auto-fallback: si un proveedor esta bloqueado, el router prueba el siguiente
+- Registro detallado en `api_usage_log` con tokens, coste, duracion
+- Dashboard de uso para el consultor (`usage-dashboard.tsx`)
+
+**Endpoints de gestion:**
+
+| Endpoint | Descripcion |
+|----------|-------------|
+| `GET /api/usage-stats` | Estadisticas de uso y costes |
+| `GET/PUT /api/cost-limits` | Limites de coste por proveedor |
+| `GET/PUT /api/model-config` | Modelo preferido por servicio |
+| `GET /api/available-models` | Modelos con capacidades y precios |
+
+### 7. Gestion de Proyectos (`/dashboard/projects`)
 
 CRUD completo de proyectos (empresa/cliente del consultor):
 - Datos empresa: nombre, CIF, CNAE, sector, direccion, contacto
@@ -208,7 +248,7 @@ RAG Proyecto (aislado por consultor via RLS):
   project_documents → project_chunks (embeddings 1536 dims)
 ```
 
-### Tablas principales (16)
+### Tablas principales (19)
 
 | Tabla | Descripcion |
 |-------|-------------|
@@ -226,6 +266,9 @@ RAG Proyecto (aislado por consultor via RLS):
 | `pipeline_progress` | Progreso pipeline de ingesta |
 | `consultant_gdrive` | Tokens OAuth Google Drive |
 | `gdrive_sync_log` | Log de sincronizaciones |
+| `api_usage_log` | Registro de llamadas API con coste |
+| `consultant_cost_limits` | Limites de coste por proveedor |
+| `consultant_model_config` | Modelo preferido por servicio |
 | `knowledge_stats` | Vista: estadisticas RAG General |
 | `project_stats` | Vista: estadisticas RAG Proyecto |
 
@@ -265,7 +308,9 @@ python -m api.server
 
 ### Supabase
 
-Ejecutar `supabase/setup.sql` en el SQL Editor de Supabase.
+Ejecutar en el SQL Editor de Supabase:
+1. `supabase/setup.sql` — Esquema base (tablas, indices, funciones RAG)
+2. `supabase/cost_tracking.sql` — Cost tracking (api_usage_log, limites, model config)
 
 ## Variables de Entorno
 
@@ -286,6 +331,7 @@ SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=AI...                    # Google Gemini (opcional, fallback LLM)
 GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-...
 FRONTEND_URL=http://localhost:3000
@@ -318,7 +364,9 @@ FRONTEND_URL=http://localhost:3000
    ├─ Clasificacion de tipo de documento
    └─ Chunks + embeddings para RAG
 6. Consultor pregunta al Asesor IA:
-   └─ RAG search → Claude → respuesta experta → (opcional) Word
+   └─ RAG search → ModelRouter (Claude/GPT/Gemini) → respuesta experta → (opcional) Word
 7. Consultor lanza analisis de proyecto:
-   └─ 5 agentes en paralelo → optimizador → informe final
+   └─ 5 agentes en paralelo (via ModelRouter) → optimizador → informe final
+8. CostGuard registra cada llamada API:
+   └─ api_usage_log → limites diarios/mensuales → auto-fallback si bloqueado
 ```
