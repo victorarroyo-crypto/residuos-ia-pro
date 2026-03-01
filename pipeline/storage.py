@@ -91,6 +91,8 @@ class StorageService:
         ascii_name = ascii_name.replace(" ", "_")
         # Solo alfanuméricos, guiones, guiones bajos y puntos
         ascii_name = re.sub(r"[^\w.\-]", "", ascii_name)
+        # Colapsar puntos consecutivos para prevenir path traversal
+        ascii_name = re.sub(r"\.{2,}", ".", ascii_name)
         if not ascii_name:
             ascii_name = "archivo"
         return f"{ascii_name}.{ext}" if ext else ascii_name
@@ -103,6 +105,9 @@ class StorageService:
 
         if doc_type in KNOWLEDGE_DOC_TYPES:
             return f"general/{folder}/{safe_name}"
+
+        if not _uuid_re.match(project_id or ""):
+            raise ValueError(f"project_id invalido (no es UUID): {project_id!r}")
 
         return f"{project_id}/{folder}/{safe_name}"
 

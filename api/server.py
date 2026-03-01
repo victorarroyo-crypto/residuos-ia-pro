@@ -21,7 +21,9 @@ import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+_UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("residusia")
@@ -134,15 +136,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_frontend_url = os.environ.get("FRONTEND_URL", "")
+_cors_origins = [_frontend_url] if _frontend_url else []
+if os.environ.get("ENVIRONMENT", "development") != "production":
+    _cors_origins.append("http://localhost:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        os.environ.get("FRONTEND_URL", "http://localhost:3000"),
-        "http://localhost:3000",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 # ── API Key authentication ───────────────────────────────────────
@@ -338,10 +342,10 @@ async def ingest_document(
 # ═══════════════════════════════════════════════════════════════
 
 class RAGQueryRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=10000)
     project_id: Optional[str] = None
     scope: Optional[str] = None  # "general", "project", or None (both)
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=50)
 
 
 class RAGQueryResponse(BaseModel):
@@ -632,7 +636,7 @@ class AdvisorMessage(BaseModel):
 
 
 class FileAttachment(BaseModel):
-    name: str
+    name: str = Field(max_length=500)
     type: str  # "image", "document", or "binary"
     content: str  # base64 for images/binaries, extracted text for documents
     mime_type: Optional[str] = None  # e.g., "image/png", "application/pdf"
@@ -640,16 +644,16 @@ class FileAttachment(BaseModel):
 
 
 class AdvisorRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=20000)
     conversation_history: list[AdvisorMessage] = []
     project_id: Optional[str] = None
     # Multi-file support (up to 6)
-    files: Optional[list[FileAttachment]] = None
-    urls: Optional[list[str]] = None
+    files: Optional[list[FileAttachment]] = Field(default=None, max_length=6)
+    urls: Optional[list[str]] = Field(default=None, max_length=6)
     # Optional agentic folder scan in Google Drive
     consultant_id: Optional[str] = None
     gdrive_folder_id: Optional[str] = None
-    gdrive_max_files: int = 12
+    gdrive_max_files: int = Field(default=12, ge=1, le=30)
     # HITL: analysis context when advisor is embedded in plan review or results
     analysis_context: Optional[dict] = None
     # Google Drive folder context (ephemeral, not persisted)
@@ -1881,13 +1885,13 @@ async def _cleanup_analysis_progress(project_id: str):
 
 
 class PlanRequest(BaseModel):
-    project_id: str
+    project_id: str = Field(pattern=_UUID_PATTERN)
 
 
 class ExecuteRequest(BaseModel):
-    project_id: str
+    project_id: str = Field(pattern=_UUID_PATTERN)
     agents: list[str]
-    consultant_instructions: str = ""
+    consultant_instructions: str = Field(default="", max_length=10000)
     agent_focus: dict[str, str] = {}
     model_override: Optional[str] = None
     tier: Optional[str] = None
@@ -1895,11 +1899,11 @@ class ExecuteRequest(BaseModel):
 
 
 class Round2Request(BaseModel):
-    project_id: str
+    project_id: str = Field(pattern=_UUID_PATTERN)
     agents: list[str]
-    consultant_instructions: str = ""
+    consultant_instructions: str = Field(default="", max_length=10000)
     agent_focus: dict[str, str] = {}
-    previous_findings: list[dict] = []
+    previous_findings: list[dict] = Field(default=[], max_length=200)
     model_override: Optional[str] = None
     tier: Optional[str] = None
     consultant_id: Optional[str] = None
