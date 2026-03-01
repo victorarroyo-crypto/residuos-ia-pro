@@ -107,9 +107,10 @@ export default function NewProjectPage() {
             <div>
               <label className="text-sm font-medium">Tipo de relacion</label>
               <select name="tipo" className={inputClass}>
-                <option value="retainer">Retainer (seguimiento continuo)</option>
-                <option value="auditoria">Auditoria (puntual)</option>
-                <option value="diagnostico">Diagnostico inicial</option>
+                <option value="retainer_anual">Retainer anual (seguimiento continuo)</option>
+                <option value="auditoria">Auditoria</option>
+                <option value="diagnostico_inicial">Diagnostico inicial</option>
+                <option value="optimizacion_puntual">Optimizacion puntual</option>
               </select>
             </div>
           </CardContent>
