@@ -147,7 +147,7 @@ def _extract_google_web_sources(response) -> list[dict]:
                 for seg_chunk in getattr(s, "grounding_chunk_indices", []):
                     pass  # Ya procesado arriba via grounding_chunks
     except Exception as e:
-        logger.debug("Error extrayendo web sources de Gemini: %s", e)
+        logger.warning("Error extrayendo web sources de Gemini: %s", e, exc_info=True)
     return sources
 
 
