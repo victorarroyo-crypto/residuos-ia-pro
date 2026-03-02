@@ -3697,6 +3697,297 @@ async def available_models(request: Request):
     return {"models": models, "defaults": SERVICE_DEFAULTS}
 
 
+# ─── Reclassify a project document (with full re-chunking) ──────
+class ReclassifyRequest(BaseModel):
+    doc_id: str
+    project_id: str
+    new_type: str
+    consultant_id: str
+
+    @field_validator("doc_id", "project_id", "consultant_id")
+    @classmethod
+    def must_be_uuid(cls, v: str) -> str:
+        if not re.match(_UUID_PATTERN, v, re.I):
+            raise ValueError(f"Invalid UUID: {v}")
+        return v
+
+    @field_validator("new_type")
+    @classmethod
+    def must_be_valid_doc_type(cls, v: str) -> str:
+        from pipeline.pdf_pipeline import DocType
+        valid = {dt.value for dt in DocType}
+        if v not in valid:
+            raise ValueError(f"Invalid doc type: {v}. Valid: {sorted(valid)}")
+        return v
+
+
+@app.post("/api/documents/reclassify")
+@limiter.limit("5/minute")
+async def reclassify_project_document(request: Request, payload: ReclassifyRequest):
+    """
+    Reclassify a project document: updates the type, re-chunks with the
+    strategy for the new type, re-embeds, and re-populates derived tables.
+    """
+    if service is None or rag_service is None or _config is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    from pathlib import Path as _Path
+    from pipeline.pdf_pipeline import DocType, PDFNature, PageContent
+    from pipeline.extractor import PDFNatureDetector, ContentExtractorImpl
+    from pipeline.classifier_chunker import SemanticChunker
+    from pipeline.config import EmbeddingService
+    from pipeline.metadata_extractor import MetadataExtractor
+    from pipeline.storage import StorageService, DOC_TYPE_FOLDERS
+
+    sb = await rag_service._get_supabase()
+
+    # 1. Verify project belongs to consultant
+    proj_res = await (
+        sb.table("projects")
+        .select("id")
+        .eq("id", payload.project_id)
+        .eq("consultant_id", payload.consultant_id)
+        .single()
+        .execute()
+    )
+    if not proj_res.data:
+        raise HTTPException(status_code=403, detail="Proyecto no encontrado o no autorizado")
+
+    # 2. Fetch the document
+    doc_res = await (
+        sb.table("project_documents")
+        .select("id, titulo, tipo, storage_path, naturaleza_pdf")
+        .eq("id", payload.doc_id)
+        .eq("project_id", payload.project_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    doc = doc_res.data
+    old_type = doc.get("tipo")
+    old_storage_path = doc.get("storage_path")
+    new_doc_type = DocType(payload.new_type)
+
+    if old_type == payload.new_type:
+        return {"ok": True, "message": "El tipo ya es el solicitado", "num_chunks": 0}
+
+    if not old_storage_path:
+        # No file in storage — just update the type label
+        await (
+            sb.table("project_documents")
+            .update({"tipo": payload.new_type})
+            .eq("id", payload.doc_id)
+            .execute()
+        )
+        return {"ok": True, "message": "Tipo actualizado (sin re-chunking, archivo no disponible)", "num_chunks": 0}
+
+    # 3. Download file from Storage
+    try:
+        file_bytes = await sb.storage.from_("documentos").download(old_storage_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error descargando archivo: {e}")
+
+    # 4. Extract pages depending on file type
+    ext = _Path(old_storage_path).suffix.lower().lstrip(".")
+    filename = doc.get("titulo") or _Path(old_storage_path).name
+    pages: list[PageContent] = []
+
+    if ext == "pdf":
+        detector = PDFNatureDetector()
+        extractor_impl = ContentExtractorImpl(_config)
+        nature = await detector.detect(file_bytes)
+        if nature == PDFNature.ENCRYPTED:
+            file_bytes_unlocked, ok = await extractor_impl.try_unlock(file_bytes)
+            if ok:
+                file_bytes = file_bytes_unlocked
+                nature = await detector.detect(file_bytes)
+        extracted_pages, _, _ = await extractor_impl.extract(file_bytes, nature)
+        pages = extracted_pages
+    elif ext in ("docx", "doc", "txt", "html", "htm", "md"):
+        from pipeline.text_processor import TEXT_EXTRACTORS
+        extractor_fn = TEXT_EXTRACTORS.get(ext)
+        if not extractor_fn:
+            raise HTTPException(status_code=400, detail=f"No hay extractor para .{ext}")
+        text = extractor_fn(file_bytes)
+        pages = [PageContent(
+            page_num=1, text=text, tables=[], images=[],
+            nature=PDFNature.DIGITAL, confidence=1.0,
+        )]
+    else:
+        # Excel/CSV — just update the type, no re-chunking
+        await (
+            sb.table("project_documents")
+            .update({"tipo": payload.new_type})
+            .eq("id", payload.doc_id)
+            .execute()
+        )
+        return {"ok": True, "message": "Tipo actualizado (Excel/CSV sin re-chunking)", "num_chunks": 0}
+
+    # 5. Re-chunk with new strategy
+    chunker = SemanticChunker(_config)
+    chunks = await chunker.chunk(
+        pages=pages, doc_type=new_doc_type,
+        doc_id=payload.doc_id, filename=filename,
+    )
+
+    # 6. Re-embed
+    embedder = EmbeddingService(_config)
+    chunks = await embedder.embed_all(chunks)
+
+    # 7. Re-extract metadata
+    metadata_ex = MetadataExtractor(_config)
+    metadata = await metadata_ex.extract(pages, new_doc_type, payload.project_id, filename=filename)
+
+    # 8. Delete old derived data
+    await sb.table("compliance_alerts").delete().eq("doc_id", payload.doc_id).execute()
+    await sb.table("invoice_lines").delete().eq("doc_id", payload.doc_id).execute()
+    await sb.table("waste_inventory").delete().eq("fuente_doc_id", payload.doc_id).execute()
+
+    # 9. Delete old chunks
+    await sb.table("project_chunks").delete().eq("document_id", payload.doc_id).execute()
+
+    # 10. Save new chunks
+    storage_svc = StorageService(_config)
+    await storage_svc.save_chunks_to_supabase(
+        chunks, payload.doc_id, is_knowledge=False, project_id=payload.project_id,
+    )
+
+    # 11. Move file in Storage if folder changed
+    old_folder = DOC_TYPE_FOLDERS.get(DocType(old_type), "_Sin_Clasificar") if old_type else "_Sin_Clasificar"
+    new_folder = DOC_TYPE_FOLDERS.get(new_doc_type, "_Sin_Clasificar")
+    new_storage_path = old_storage_path
+
+    if old_folder != new_folder:
+        # Build new path: replace folder in the path
+        path_parts = old_storage_path.split("/")
+        if len(path_parts) >= 3:
+            path_parts[-2] = new_folder
+            new_storage_path = "/".join(path_parts)
+
+            try:
+                # Upload to new location
+                ext_for_mime = _Path(old_storage_path).suffix.lower().lstrip(".")
+                mime_map = {
+                    "pdf": "application/pdf",
+                    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                }
+                content_type = mime_map.get(ext_for_mime, "application/octet-stream")
+                await sb.storage.from_("documentos").upload(
+                    new_storage_path, file_bytes,
+                    {"content-type": content_type, "upsert": "true"},
+                )
+                # Remove old file
+                await sb.storage.from_("documentos").remove([old_storage_path])
+            except Exception as e:
+                logger.warning("Error moviendo archivo en Storage: %s — se mantiene en ruta original", e)
+                new_storage_path = old_storage_path
+
+    # 12. Update project_documents
+    update_data = {
+        "tipo": payload.new_type,
+        "total_chunks": len(chunks),
+        "metadata": metadata,
+        "storage_path": new_storage_path,
+    }
+    await sb.table("project_documents").update(update_data).eq("id", payload.doc_id).execute()
+
+    # 13. Re-populate structured metadata tables
+    from pipeline.pdf_pipeline import ProcessedDocument
+    if new_doc_type in (DocType.CONTRATO, DocType.FACTURA, DocType.REGISTRO):
+        dummy_doc = ProcessedDocument(
+            doc_id=payload.doc_id,
+            client_id=payload.project_id,
+            original_filename=filename,
+            doc_type=new_doc_type,
+            nature=PDFNature.DIGITAL,
+            total_pages=len(pages),
+            chunks=chunks,
+            tables_found=0,
+            metadata=metadata,
+        )
+        await storage_svc._save_structured_metadata(sb, dummy_doc)
+
+    logger.info(
+        "Reclassified doc %s: %s → %s (%d chunks)",
+        payload.doc_id, old_type, payload.new_type, len(chunks),
+    )
+    return {
+        "ok": True,
+        "old_type": old_type,
+        "new_type": payload.new_type,
+        "num_chunks": len(chunks),
+        "storage_path": new_storage_path,
+    }
+
+
+# ─── Get signed URL for viewing a project document ─────────────
+@app.get("/api/documents/{doc_id}/url")
+@limiter.limit("30/minute")
+async def get_document_url(
+    request: Request,
+    doc_id: str,
+    project_id: str = Query(...),
+    consultant_id: str = Query(...),
+):
+    """Generate a temporary signed URL (1h) to view/download a project document."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    if not re.match(_UUID_PATTERN, doc_id, re.I):
+        raise HTTPException(status_code=400, detail="doc_id invalido")
+    if not re.match(_UUID_PATTERN, project_id, re.I):
+        raise HTTPException(status_code=400, detail="project_id invalido")
+    if not re.match(_UUID_PATTERN, consultant_id, re.I):
+        raise HTTPException(status_code=400, detail="consultant_id invalido")
+
+    sb = await rag_service._get_supabase()
+
+    # Verify project belongs to consultant
+    proj_res = await (
+        sb.table("projects")
+        .select("id")
+        .eq("id", project_id)
+        .eq("consultant_id", consultant_id)
+        .single()
+        .execute()
+    )
+    if not proj_res.data:
+        raise HTTPException(status_code=403, detail="Proyecto no encontrado o no autorizado")
+
+    # Fetch document
+    doc_res = await (
+        sb.table("project_documents")
+        .select("storage_path")
+        .eq("id", doc_id)
+        .eq("project_id", project_id)
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    storage_path = doc_res.data.get("storage_path")
+    if not storage_path:
+        raise HTTPException(status_code=404, detail="Este documento no tiene archivo almacenado")
+
+    # Generate signed URL (1 hour)
+    try:
+        result = await sb.storage.from_("documentos").create_signed_url(
+            storage_path, 3600
+        )
+        signed_url = result.get("signedURL") or result.get("signedUrl") or ""
+        if not signed_url:
+            raise HTTPException(status_code=500, detail="No se pudo generar URL firmada")
+        return {"url": signed_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando URL: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
 

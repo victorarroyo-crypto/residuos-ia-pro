@@ -23,6 +23,8 @@ import {
   ChevronDown,
   ChevronRight,
   Trash2,
+  ExternalLink,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -194,6 +196,9 @@ export default function ProjectDetailPage({
   // Document filter & delete
   const [docTypeFilter, setDocTypeFilter] = useState("todos");
   const [deletingDoc, setDeletingDoc] = useState<string | null>(null);
+  const [reclassifyingDoc, setReclassifyingDoc] = useState<string | null>(null);
+  const [editingTypeDoc, setEditingTypeDoc] = useState<string | null>(null);
+  const [openingDoc, setOpeningDoc] = useState<string | null>(null);
 
   // Alert filters
   const [alertSeverityFilter, setAlertSeverityFilter] = useState("todos");
@@ -309,6 +314,49 @@ export default function ProjectDetailPage({
       // Silently fail
     } finally {
       setDeletingDoc(null);
+    }
+  }
+
+  async function handleReclassify(docId: string, newType: string) {
+    setReclassifyingDoc(docId);
+    setEditingTypeDoc(null);
+    try {
+      const res = await fetch(`/api/projects/${id}/documents/${docId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_type: newType }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === docId
+              ? { ...d, tipo: newType, total_chunks: data.num_chunks || d.total_chunks }
+              : d
+          )
+        );
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setReclassifyingDoc(null);
+    }
+  }
+
+  async function handleOpenDoc(docId: string) {
+    setOpeningDoc(docId);
+    try {
+      const res = await fetch(`/api/projects/${id}/documents/${docId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          window.open(data.url, "_blank");
+        }
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setOpeningDoc(null);
     }
   }
 
@@ -1100,9 +1148,39 @@ export default function ProjectDetailPage({
                         {doc.titulo}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline">
-                          {doc.tipo ? projectDocTypeLabels[doc.tipo] ?? doc.tipo : "—"}
-                        </Badge>
+                        {editingTypeDoc === doc.id ? (
+                          <select
+                            className="rounded-md border bg-background px-2 py-1 text-xs outline-none"
+                            defaultValue={doc.tipo || "desconocido"}
+                            autoFocus
+                            onChange={(e) => {
+                              if (e.target.value !== doc.tipo) {
+                                handleReclassify(doc.id, e.target.value);
+                              } else {
+                                setEditingTypeDoc(null);
+                              }
+                            }}
+                            onBlur={() => setEditingTypeDoc(null)}
+                          >
+                            {Object.entries(projectDocTypeLabels).map(([key, label]) => (
+                              <option key={key} value={key}>{label}</option>
+                            ))}
+                          </select>
+                        ) : reclassifyingDoc === doc.id ? (
+                          <Badge variant="outline" className="gap-1">
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                            Reclasificando...
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="cursor-pointer hover:bg-muted"
+                            onClick={() => setEditingTypeDoc(doc.id)}
+                            title="Click para reclasificar"
+                          >
+                            {doc.tipo ? projectDocTypeLabels[doc.tipo] ?? doc.tipo : "—"}
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge
@@ -1124,20 +1202,36 @@ export default function ProjectDetailPage({
                       <TableCell className="text-right">{doc.total_chunks ?? "—"}</TableCell>
                       <TableCell className="text-sm">{doc.fecha_documento ?? "—"}</TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteDoc(doc.id)}
-                          disabled={deletingDoc === doc.id}
-                          className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                          title="Eliminar documento y chunks"
-                        >
-                          {deletingDoc === doc.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-4 w-4" />
-                          )}
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenDoc(doc.id)}
+                            disabled={openingDoc === doc.id}
+                            className="text-vandarum-teal hover:text-vandarum-teal/80 hover:bg-teal-50"
+                            title="Abrir documento"
+                          >
+                            {openingDoc === doc.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ExternalLink className="h-4 w-4" />
+                            )}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteDoc(doc.id)}
+                            disabled={deletingDoc === doc.id}
+                            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                            title="Eliminar documento y chunks"
+                          >
+                            {deletingDoc === doc.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
