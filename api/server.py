@@ -7,6 +7,7 @@ import gc
 import ipaddress
 import json
 import os
+import re
 import socket
 import sys
 import time
