@@ -1,7 +1,91 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
+import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const maxDuration = 120;
+
+// ─── GET: Signed URL to view/download the document ───────────────
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ projectId: string; docId: string }> }
+) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
+
+  const { projectId, docId } = await params;
+
+  try {
+    const res = await fetch(
+      `${PIPELINE_URL}/api/documents/${docId}/url?project_id=${projectId}&consultant_id=${user.id}`,
+      { headers: pipelineHeaders() }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Error" }));
+      return NextResponse.json(
+        { error: err.detail || "Error obteniendo URL" },
+        { status: res.status }
+      );
+    }
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: detail }, { status: 502 });
+  }
+}
+
+// ─── PATCH: Reclassify document (proxy to Python) ────────────────
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ projectId: string; docId: string }> }
+) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
+
+  const { projectId, docId } = await params;
+  const body = await request.json();
+  const newType = body.new_type;
+
+  if (!newType) {
+    return NextResponse.json({ error: "new_type es requerido" }, { status: 400 });
+  }
+
+  try {
+    const res = await fetch(`${PIPELINE_URL}/api/documents/reclassify`, {
+      method: "POST",
+      headers: pipelineHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        doc_id: docId,
+        project_id: projectId,
+        new_type: newType,
+        consultant_id: user.id,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Error" }));
+      return NextResponse.json(
+        { error: err.detail || "Error reclasificando" },
+        { status: res.status }
+      );
+    }
+
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: detail }, { status: 502 });
+  }
+}
+
+// ─── DELETE: Remove document and all dependencies ────────────────
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ projectId: string; docId: string }> }
