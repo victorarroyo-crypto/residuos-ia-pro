@@ -25,7 +25,7 @@ declare global {
         ViewId: { FOLDERS: string };
         DocsView: new (viewId: string) => DocsView;
         Action: { PICKED: string; CANCEL: string };
-        Feature: { MINE_ONLY: string };
+        Feature: { MINE_ONLY: string; SUPPORT_DRIVES: string };
       };
     };
   }
@@ -45,6 +45,8 @@ declare global {
     setSelectFolderEnabled(enabled: boolean): DocsView;
     setIncludeFolders(include: boolean): DocsView;
     setMimeTypes(mimeTypes: string): DocsView;
+    setEnableDrives(enable: boolean): DocsView;
+    setOwnedByMe(owned: boolean): DocsView;
   }
 
   interface PickerResponse {
@@ -112,20 +114,41 @@ export function GoogleDrivePicker({
       // client_id format: "123456789.apps.googleusercontent.com"
       const appId = client_id?.split("-")[0]?.split(".")[0] || "";
 
-      // 4. Build and show the Picker
-      const view = new window.google.picker.DocsView(
+      // 4. Build three folder views: My Drive, Shared with me, Shared Drives
+      const folderMime = "application/vnd.google-apps.folder";
+
+      const myDriveView = new window.google.picker.DocsView(
         window.google.picker.ViewId.FOLDERS
       )
         .setSelectFolderEnabled(true)
         .setIncludeFolders(true)
-        .setMimeTypes("application/vnd.google-apps.folder");
+        .setMimeTypes(folderMime);
 
+      const sharedWithMeView = new window.google.picker.DocsView(
+        window.google.picker.ViewId.FOLDERS
+      )
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true)
+        .setMimeTypes(folderMime)
+        .setOwnedByMe(false);
+
+      const sharedDrivesView = new window.google.picker.DocsView(
+        window.google.picker.ViewId.FOLDERS
+      )
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true)
+        .setMimeTypes(folderMime)
+        .setEnableDrives(true);
+
+      // 5. Build and show the Picker
       const picker = new window.google.picker.PickerBuilder()
         .setOAuthToken(access_token)
         .setAppId(appId)
-        .addView(view)
+        .addView(myDriveView)
+        .addView(sharedWithMeView)
+        .addView(sharedDrivesView)
+        .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
         .setTitle("Selecciona la carpeta raiz para la estructura de residuos")
-        .enableFeature(window.google.picker.Feature.MINE_ONLY)
         .setCallback((data: PickerResponse) => {
           if (data.action === window.google.picker.Action.PICKED && data.docs?.[0]) {
             const folder = data.docs[0];
