@@ -47,6 +47,7 @@ import type {
   Project,
   WasteInventoryItem,
   ProjectDocument,
+  ProjectDocType,
   ComplianceAlert,
   SavingsOpportunity,
   Contract,
@@ -317,7 +318,7 @@ export default function ProjectDetailPage({
     }
   }
 
-  async function handleReclassify(docId: string, newType: string) {
+  async function handleReclassify(docId: string, newType: ProjectDocType) {
     setReclassifyingDoc(docId);
     setEditingTypeDoc(null);
     try {
@@ -1155,7 +1156,7 @@ export default function ProjectDetailPage({
                             autoFocus
                             onChange={(e) => {
                               if (e.target.value !== doc.tipo) {
-                                handleReclassify(doc.id, e.target.value);
+                                handleReclassify(doc.id, e.target.value as ProjectDocType);
                               } else {
                                 setEditingTypeDoc(null);
                               }
