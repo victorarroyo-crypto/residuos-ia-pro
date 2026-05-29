@@ -1050,7 +1050,29 @@ export default function KnowledgeBasePage() {
     try {
       const res = await fetch(`/api/gdrive/sync-status?consultant_id=${id}`);
       if (res.ok) {
-        setSyncStatus(await res.json());
+        const data: SyncStatus = await res.json();
+        setSyncStatus(data);
+
+        // Auto-resume polling if a sync is running (started by the 6h auto-sync,
+        // from another tab, or before this page was loaded). Without this the
+        // user has to click "Sincronizar ahora" to see progress, which is
+        // misleading when a sync is already in flight.
+        if (data.is_syncing && !syncing) {
+          setSyncing(true);
+          const running = data.recent_syncs.find((s) => s.status === "running");
+          if (running) {
+            const processed =
+              running.files_ingested + running.files_skipped + running.files_failed;
+            const total = running.total_files_found || 0;
+            setSyncResult({
+              success: true,
+              message: total > 0
+                ? `Sync en curso: ${processed} de ${total} archivos procesados`
+                : "Sync en curso: escaneando Google Drive...",
+            });
+          }
+          pollUntilComplete();
+        }
       }
     } catch {
       // API not available
@@ -1127,7 +1149,7 @@ export default function KnowledgeBasePage() {
 
   function pollUntilComplete() {
     const POLL_INTERVAL = 5000; // 5 seconds
-    const MAX_POLLS = 120; // 10 minutes max
+    const MAX_POLLS = 17280; // 24h safety cap — initial syncs on large Drives can take hours
     let polls = 0;
 
     const interval = setInterval(async () => {
@@ -1371,6 +1393,69 @@ export default function KnowledgeBasePage() {
           </button>
         </div>
       )}
+
+      {/* Persistent sync progress card — visible whenever a sync is running,
+          regardless of whether it was started from this tab or by the 6h
+          auto-sync. Reads directly from gdrive_sync_log via syncStatus. */}
+      {(() => {
+        const running = syncStatus?.recent_syncs?.find((s) => s.status === "running");
+        if (!running) return null;
+        const processed =
+          running.files_ingested + running.files_skipped + running.files_failed;
+        const total = running.total_files_found || 0;
+        const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+        const elapsedMs = Date.now() - new Date(running.started_at).getTime();
+        const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60000));
+        const etaMin =
+          total > 0 && processed > 0
+            ? Math.max(
+                1,
+                Math.round((elapsedMs / processed) * (total - processed) / 60000),
+              )
+            : null;
+        return (
+          <Card className="border-vandarum-teal/40 bg-vandarum-teal/5">
+            <CardContent className="py-4 space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
+                  <span className="font-medium text-sm">Sincronizacion en curso</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Iniciada hace {elapsedMin} min
+                  {etaMin !== null ? ` · ~${etaMin} min restantes` : ""}
+                </span>
+              </div>
+              {total > 0 ? (
+                <>
+                  <div className="w-full bg-vandarum-teal/15 rounded-full h-2">
+                    <div
+                      className="bg-vandarum-teal h-2 rounded-full transition-all duration-500"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                    <span>{processed} de {total} ({pct}%)</span>
+                    <span className="text-vandarum-green">
+                      {running.files_ingested} nuevos
+                    </span>
+                    <span>{running.files_skipped} ya indexados</span>
+                    {running.files_failed > 0 && (
+                      <span className="text-destructive">
+                        {running.files_failed} errores
+                      </span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Escaneando carpetas de Google Drive...
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Sync result toast */}
       {syncResult && (
@@ -2720,4 +2805,5 @@ function SearchTab() {
     </Card>
   );
 }
+
 
