@@ -241,7 +241,9 @@ class GoogleDriveService:
         if parent_id:
             metadata["parents"] = [parent_id]
 
-        result = self.service.files().create(body=metadata, fields="id").execute()
+        result = self.service.files().create(
+            body=metadata, fields="id", supportsAllDrives=True,
+        ).execute()
         folder_id = result["id"]
         self._created_count += 1
         logger.debug(f"Carpeta creada [{self._created_count}]: {name}")
@@ -265,6 +267,9 @@ class GoogleDriveService:
                     fields="nextPageToken, files(id, name, parents)",
                     pageSize=1000,
                     pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    corpora="allDrives",
                 )
                 .execute()
             )
@@ -293,7 +298,14 @@ class GoogleDriveService:
         if parent_id:
             q += f" and '{parent_id}' in parents"
 
-        result = self.service.files().list(q=q, fields="files(id)", pageSize=1).execute()
+        result = self.service.files().list(
+            q=q,
+            fields="files(id)",
+            pageSize=1,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora="allDrives",
+        ).execute()
         files = result.get("files", [])
         if files:
             self._folder_cache[(parent_id, name)] = files[0]["id"]
@@ -523,7 +535,12 @@ class GoogleDriveService:
         media = MediaInMemoryUpload(file_bytes, mimetype=mime_type)
         result = (
             self.service.files()
-            .create(body=metadata, media_body=media, fields="id")
+            .create(
+                body=metadata,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True,
+            )
             .execute()
         )
         file_id = result["id"]
@@ -557,6 +574,9 @@ class GoogleDriveService:
                         pageSize=100,
                         orderBy="folder,name",
                         pageToken=page_token or None,
+                        supportsAllDrives=True,
+                        includeItemsFromAllDrives=True,
+                        corpora="allDrives",
                     )
                     .execute()
                 )
@@ -675,7 +695,11 @@ class GoogleDriveService:
             try:
                 meta = (
                     self.service.files()
-                    .get(fileId=file_id, fields="name, mimeType, size")
+                    .get(
+                        fileId=file_id,
+                        fields="name, mimeType, size",
+                        supportsAllDrives=True,
+                    )
                     .execute()
                 )
                 break
@@ -701,7 +725,9 @@ class GoogleDriveService:
         # Download content (with retry)
         for attempt, delay in enumerate(_RETRY_DELAYS, 1):
             try:
-                request = self.service.files().get_media(fileId=file_id)
+                request = self.service.files().get_media(
+                    fileId=file_id, supportsAllDrives=True,
+                )
                 buffer = io.BytesIO()
                 downloader = MediaIoBaseDownload(buffer, request)
                 done = False
