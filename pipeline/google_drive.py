@@ -269,7 +269,6 @@ class GoogleDriveService:
                     pageToken=page_token,
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
-                    corpora="allDrives",
                 )
                 .execute()
             )
@@ -304,7 +303,6 @@ class GoogleDriveService:
             pageSize=1,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
-            corpora="allDrives",
         ).execute()
         files = result.get("files", [])
         if files:
@@ -576,7 +574,6 @@ class GoogleDriveService:
                         pageToken=page_token or None,
                         supportsAllDrives=True,
                         includeItemsFromAllDrives=True,
-                        corpora="allDrives",
                     )
                     .execute()
                 )
