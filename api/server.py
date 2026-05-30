@@ -2899,6 +2899,30 @@ async def gdrive_sync(request: Request, payload: GDriveSyncRequest):
     }
 
 
+def _suggest_action(error_msg: str) -> str:
+    """Infer a user-friendly suggested action from an error message."""
+    if not error_msg:
+        return "Error desconocido. Mira el detalle del error y reintenta."
+    msg = error_msg.lower()
+    if "encrypted" in msg or "password" in msg:
+        return "PDF protegido con contraseña. Quita la protección en Drive y vuelve a sincronizar."
+    if "401" in msg or "unauthorized" in msg or "invalid_grant" in msg:
+        return "Token de Drive expirado o revocado. Reconecta Google Drive desde Ajustes."
+    if "403" in msg or "forbidden" in msg:
+        return "Sin permisos sobre el archivo. Verifica que tienes acceso de lectura."
+    if "404" in msg:
+        return "Archivo no encontrado (puede haber sido movido/borrado en Drive)."
+    if "ocr" in msg or "vision" in msg:
+        return "OCR falló. Si el PDF es escaneado, prueba mejorar la resolución o convertir a PDF digital."
+    if "timeout" in msg or "deadline exceeded" in msg:
+        return "Timeout. El archivo puede ser muy grande; reintenta el sync."
+    if "embedding" in msg:
+        return "Fallo en generación de embeddings. Probable problema con OpenAI API. Reintenta."
+    if "anthropic" in msg:
+        return "Fallo del clasificador. Probable problema con Anthropic API. Reintenta."
+    return "Error desconocido. Mira el detalle del error y reintenta."
+
+
 async def _run_sync_job(
     sync_id: str,
     consultant_id: str,
@@ -2908,6 +2932,18 @@ async def _run_sync_job(
 ) -> None:
     """Background task that does the actual sync work."""
     from datetime import datetime, timezone
+
+    start_ts = time.time()
+
+    # Shared progress state for rich details JSONB (new schema, object form)
+    progress_state: dict = {
+        "phase": "scanning",
+        "current_file": None,
+        "current_path": None,
+        "recent": [],   # last 10, newest first
+        "errors": [],   # all errors so far, cap at 100
+        "rate_per_min": 0,
+    }
 
     async def _update_sync_progress(**fields: object) -> None:
         """Helper to update gdrive_sync_log with current progress."""
@@ -2921,16 +2957,71 @@ async def _run_sync_job(
         except Exception:
             logger.warning("Sync %s: could not update progress", sync_id)
 
+    def _compute_rate(processed_count: int) -> float:
+        """processed files per minute since start_ts (rounded to 1 decimal)."""
+        elapsed_min = max((time.time() - start_ts) / 60.0, 1e-6)
+        return round(processed_count / elapsed_min, 2)
+
+    def _snapshot_details(
+        phase: str | None = None,
+        current_file: str | None = None,
+        current_path: str | None = None,
+        processed_count: int | None = None,
+    ) -> dict:
+        """Return a shallow copy of progress_state with optional overrides applied."""
+        if phase is not None:
+            progress_state["phase"] = phase
+        if current_file is not None or phase in ("scanning", "setup_folders", "done"):
+            progress_state["current_file"] = current_file
+        if current_path is not None or phase in ("scanning", "setup_folders", "done"):
+            progress_state["current_path"] = current_path
+        if processed_count is not None:
+            progress_state["rate_per_min"] = _compute_rate(processed_count)
+        return {
+            "phase": progress_state["phase"],
+            "current_file": progress_state["current_file"],
+            "current_path": progress_state["current_path"],
+            "recent": list(progress_state["recent"]),
+            "errors": list(progress_state["errors"]),
+            "rate_per_min": progress_state["rate_per_min"],
+        }
+
     try:
+        # 0. Determine initial phase based on whether folder_mapping is set up.
+        try:
+            _cg_row = await (
+                sb.table("consultant_gdrive")
+                .select("folder_mapping")
+                .eq("consultant_id", consultant_id)
+                .limit(1)
+                .execute()
+            )
+            _folder_mapping = (_cg_row.data or [{}])[0].get("folder_mapping") if _cg_row.data else None
+        except Exception:
+            _folder_mapping = None
+
+        if not _folder_mapping:
+            await _update_sync_progress(details=_snapshot_details(phase="setup_folders"))
+        else:
+            await _update_sync_progress(details=_snapshot_details(phase="scanning"))
+
         # 1. Recursively list all files in Drive (run in thread to avoid blocking event loop)
         logger.info("Sync %s: _run_sync_job entered, folder=%s, service=%s", sync_id, folder_id, service is not None)
         logger.info("Sync %s: scanning Drive folder %s ...", sync_id, folder_id)
+
+        # Mark phase=scanning right before the listing call
+        await _update_sync_progress(details=_snapshot_details(phase="scanning"))
+
         all_files = await asyncio.to_thread(gd.list_all_files_recursive, folder_id)
         total_found = len(all_files)
         logger.info("Sync %s: found %d files in Drive", sync_id, total_found)
 
-        # Update total_files_found immediately so the UI can show scan results
-        await _update_sync_progress(total_files_found=total_found)
+        # Update total_files_found immediately so the UI can show scan results.
+        # Switch to phase=ingesting now that the scan is done.
+        await _update_sync_progress(
+            total_files_found=total_found,
+            details=_snapshot_details(phase="ingesting"),
+        )
 
         # 2. Check which are already indexed (by drive_file_id OR titulo)
         all_drive_ids = [f["id"] for f in all_files]
@@ -3035,10 +3126,23 @@ async def _run_sync_job(
         _sync_lock = asyncio.Lock()
         _sem = asyncio.Semaphore(1)  # sequential to avoid memory crash (free(): invalid size)
 
+        def _push_recent(entry: dict) -> None:
+            """Insert entry at the head of recent[] and cap at 10."""
+            progress_state["recent"].insert(0, entry)
+            if len(progress_state["recent"]) > 10:
+                del progress_state["recent"][10:]
+
+        def _push_error(entry: dict) -> None:
+            """Append to errors[] and cap at 100."""
+            if len(progress_state["errors"]) >= 100:
+                return
+            progress_state["errors"].append(entry)
+
         async def _ingest_one(file_info: dict) -> None:
             nonlocal ingested, failed, skipped
             fname = file_info["name"]
             fpath = file_info.get("path", "")
+            ts_iso = datetime.now(timezone.utc).isoformat()
             try:
                 file_bytes, filename, mime_type = await asyncio.to_thread(
                     gd.download_file, file_info["id"]
@@ -3048,14 +3152,32 @@ async def _run_sync_job(
                     async with _sync_lock:
                         details.append({"file": fname, "status": "skipped", "reason": "empty file"})
                         skipped += 1
-                        await _update_sync_progress(files_skipped=skipped)
+                        _push_recent({"file": fname, "path": fpath, "status": "skipped", "ts_iso": ts_iso, "reason": "empty file"})
+                        await _update_sync_progress(
+                            files_skipped=skipped,
+                            details=_snapshot_details(
+                                phase="ingesting",
+                                current_file=fname,
+                                current_path=fpath,
+                                processed_count=ingested + failed + skipped,
+                            ),
+                        )
                     return
 
                 if len(file_bytes) > 100 * 1024 * 1024:
                     async with _sync_lock:
                         details.append({"file": fname, "status": "skipped", "reason": "too large (>100MB)"})
                         skipped += 1
-                        await _update_sync_progress(files_skipped=skipped)
+                        _push_recent({"file": fname, "path": fpath, "status": "skipped", "ts_iso": ts_iso, "reason": "too large (>100MB)"})
+                        await _update_sync_progress(
+                            files_skipped=skipped,
+                            details=_snapshot_details(
+                                phase="ingesting",
+                                current_file=fname,
+                                current_path=fpath,
+                                processed_count=ingested + failed + skipped,
+                            ),
+                        )
                     return
 
                 result = await asyncio.wait_for(
@@ -3066,9 +3188,20 @@ async def _run_sync_job(
                 if not result.success:
                     async with _sync_lock:
                         failed += 1
-                        details.append({"file": fname, "path": fpath, "status": "error", "error": result.error or "Ingestion failed"})
+                        err_msg = result.error or "Ingestion failed"
+                        details.append({"file": fname, "path": fpath, "status": "error", "error": err_msg})
                         logger.warning("Sync %s: ingestion failed for %s: %s", sync_id, fname, result.error)
-                        await _update_sync_progress(files_failed=failed)
+                        _push_recent({"file": fname, "path": fpath, "status": "error", "ts_iso": ts_iso, "error": err_msg})
+                        _push_error({"file": fname, "path": fpath, "error": err_msg, "suggested_action": _suggest_action(err_msg)})
+                        await _update_sync_progress(
+                            files_failed=failed,
+                            details=_snapshot_details(
+                                phase="ingesting",
+                                current_file=fname,
+                                current_path=fpath,
+                                processed_count=ingested + failed + skipped,
+                            ),
+                        )
                     return
 
                 doc_id = result.supabase_doc_id or result.doc_id
@@ -3107,22 +3240,53 @@ async def _run_sync_job(
                     ingested += 1
                     details.append({"file": fname, "path": fpath, "status": "ingested", "document_id": doc_id, "chunks": result.num_chunks})
                     logger.info("Sync %s: ingested %s (%d chunks)", sync_id, fname, result.num_chunks or 0)
-                    await _update_sync_progress(files_ingested=ingested)
+                    _push_recent({"file": fname, "path": fpath, "status": "ingested", "ts_iso": ts_iso})
+                    await _update_sync_progress(
+                        files_ingested=ingested,
+                        details=_snapshot_details(
+                            phase="ingesting",
+                            current_file=fname,
+                            current_path=fpath,
+                            processed_count=ingested + failed + skipped,
+                        ),
+                    )
                 gc.collect()
 
             except (asyncio.TimeoutError, TimeoutError):
                 async with _sync_lock:
                     failed += 1
-                    details.append({"file": fname, "path": fpath, "status": "error", "error": "Timeout: >5 min"})
+                    err_msg = "Timeout: >5 min"
+                    details.append({"file": fname, "path": fpath, "status": "error", "error": err_msg})
                     logger.warning("Sync %s: TIMEOUT processing %s (>5 min), skipping", sync_id, fname)
-                    await _update_sync_progress(files_failed=failed)
+                    _push_recent({"file": fname, "path": fpath, "status": "error", "ts_iso": ts_iso, "error": err_msg})
+                    _push_error({"file": fname, "path": fpath, "error": err_msg, "suggested_action": _suggest_action(err_msg)})
+                    await _update_sync_progress(
+                        files_failed=failed,
+                        details=_snapshot_details(
+                            phase="ingesting",
+                            current_file=fname,
+                            current_path=fpath,
+                            processed_count=ingested + failed + skipped,
+                        ),
+                    )
                 gc.collect()
             except Exception as e:
                 async with _sync_lock:
                     failed += 1
-                    details.append({"file": fname, "path": fpath, "status": "error", "error": str(e)[:200]})
+                    err_msg = str(e)[:200]
+                    details.append({"file": fname, "path": fpath, "status": "error", "error": err_msg})
                     logger.warning("Sync %s: failed %s: %s", sync_id, fname, e)
-                    await _update_sync_progress(files_failed=failed)
+                    _push_recent({"file": fname, "path": fpath, "status": "error", "ts_iso": ts_iso, "error": err_msg})
+                    _push_error({"file": fname, "path": fpath, "error": err_msg, "suggested_action": _suggest_action(err_msg)})
+                    await _update_sync_progress(
+                        files_failed=failed,
+                        details=_snapshot_details(
+                            phase="ingesting",
+                            current_file=fname,
+                            current_path=fpath,
+                            processed_count=ingested + failed + skipped,
+                        ),
+                    )
                 gc.collect()
 
         # Process files in concurrent batches
@@ -3135,6 +3299,10 @@ async def _run_sync_job(
 
         # 4. Final update of sync log
         now_iso = datetime.now(timezone.utc).isoformat()
+        final_details = _snapshot_details(
+            phase="done",
+            processed_count=ingested + failed + skipped,
+        )
         await (
             sb.table("gdrive_sync_log")
             .update({
@@ -3144,7 +3312,7 @@ async def _run_sync_job(
                 "files_ingested": ingested,
                 "files_skipped": skipped,
                 "files_failed": failed,
-                "details": details,
+                "details": final_details,
             })
             .eq("id", sync_id)
             .execute()
