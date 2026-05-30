@@ -28,6 +28,8 @@ import {
   File,
   RotateCcw,
   Heart,
+  Lightbulb,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,6 +78,85 @@ interface SyncDetail {
   chunks?: number;
 }
 
+type SyncPhase = "scanning" | "setup_folders" | "ingesting" | "done";
+
+interface RunningSyncDetails {
+  phase: SyncPhase;
+  current_file: string | null;
+  current_path: string | null;
+  recent: Array<{
+    file: string;
+    path: string;
+    status: "ingested" | "skipped" | "error";
+    ts_iso: string;
+    reason?: string;
+    error?: string;
+  }>;
+  errors: Array<{
+    file: string;
+    path: string;
+    error: string;
+    suggested_action: string;
+  }>;
+  rate_per_min: number;
+}
+
+type SyncDetailsValue = SyncDetail[] | RunningSyncDetails | string | null | undefined;
+
+// Discriminator: returns RunningSyncDetails if the value matches the new
+// structured shape (object with `phase`), or null otherwise.
+function asRunningDetails(raw: SyncDetailsValue): RunningSyncDetails | null {
+  if (!raw) return null;
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    "phase" in (value as Record<string, unknown>)
+  ) {
+    return value as RunningSyncDetails;
+  }
+  return null;
+}
+
+// Parses the legacy array shape (per-file outcomes). Returns [] for the
+// new structured shape so callers that only care about completed-sync
+// detail lists keep working.
+function asLegacyDetails(raw: SyncDetailsValue): SyncDetail[] {
+  if (!raw) return [];
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(value)) return value as SyncDetail[];
+  return [];
+}
+
+const SYNC_PHASE_LABELS: Record<SyncPhase, string> = {
+  scanning: "Escaneando carpetas",
+  setup_folders: "Creando estructura",
+  ingesting: "Indexando archivos",
+  done: "Finalizando",
+};
+
+const SYNC_PHASE_BADGE_CLASS: Record<SyncPhase, string> = {
+  scanning: "bg-blue-100 text-blue-800 border-blue-200",
+  setup_folders: "bg-purple-100 text-purple-800 border-purple-200",
+  ingesting: "bg-vandarum-teal/15 text-vandarum-teal border-vandarum-teal/30",
+  done: "bg-green-100 text-green-800 border-green-200",
+};
+
 interface SyncLog {
   id: string;
   status: "running" | "completed" | "error";
@@ -86,7 +167,7 @@ interface SyncLog {
   files_skipped: number;
   files_failed: number;
   error_message: string | null;
-  details: SyncDetail[] | string;
+  details: SyncDetail[] | RunningSyncDetails | string;
 }
 
 interface SyncStatus {
@@ -1006,10 +1087,9 @@ export default function KnowledgeBasePage() {
           const data = await res.json();
           // Only show notification if new files were ingested
           if (data.files_ingested > 0) {
-            const details: SyncDetail[] =
-              typeof data.details === "string"
-                ? JSON.parse(data.details)
-                : data.details || [];
+            // PR #186 backend may return the structured object shape; only
+            // pass through the legacy array — the toast UI filters by status.
+            const details = asLegacyDetails(data.details);
             setSyncResult({
               success: true,
               message: `Auto-sync: ${data.files_ingested} documento${data.files_ingested !== 1 ? "s" : ""} nuevo${data.files_ingested !== 1 ? "s" : ""} indexado${data.files_ingested !== 1 ? "s" : ""}.`,
@@ -1103,11 +1183,10 @@ export default function KnowledgeBasePage() {
           });
           pollUntilComplete();
         } else {
-          // Sync completed synchronously (e.g. no new files)
-          const details: SyncDetail[] =
-            typeof data.details === "string"
-              ? JSON.parse(data.details)
-              : data.details || [];
+          // Sync completed synchronously (e.g. no new files). Backend may
+          // return either the legacy array or the new structured object —
+          // use the helper to coerce safely for the toast filter UI.
+          const details = asLegacyDetails(data.details);
 
           setSyncResult({
             success: true,
@@ -1192,12 +1271,9 @@ export default function KnowledgeBasePage() {
           );
           if (lastCompleted) {
             if (lastCompleted.status === "completed") {
-              const details: SyncDetail[] =
-                typeof lastCompleted.details === "string"
-                  ? JSON.parse(lastCompleted.details)
-                  : Array.isArray(lastCompleted.details)
-                    ? lastCompleted.details
-                    : [];
+              // Same dual-shape handling as elsewhere — coerce to legacy
+              // array for the toast filter UI.
+              const details = asLegacyDetails(lastCompleted.details);
               setSyncResult({
                 success: true,
                 message: `Sync completado: ${lastCompleted.files_ingested} nuevos, ${lastCompleted.files_skipped} ya indexados${lastCompleted.files_failed ? `, ${lastCompleted.files_failed} errores` : ""}`,
@@ -1396,65 +1472,13 @@ export default function KnowledgeBasePage() {
 
       {/* Persistent sync progress card — visible whenever a sync is running,
           regardless of whether it was started from this tab or by the 6h
-          auto-sync. Reads directly from gdrive_sync_log via syncStatus. */}
+          auto-sync. Reads directly from gdrive_sync_log via syncStatus.
+          Renders rich progress (phase, current file, recent activity, errors)
+          when the backend writes the new structured details shape. */}
       {(() => {
         const running = syncStatus?.recent_syncs?.find((s) => s.status === "running");
         if (!running) return null;
-        const processed =
-          running.files_ingested + running.files_skipped + running.files_failed;
-        const total = running.total_files_found || 0;
-        const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
-        const elapsedMs = Date.now() - new Date(running.started_at).getTime();
-        const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60000));
-        const etaMin =
-          total > 0 && processed > 0
-            ? Math.max(
-                1,
-                Math.round((elapsedMs / processed) * (total - processed) / 60000),
-              )
-            : null;
-        return (
-          <Card className="border-vandarum-teal/40 bg-vandarum-teal/5">
-            <CardContent className="py-4 space-y-3">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
-                  <span className="font-medium text-sm">Sincronizacion en curso</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  Iniciada hace {elapsedMin} min
-                  {etaMin !== null ? ` · ~${etaMin} min restantes` : ""}
-                </span>
-              </div>
-              {total > 0 ? (
-                <>
-                  <div className="w-full bg-vandarum-teal/15 rounded-full h-2">
-                    <div
-                      className="bg-vandarum-teal h-2 rounded-full transition-all duration-500"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-                    <span>{processed} de {total} ({pct}%)</span>
-                    <span className="text-vandarum-green">
-                      {running.files_ingested} nuevos
-                    </span>
-                    <span>{running.files_skipped} ya indexados</span>
-                    {running.files_failed > 0 && (
-                      <span className="text-destructive">
-                        {running.files_failed} errores
-                      </span>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Escaneando carpetas de Google Drive...
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        );
+        return <RunningSyncCard sync={running} />;
       })()}
 
       {/* Sync result toast */}
@@ -2062,15 +2086,37 @@ function DriveTab({
             </p>
             <div className="space-y-2">
               {syncStatus.recent_syncs.map((sync) => {
-                const details: SyncDetail[] = sync.details
-                  ? typeof sync.details === "string"
-                    ? (() => { try { return JSON.parse(sync.details); } catch { return []; } })()
-                    : sync.details
-                  : [];
-                const errors = details.filter((d) => d.status === "error");
-                const replaced = details.filter((d) => d.status === "replaced");
-                const skippedPdf = details.filter((d) => d.status === "skipped" && d.reason === "PDF version exists");
-                const hasDetails = errors.length > 0 || replaced.length > 0 || skippedPdf.length > 0;
+                // Handle both detail shapes:
+                //  - legacy array (pre-PR #186 completed syncs): full per-file
+                //    list, contains "replaced" status and reasons we surface
+                //  - structured object (PR #186+): only keeps `recent` (last
+                //    ~10) and a separate `errors[]` list with suggested actions
+                const rich = asRunningDetails(sync.details);
+                let errors: SyncDetail[];
+                let replaced: SyncDetail[];
+                let skippedPdf: SyncDetail[];
+                if (rich) {
+                  errors = rich.errors.map((e) => ({
+                    file: e.file,
+                    path: e.path,
+                    status: "error",
+                    error: e.error,
+                  }));
+                  // Structured shape doesn't track "replaced" or the
+                  // PDF-skipped subset across the whole run, so leave both
+                  // empty for completed syncs written in this shape.
+                  replaced = [];
+                  skippedPdf = [];
+                } else {
+                  const details = asLegacyDetails(sync.details);
+                  errors = details.filter((d) => d.status === "error");
+                  replaced = details.filter((d) => d.status === "replaced");
+                  skippedPdf = details.filter(
+                    (d) => d.status === "skipped" && d.reason === "PDF version exists",
+                  );
+                }
+                const hasDetails =
+                  errors.length > 0 || replaced.length > 0 || skippedPdf.length > 0;
                 return (
                   <SyncHistoryEntry
                     key={sync.id}
@@ -2086,6 +2132,284 @@ function DriveTab({
           </CardContent>
         </>
       )}
+    </Card>
+  );
+}
+
+// ─── Running Sync Card (rich live progress) ────────────────
+function RunningSyncCard({ sync }: { sync: SyncLog }) {
+  const rich = asRunningDetails(sync.details);
+  const [recentOpen, setRecentOpen] = useState(true);
+  const [errorsOpen, setErrorsOpen] = useState(false);
+
+  const processed = sync.files_ingested + sync.files_skipped + sync.files_failed;
+  const total = sync.total_files_found || 0;
+  const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+  const elapsedMs = Date.now() - new Date(sync.started_at).getTime();
+  const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60000));
+
+  // Prefer backend-provided rate (processed per minute over the sync). Fallback
+  // to deriving rate from elapsed time + processed count.
+  const ratePerMin =
+    rich && rich.rate_per_min > 0
+      ? rich.rate_per_min
+      : processed > 0 && elapsedMs > 0
+        ? processed / (elapsedMs / 60000)
+        : 0;
+  const etaMin =
+    total > 0 && processed < total && ratePerMin > 0
+      ? Math.max(1, Math.round((total - processed) / ratePerMin))
+      : total > 0 && processed > 0
+        ? Math.max(
+            1,
+            Math.round((elapsedMs / processed) * (total - processed) / 60000),
+          )
+        : null;
+
+  const phase = rich?.phase ?? null;
+  const recent = rich?.recent ?? [];
+  const errors = rich?.errors ?? [];
+
+  return (
+    <Card className="border-vandarum-teal/40 bg-vandarum-teal/5">
+      <CardContent className="py-4 space-y-3">
+        {/* Header: title + phase badge + elapsed/eta */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Loader2 className="h-4 w-4 animate-spin text-vandarum-teal" />
+            <span className="font-medium text-sm">Sincronizacion en curso</span>
+            {phase && (
+              <Badge
+                variant="outline"
+                className={`text-[10px] ${SYNC_PHASE_BADGE_CLASS[phase]}`}
+              >
+                {SYNC_PHASE_LABELS[phase]}
+              </Badge>
+            )}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            Iniciada hace {elapsedMin} min
+            {etaMin !== null ? ` · ~${etaMin} min restantes` : ""}
+          </span>
+        </div>
+
+        {/* Progress bar block */}
+        {total > 0 ? (
+          <>
+            <div className="w-full bg-vandarum-teal/15 rounded-full h-2">
+              <div
+                className="bg-vandarum-teal h-2 rounded-full transition-all duration-500"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+              <span>
+                {processed} de {total} ({pct}%)
+              </span>
+              <span className="text-vandarum-green">
+                {sync.files_ingested} nuevos
+              </span>
+              <span>{sync.files_skipped} ya indexados</span>
+              {sync.files_failed > 0 && (
+                <span className="text-destructive">
+                  {sync.files_failed} errores
+                </span>
+              )}
+              {ratePerMin > 0 && (
+                <span>{ratePerMin.toFixed(1)} archivos/min</span>
+              )}
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Escaneando carpetas de Google Drive...
+          </p>
+        )}
+
+        {/* Procesando ahora — only when we have the new structured details */}
+        {rich && (
+          <div className="rounded-md border border-vandarum-teal/20 bg-background/60 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs font-medium text-vandarum-teal">
+              <Activity className="h-3.5 w-3.5" />
+              <span>Procesando ahora</span>
+            </div>
+            {rich.current_file ? (
+              <div className="mt-1 min-w-0">
+                <p
+                  className="text-sm font-medium truncate"
+                  title={rich.current_file}
+                >
+                  {rich.current_file}
+                </p>
+                {rich.current_path && (
+                  <p
+                    className="text-xs text-muted-foreground truncate"
+                    title={rich.current_path}
+                  >
+                    {rich.current_path}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground italic">
+                Esperando siguiente archivo...
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Actividad reciente — collapsible */}
+        {rich && recent.length > 0 && (
+          <div className="rounded-md border border-border/50 bg-background/40">
+            <button
+              type="button"
+              onClick={() => setRecentOpen(!recentOpen)}
+              className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-muted/40"
+            >
+              {recentOpen ? (
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              )}
+              <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium">Actividad reciente</span>
+              <Badge variant="outline" className="text-[10px] ml-auto">
+                {recent.length}
+              </Badge>
+            </button>
+            {recentOpen && (
+              <div className="border-t border-border/50 px-3 py-2 space-y-1 max-h-56 overflow-y-auto">
+                {recent.slice(0, 10).map((r, i) => {
+                  const ts = (() => {
+                    try {
+                      return new Date(r.ts_iso).toLocaleTimeString("es-ES", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      });
+                    } catch {
+                      return "";
+                    }
+                  })();
+                  return (
+                    <div
+                      key={`${r.file}-${r.ts_iso}-${i}`}
+                      className="flex items-start gap-2 text-xs min-w-0"
+                    >
+                      {r.status === "ingested" ? (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" />
+                      ) : r.status === "skipped" ? (
+                        <File className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className="font-medium truncate"
+                          title={r.file}
+                        >
+                          {r.file}
+                        </p>
+                        {r.path && (
+                          <p
+                            className="text-[11px] text-muted-foreground truncate"
+                            title={r.path}
+                          >
+                            {r.path}
+                          </p>
+                        )}
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={`text-[10px] shrink-0 ${
+                          r.status === "ingested"
+                            ? "bg-green-50 text-green-700 border-green-200"
+                            : r.status === "skipped"
+                              ? "bg-gray-50 text-gray-600 border-gray-200"
+                              : "bg-red-50 text-red-700 border-red-200"
+                        }`}
+                      >
+                        {r.status === "ingested"
+                          ? "indexado"
+                          : r.status === "skipped"
+                            ? "omitido"
+                            : "error"}
+                      </Badge>
+                      {ts && (
+                        <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                          {ts}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Errores detectados — collapsed by default, count in red badge */}
+        {rich && errors.length > 0 && (
+          <div className="rounded-md border border-red-200 bg-red-50/40">
+            <button
+              type="button"
+              onClick={() => setErrorsOpen(!errorsOpen)}
+              className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-red-50/70"
+            >
+              {errorsOpen ? (
+                <ChevronUp className="h-3.5 w-3.5 text-red-700" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 text-red-700" />
+              )}
+              <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
+              <span className="text-xs font-medium text-red-800">
+                Errores detectados
+              </span>
+              <Badge className="text-[10px] ml-auto bg-red-600 text-white hover:bg-red-600">
+                {errors.length}
+              </Badge>
+            </button>
+            {errorsOpen && (
+              <div className="border-t border-red-200 px-3 py-2 space-y-3 max-h-80 overflow-y-auto">
+                {errors.map((e, i) => (
+                  <div
+                    key={`${e.file}-${i}`}
+                    className="space-y-1.5"
+                  >
+                    <div className="min-w-0">
+                      <p
+                        className="text-xs font-semibold truncate"
+                        title={e.file}
+                      >
+                        {e.file}
+                      </p>
+                      {e.path && (
+                        <p
+                          className="text-[11px] text-muted-foreground truncate"
+                          title={e.path}
+                        >
+                          {e.path}
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-[11px] font-mono text-red-700 break-words whitespace-pre-wrap">
+                      {e.error}
+                    </p>
+                    {e.suggested_action && (
+                      <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 flex items-start gap-1.5">
+                        <Lightbulb className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-amber-900 leading-snug">
+                          {e.suggested_action}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
     </Card>
   );
 }
