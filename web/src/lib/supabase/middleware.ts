@@ -65,9 +65,13 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
+  // Use getSession() instead of getUser() to avoid a network round-trip on
+  // every request. getSession() reads the JWT from the cookie locally which
+  // keeps middleware fast even when Supabase is under heavy load.
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
 
   if (!user && isProtectedPath(request.nextUrl.pathname)) {
     const url = request.nextUrl.clone();
