@@ -260,7 +260,7 @@ class StorageService:
         sb = await self._get_supabase()
         table = "knowledge_chunks" if is_knowledge else "project_chunks"
 
-        batch_size = 50
+        batch_size = 20
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
             data = []
