@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const dynamic = 'force-dynamic';
+
 // Downloading + extracting files can take a while
 export const maxDuration = 120;
 

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/rag/health
  * Diagnóstico del sistema RAG: documentos sin chunks, estadísticas por scope.

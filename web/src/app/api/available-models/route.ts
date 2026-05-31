@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const res = await fetch(`${PIPELINE_URL}/api/available-models`, {

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = 'force-dynamic';
+
 /**
  * POST /api/upload-signed-url
  *
@@ -69,7 +71,7 @@ function sanitizeFilename(filename: string): string {
   // Replace spaces with underscores
   name = name.replace(/\s+/g, "_");
   // Remove non-ASCII characters (accents, etc)
-  name = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  name = name.normalize("NFD").replace(/[̀-ͯ]/g, "");
   // Only keep alphanumeric, dots, hyphens, underscores
   name = name.replace(/[^a-zA-Z0-9._-]/g, "");
   return name || "archivo";

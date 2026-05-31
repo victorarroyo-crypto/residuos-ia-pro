@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const dynamic = 'force-dynamic';
+
 /**
  * POST /api/knowledge-base/reprocess
  * Re-procesa documentos que no tienen chunks o fallaron.

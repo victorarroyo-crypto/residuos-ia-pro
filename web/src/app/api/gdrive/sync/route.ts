@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const dynamic = 'force-dynamic';
+
 // Allow up to 60s for the initial handshake with Pipeline.
 // The actual sync runs in background on the Pipeline server.
 export const maxDuration = 60;

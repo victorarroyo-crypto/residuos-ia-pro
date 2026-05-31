@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 import { createClient } from "@/lib/supabase/server";
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
   const {

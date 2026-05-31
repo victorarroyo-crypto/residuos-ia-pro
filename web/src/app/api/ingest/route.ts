@@ -3,6 +3,8 @@ import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 import { createClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 
+export const dynamic = 'force-dynamic';
+
 export const maxDuration = 120;
 
 /**
