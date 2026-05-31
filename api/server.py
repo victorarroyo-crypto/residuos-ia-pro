@@ -65,6 +65,51 @@ _model_router: ModelRouter | None = None
 _background_tasks: set[asyncio.Task] = set()
 
 
+# ── Sync liveness / watchdog (Fase 0) ────────────────────────────
+# A running sync writes last_heartbeat every SYNC_HEARTBEAT_INTERVAL_SECONDS.
+# If a running row goes silent for longer than SYNC_STALE_AFTER_SECONDS its
+# worker/container is considered dead and it gets reaped. This replaces the old
+# behaviour that killed every running row on restart and the passive 120-minute
+# check that only fired when a new POST arrived.
+SYNC_HEARTBEAT_INTERVAL_SECONDS = 30
+SYNC_STALE_AFTER_SECONDS = 600  # 10 min without a heartbeat → reap
+SYNC_REAPER_INTERVAL_SECONDS = 60
+
+
+async def _sync_reaper_loop(sb) -> None:
+    """Periodically mark as error any running sync whose heartbeat is stale.
+
+    Runs for the lifetime of the process so orphaned syncs are cleaned up even
+    when no request ever hits the sync endpoint again.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    while True:
+        try:
+            await asyncio.sleep(SYNC_REAPER_INTERVAL_SECONDS)
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(seconds=SYNC_STALE_AFTER_SECONDS)
+            ).isoformat()
+            result = await (
+                sb.table("gdrive_sync_log")
+                .update({
+                    "status": "error",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "error_message": "Sync sin actividad (heartbeat expirado). Posible caída del worker.",
+                })
+                .eq("status", "running")
+                .lt("last_heartbeat", cutoff)
+                .execute()
+            )
+            reaped = len(result.data) if result.data else 0
+            if reaped:
+                logger.info("Reaper: marked %d stale sync(s) as error", reaped)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Reaper: iteration failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global service, rag_service, _config, _cost_guard, _model_router
@@ -120,28 +165,47 @@ async def lifespan(app: FastAPI):
     init_model_router(_model_router, _cost_guard)
     logger.info("CostGuard + ModelRouter inicializados ✓")
 
-    # Clean up zombie syncs left by previous server instances (e.g. redeploy)
+    # Clean up zombie syncs left by previous server instances, but ONLY those
+    # whose heartbeat is already stale. A sync that is genuinely still alive in
+    # another worker keeps its running row; a fresh redeploy that killed the
+    # worker leaves a row whose heartbeat stops, and the reaper (or this check)
+    # will mark it as error after SYNC_STALE_AFTER_SECONDS.
+    _reaper_task = None
     try:
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         from supabase._async.client import create_client as acreate_client
         _startup_sb = await acreate_client(supabase_url, supabase_key)
+        _cutoff = (
+            _dt.now(_tz.utc) - _td(seconds=SYNC_STALE_AFTER_SECONDS)
+        ).isoformat()
         _zombie_result = await (
             _startup_sb.table("gdrive_sync_log")
             .update({
                 "status": "error",
                 "completed_at": _dt.now(_tz.utc).isoformat(),
-                "error_message": "Sync interrumpido por reinicio del servidor.",
+                "error_message": "Sync sin actividad (heartbeat expirado al reiniciar el servidor).",
             })
             .eq("status", "running")
+            .lt("last_heartbeat", _cutoff)
             .execute()
         )
         _zombie_count = len(_zombie_result.data) if _zombie_result.data else 0
         if _zombie_count:
-            logger.info("Startup: marked %d zombie sync(s) as error", _zombie_count)
+            logger.info("Startup: marked %d stale sync(s) as error", _zombie_count)
+
+        # Launch the background reaper for the lifetime of the process.
+        _reaper_task = asyncio.create_task(_sync_reaper_loop(_startup_sb))
     except Exception as e:
-        logger.warning("Startup: could not clean zombie syncs: %s", e)
+        logger.warning("Startup: could not clean stale syncs / start reaper: %s", e)
 
     yield
+
+    if _reaper_task is not None:
+        _reaper_task.cancel()
+        try:
+            await _reaper_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 app = FastAPI(
@@ -2809,11 +2873,15 @@ async def gdrive_sync(request: Request, payload: GDriveSyncRequest):
             raise HTTPException(status_code=404, detail="No hay carpeta raiz configurada. Ve a Ajustes y pulsa 'Crear estructura de carpetas'.")
         folder_id = gdrive_row.data[0]["root_folder_id"]
 
-    # Check if a sync is already running for this consultant
+    # Check if a sync is already running for this consultant. A row only counts
+    # as "alive" if its heartbeat is recent; a stale running row (dead worker)
+    # is reaped here so a new sync can take over without waiting for the
+    # background reaper.
+    from datetime import datetime, timezone, timedelta
     try:
         running_check = await (
             sb.table("gdrive_sync_log")
-            .select("id, started_at")
+            .select("id, started_at, last_heartbeat")
             .eq("consultant_id", payload.consultant_id)
             .eq("status", "running")
             .limit(1)
@@ -2823,27 +2891,28 @@ async def gdrive_sync(request: Request, payload: GDriveSyncRequest):
         logger.error("Sync: error checking running sync: %s", e)
         raise HTTPException(status_code=500, detail=f"Error consultando estado de sync: {e}")
     if running_check.data:
-        # Auto-expire syncs that have been running for more than 120 minutes
-        from datetime import datetime, timezone, timedelta
-        started_at_str = running_check.data[0].get("started_at", "")
+        row = running_check.data[0]
+        # A heartbeat (falling back to started_at for legacy rows) older than
+        # the stale threshold means the worker is dead.
+        liveness_str = row.get("last_heartbeat") or row.get("started_at") or ""
         stale_sync = False
         try:
-            started_at = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - started_at > timedelta(minutes=120):
+            last_beat = datetime.fromisoformat(liveness_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - last_beat > timedelta(seconds=SYNC_STALE_AFTER_SECONDS):
                 stale_sync = True
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             stale_sync = True  # Can't parse date — treat as stale
 
         if stale_sync:
-            stale_id = running_check.data[0]["id"]
-            logger.warning("Sync %s: stale sync detected (started %s), marking as error", stale_id, started_at_str)
+            stale_id = row["id"]
+            logger.warning("Sync %s: stale sync detected (last beat %s), marking as error", stale_id, liveness_str)
             try:
                 await (
                     sb.table("gdrive_sync_log")
                     .update({
                         "status": "error",
                         "completed_at": datetime.now(timezone.utc).isoformat(),
-                        "error_message": "Sync expirado: superó el límite de 120 minutos. Posible caída del servidor.",
+                        "error_message": "Sync sin actividad (heartbeat expirado). Posible caída del worker.",
                     })
                     .eq("id", stale_id)
                     .execute()
@@ -2853,18 +2922,22 @@ async def gdrive_sync(request: Request, payload: GDriveSyncRequest):
             # Fall through to create a new sync
         else:
             return {
-                "sync_id": running_check.data[0]["id"],
+                "sync_id": row["id"],
                 "status": "already_running",
                 "message": "Ya hay una sincronizacion en curso. Consulta sync-status para ver el progreso.",
             }
 
-    # Create sync log entry
+    # Create sync log entry. The partial unique index on (consultant_id) WHERE
+    # status='running' makes this the atomic guard against concurrent syncs: if
+    # two requests race past the check above, the DB rejects the second insert
+    # and we report already_running instead of starting a duplicate sync.
     try:
         sync_log = await (
             sb.table("gdrive_sync_log")
             .insert({
                 "consultant_id": payload.consultant_id,
                 "status": "running",
+                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
             })
             .execute()
         )
@@ -2874,6 +2947,26 @@ async def gdrive_sync(request: Request, payload: GDriveSyncRequest):
     except HTTPException:
         raise
     except Exception as e:
+        # Unique-violation (23505) on the running guard → a sync is already live.
+        if "23505" in str(e) or "duplicate key" in str(e).lower():
+            logger.info("Sync: concurrent start rejected by unique guard for consultant %s", payload.consultant_id)
+            try:
+                existing = await (
+                    sb.table("gdrive_sync_log")
+                    .select("id")
+                    .eq("consultant_id", payload.consultant_id)
+                    .eq("status", "running")
+                    .limit(1)
+                    .execute()
+                )
+                existing_id = existing.data[0]["id"] if existing.data else None
+            except Exception:
+                existing_id = None
+            return {
+                "sync_id": existing_id,
+                "status": "already_running",
+                "message": "Ya hay una sincronizacion en curso. Consulta sync-status para ver el progreso.",
+            }
         logger.error("Sync: error creating sync log: %s", e)
         raise HTTPException(status_code=500, detail=f"Error creando registro de sync: {e}")
 
@@ -2946,7 +3039,14 @@ async def _run_sync_job(
     }
 
     async def _update_sync_progress(**fields: object) -> None:
-        """Helper to update gdrive_sync_log with current progress."""
+        """Helper to update gdrive_sync_log with current progress.
+
+        Every progress write also refreshes last_heartbeat, so any DB activity
+        from the worker counts as a liveness signal on top of the dedicated
+        heartbeat loop.
+        """
+        from datetime import datetime as _dt, timezone as _tz
+        fields.setdefault("last_heartbeat", _dt.now(_tz.utc).isoformat())
         try:
             await (
                 sb.table("gdrive_sync_log")
@@ -2956,6 +3056,29 @@ async def _run_sync_job(
             )
         except Exception:
             logger.warning("Sync %s: could not update progress", sync_id)
+
+    async def _heartbeat_loop() -> None:
+        """Refresh last_heartbeat periodically so the reaper can tell this sync
+        is still alive. Stops itself if the row is no longer running (e.g. it
+        was reaped), which also tells the main job to abort."""
+        from datetime import datetime as _dt, timezone as _tz
+        while True:
+            await asyncio.sleep(SYNC_HEARTBEAT_INTERVAL_SECONDS)
+            try:
+                res = await (
+                    sb.table("gdrive_sync_log")
+                    .update({"last_heartbeat": _dt.now(_tz.utc).isoformat()})
+                    .eq("id", sync_id)
+                    .eq("status", "running")
+                    .execute()
+                )
+                if not res.data:
+                    logger.warning("Sync %s: heartbeat found no running row (reaped?), stopping", sync_id)
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Sync %s: heartbeat update failed", sync_id)
 
     def _compute_rate(processed_count: int) -> float:
         """processed files per minute since start_ts (rounded to 1 decimal)."""
@@ -2985,6 +3108,9 @@ async def _run_sync_job(
             "errors": list(progress_state["errors"]),
             "rate_per_min": progress_state["rate_per_min"],
         }
+
+    # Start the heartbeat loop for the duration of the job.
+    _heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     try:
         # 0. Determine initial phase based on whether folder_mapping is set up.
@@ -3347,6 +3473,13 @@ async def _run_sync_job(
             )
         except Exception:
             logger.error("Sync %s: could not update error status", sync_id)
+    finally:
+        # Always stop the heartbeat loop, whether the job completed or crashed.
+        _heartbeat_task.cancel()
+        try:
+            await _heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 @app.get("/api/gdrive/sync-status")
