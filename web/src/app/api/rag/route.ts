@@ -3,6 +3,8 @@ import { getAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { loadEnv } from "@/lib/env";
 
+export const dynamic = 'force-dynamic';
+
 type RpcChunk = {
   chunk_id: string;
   document_id: string;

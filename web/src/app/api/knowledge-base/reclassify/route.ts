@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 
+export const dynamic = 'force-dynamic';
+
 /**
  * POST /api/knowledge-base/reclassify
  * Re-classifies all knowledge_documents using current classification logic.

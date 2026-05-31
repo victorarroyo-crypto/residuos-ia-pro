@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { PIPELINE_URL, pipelineHeaders } from "@/lib/pipeline";
 import { createClient } from "@/lib/supabase/server";
 
+export const dynamic = 'force-dynamic';
+
 // Allow longer execution for file processing (default is 10s on Vercel hobby)
 export const maxDuration = 120;
 
