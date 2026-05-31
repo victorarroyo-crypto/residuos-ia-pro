@@ -26,3 +26,29 @@ from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+
+_UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_VALID_TIERS = {"standard", "pro_plus"}
+_VALID_MODELS = {
+    "claude-opus-4-6", "claude-sonnet-4", "claude-haiku-4-5",
+    "gpt-5.2", "gpt-5", "o3", "o4-mini", "gpt-5-mini",
+    "gemini-2.5-pro", "gemini-2.5-flash",
+}
+_VALID_AGENTS = {"aai", "contratos", "facturas", "registro", "normativo"}
+
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+logger = logging.getLogger("residusia")
+logger.setLevel(logging.INFO)
+
+# Silence noisy HTTP client loggers — these flood Railway logs as false "errors"
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# Ensure the project root is in the Python path (works locally and in Docker)
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from pipeline import UnifiedIngestionService, PipelineConfigImpl, RAGScopingService, RAGScope
+from pipeline.cost_guard import CostGuard, calculate_cost, get_provider, MODEL_PRICING
+from pipeline.model_router import ModelRouter, MODEL_API_IDS, MODEL_PROVIDERS, SERVICE_DEFAULTS
