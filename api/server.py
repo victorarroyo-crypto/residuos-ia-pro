@@ -75,6 +75,14 @@ SYNC_HEARTBEAT_INTERVAL_SECONDS = 30
 SYNC_STALE_AFTER_SECONDS = 600  # 10 min without a heartbeat → reap
 SYNC_REAPER_INTERVAL_SECONDS = 60
 
+# ── Incremental sync (Fase 1) ─────────────────────────────────────
+# Drive's changes API gives a per-account cursor (startPageToken). We persist
+# it per consultant in gdrive_sync_state and use it to fetch only files that
+# changed since the previous sync, instead of re-scanning the whole subtree.
+# A periodic full-scan is still done as a safety-net to correct any drift
+# (changes API can miss things like moves into the subtree).
+SYNC_FULL_SCAN_INTERVAL_DAYS = 7
+
 
 async def _sync_reaper_loop(sb) -> None:
     """Periodically mark as error any running sync whose heartbeat is stale.
@@ -3016,6 +3024,70 @@ def _suggest_action(error_msg: str) -> str:
     return "Error desconocido. Mira el detalle del error y reintenta."
 
 
+# ── Fase 1: incremental sync helpers ──────────────────────────────
+
+async def _load_sync_state(sb, consultant_id: str) -> dict:
+    """Return {start_page_token, last_full_scan} for a consultant, or empty dict
+    if there is no row yet (first sync ever for this consultant)."""
+    try:
+        res = await (
+            sb.table("gdrive_sync_state")
+            .select("start_page_token, last_full_scan")
+            .eq("consultant_id", consultant_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("Sync state load failed for %s: %s", consultant_id, e)
+        return {}
+    return (res.data or [{}])[0] or {}
+
+
+async def _save_sync_state(
+    sb,
+    consultant_id: str,
+    *,
+    start_page_token: str | None = None,
+    mark_full_scan: bool = False,
+) -> None:
+    """Upsert the consultant's incremental cursor and optionally stamp the
+    most recent full-scan timestamp. Failures are logged but never raised —
+    losing the cursor only triggers a bootstrap on the next sync."""
+    from datetime import datetime as _dt, timezone as _tz
+    row: dict = {"consultant_id": consultant_id, "updated_at": _dt.now(_tz.utc).isoformat()}
+    if start_page_token is not None:
+        row["start_page_token"] = start_page_token
+    if mark_full_scan:
+        row["last_full_scan"] = _dt.now(_tz.utc).isoformat()
+    try:
+        await sb.table("gdrive_sync_state").upsert(row).execute()
+    except Exception as e:
+        logger.warning("Sync state save failed for %s: %s", consultant_id, e)
+
+
+async def _purge_indexed_doc(sb, drive_file_id: str) -> None:
+    """Delete knowledge_documents + knowledge_chunks for a given drive_file_id.
+    Used before re-ingesting an edited file (whose doc_id changes with content)
+    and when Drive reports the file as removed/trashed. Best-effort — never
+    raises so the surrounding sync can keep going."""
+    try:
+        rows = await (
+            sb.table("knowledge_documents")
+            .select("id")
+            .eq("drive_file_id", drive_file_id)
+            .execute()
+        )
+        for row in rows.data or []:
+            doc_id = row["id"]
+            try:
+                await sb.table("knowledge_chunks").delete().eq("document_id", doc_id).execute()
+                await sb.table("knowledge_documents").delete().eq("id", doc_id).execute()
+            except Exception as e:
+                logger.warning("Purge: could not delete doc %s: %s", doc_id, e)
+    except Exception as e:
+        logger.warning("Purge: lookup failed for drive_file_id=%s: %s", drive_file_id, e)
+
+
 async def _run_sync_job(
     sync_id: str,
     consultant_id: str,
@@ -3024,7 +3096,7 @@ async def _run_sync_job(
     sb: "AsyncClient",  # noqa: F821
 ) -> None:
     """Background task that does the actual sync work."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
 
     start_ts = time.time()
 
@@ -3131,79 +3203,239 @@ async def _run_sync_job(
         else:
             await _update_sync_progress(details=_snapshot_details(phase="scanning"))
 
-        # 1. Recursively list all files in Drive (run in thread to avoid blocking event loop)
+        # 1. Decide bootstrap (full BFS scan) vs incremental (Drive changes API).
+        #    Fase 1: we persist a Drive change-cursor per consultant in
+        #    gdrive_sync_state; with a cursor and a recent full-scan we can
+        #    fetch just the changes since last sync instead of re-scanning the
+        #    whole subtree. A periodic full-scan is still done as a safety-net.
         logger.info("Sync %s: _run_sync_job entered, folder=%s, service=%s", sync_id, folder_id, service is not None)
-        logger.info("Sync %s: scanning Drive folder %s ...", sync_id, folder_id)
-
-        # Mark phase=scanning right before the listing call
         await _update_sync_progress(details=_snapshot_details(phase="scanning"))
 
-        all_files = await asyncio.to_thread(gd.list_all_files_recursive, folder_id)
-        total_found = len(all_files)
-        logger.info("Sync %s: found %d files in Drive", sync_id, total_found)
+        sync_state = await _load_sync_state(sb, consultant_id)
+        prev_token: str | None = sync_state.get("start_page_token")
+        last_full_scan_iso: str | None = sync_state.get("last_full_scan")
 
-        # Update total_files_found immediately so the UI can show scan results.
-        # Switch to phase=ingesting now that the scan is done.
-        await _update_sync_progress(
-            total_files_found=total_found,
-            details=_snapshot_details(phase="ingesting"),
+        do_full_scan = not prev_token
+        if not do_full_scan and last_full_scan_iso:
+            try:
+                last_full_dt = datetime.fromisoformat(str(last_full_scan_iso).replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) - last_full_dt > timedelta(days=SYNC_FULL_SCAN_INTERVAL_DAYS):
+                    do_full_scan = True
+            except (ValueError, TypeError):
+                do_full_scan = True
+
+        # Files to (re)ingest this run, and files whose indexed copy must be
+        # purged before re-ingestion (edits) or outright (Drive removals).
+        new_files: list[dict] = []
+        files_to_purge: set[str] = set()  # drive_file_ids
+        edited_count = 0
+        removed_count = 0
+        # Token captured for the *next* sync (newStartPageToken from changes.list,
+        # or a fresh getStartPageToken() at the end of a bootstrap).
+        next_token: str | None = None
+
+        if do_full_scan:
+            logger.info("Sync %s: full-scan of Drive folder %s (bootstrap or safety-net)", sync_id, folder_id)
+            # Capture the change cursor *before* the scan: any file edited
+            # mid-scan will then surface as a change in the next incremental
+            # sync, instead of being silently missed.
+            try:
+                next_token = await asyncio.to_thread(gd.get_start_page_token)
+            except Exception as e:
+                logger.warning("Sync %s: could not capture startPageToken: %s", sync_id, e)
+                next_token = None
+
+            all_files = await asyncio.to_thread(gd.list_all_files_recursive, folder_id)
+            total_found = len(all_files)
+            logger.info("Sync %s: found %d files in Drive", sync_id, total_found)
+
+            await _update_sync_progress(
+                total_files_found=total_found,
+                details=_snapshot_details(phase="ingesting"),
+            )
+
+            # 2. Identify which are already indexed AND whether they were edited
+            #    since (fix for bug #7: hoy un fichero editado se salta para
+            #    siempre porque el skip nunca comparaba modifiedTime).
+            all_drive_ids = [f["id"] for f in all_files]
+            indexed_by_drive_id: dict[str, str | None] = {}  # drive_file_id -> drive_modified_time
+            for i in range(0, len(all_drive_ids), 50):
+                batch = all_drive_ids[i:i + 50]
+                result = await (
+                    sb.table("knowledge_documents")
+                    .select("drive_file_id, drive_modified_time")
+                    .in_("drive_file_id", batch)
+                    .execute()
+                )
+                for row in result.data or []:
+                    if row.get("drive_file_id"):
+                        indexed_by_drive_id[row["drive_file_id"]] = row.get("drive_modified_time")
+
+            # 2b. Fallback: check by titulo (filename) for docs with NULL drive_file_id.
+            #     This catches docs ingested before drive_file_id was set.
+            all_filenames = [f["name"] for f in all_files]
+            indexed_titles: set[str] = set()
+            for i in range(0, len(all_filenames), 50):
+                batch = all_filenames[i:i + 50]
+                result = await (
+                    sb.table("knowledge_documents")
+                    .select("titulo, id, drive_file_id")
+                    .in_("titulo", batch)
+                    .execute()
+                )
+                for row in result.data or []:
+                    titulo = row.get("titulo")
+                    if titulo:
+                        indexed_titles.add(titulo)
+                        if not row.get("drive_file_id"):
+                            for f in all_files:
+                                if f["name"] == titulo:
+                                    try:
+                                        await (
+                                            sb.table("knowledge_documents")
+                                            .update({"drive_file_id": f["id"]})
+                                            .eq("id", row["id"])
+                                            .execute()
+                                        )
+                                        indexed_by_drive_id[f["id"]] = None
+                                        logger.info("Sync %s: backfilled drive_file_id for %s", sync_id, titulo)
+                                    except Exception:
+                                        pass
+                                    break
+
+            for f in all_files:
+                fid = f["id"]
+                fname = f["name"]
+                if fid in indexed_by_drive_id:
+                    stored_mt = indexed_by_drive_id[fid]
+                    drive_mt = f.get("modifiedTime")
+                    # Re-ingest if Drive's modifiedTime has changed since we
+                    # indexed (or if we never recorded one — legacy rows).
+                    if drive_mt and stored_mt and str(stored_mt) == str(drive_mt):
+                        continue  # unchanged → skip
+                    if drive_mt and not stored_mt:
+                        # Legacy row: backfill modifiedTime without re-ingesting
+                        # (we can't tell if it changed, and assuming "changed"
+                        # would re-ingest the entire indexed corpus the first
+                        # time Fase 1 lands).
+                        try:
+                            await (
+                                sb.table("knowledge_documents")
+                                .update({"drive_modified_time": drive_mt})
+                                .eq("drive_file_id", fid)
+                                .execute()
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    files_to_purge.add(fid)
+                    new_files.append(f)
+                    edited_count += 1
+                elif fname in indexed_titles:
+                    continue  # known by filename only (backfill already attempted)
+                else:
+                    new_files.append(f)
+        else:
+            # Incremental: ask Drive for the diff since prev_token. The changes
+            # API is account-wide so we filter to the consultant's subtree by
+            # walking parents through the cached folder tree.
+            assert prev_token is not None  # do_full_scan branch handles None
+            logger.info("Sync %s: incremental scan (changes.list from token=%s...)", sync_id, prev_token[:12])
+
+            await asyncio.to_thread(gd._preload_folder_tree, folder_id)
+            changes_result = await asyncio.to_thread(gd.list_changes, prev_token)
+            raw_changes = changes_result["changes"]
+            next_token = changes_result["new_start_page_token"]
+            logger.info("Sync %s: Drive reported %d raw changes", sync_id, len(raw_changes))
+
+            supported_ext = {
+                ".pdf", ".docx", ".doc", ".xlsx", ".xls",
+                ".csv", ".txt", ".html", ".htm", ".md",
+            }
+            already_indexed_ids: set[str] = set()
+            # Look up which of the changed files are already in our index, so we
+            # know whether each change is "edit/remove of indexed" or "new".
+            changed_file_ids = [c.get("fileId") for c in raw_changes if c.get("fileId")]
+            for i in range(0, len(changed_file_ids), 50):
+                batch = [fid for fid in changed_file_ids[i:i + 50] if fid]
+                if not batch:
+                    continue
+                try:
+                    result = await (
+                        sb.table("knowledge_documents")
+                        .select("drive_file_id")
+                        .in_("drive_file_id", batch)
+                        .execute()
+                    )
+                    for row in result.data or []:
+                        if row.get("drive_file_id"):
+                            already_indexed_ids.add(row["drive_file_id"])
+                except Exception as e:
+                    logger.warning("Sync %s: indexed lookup failed for incremental batch: %s", sync_id, e)
+
+            for change in raw_changes:
+                fid = change.get("fileId")
+                if not fid:
+                    continue
+                file_obj = change.get("file") or {}
+                # Drive marks a change as `removed` if the user lost access; a
+                # file moved to trash arrives with `trashed=True` instead.
+                if change.get("removed") or file_obj.get("trashed"):
+                    if fid in already_indexed_ids:
+                        files_to_purge.add(fid)
+                        removed_count += 1
+                    continue
+                # Skip folders and unsupported extensions.
+                if file_obj.get("mimeType") == "application/vnd.google-apps.folder":
+                    continue
+                name = file_obj.get("name", "")
+                ext = "." + name.lower().rsplit(".", 1)[-1] if "." in name else ""
+                if ext not in supported_ext:
+                    continue
+                # Only act on files that live under the consultant's root.
+                if not gd.is_in_subtree(file_obj.get("parents"), folder_id):
+                    continue
+                f = {
+                    "id": fid,
+                    "name": name,
+                    "mimeType": file_obj.get("mimeType"),
+                    "size": int(file_obj.get("size", 0)) if file_obj.get("size") else None,
+                    "modifiedTime": file_obj.get("modifiedTime"),
+                    "path": "",  # path is folder-walk metadata we don't track here
+                }
+                if fid in already_indexed_ids:
+                    files_to_purge.add(fid)
+                    edited_count += 1
+                new_files.append(f)
+
+            # In incremental mode the "total found" is the number of relevant
+            # changes, not the size of the corpus.
+            total_found = len(new_files) + removed_count
+            await _update_sync_progress(
+                total_files_found=total_found,
+                details=_snapshot_details(phase="ingesting"),
+            )
+
+            # indexed_titles is used by the PDF-priority block below; nothing
+            # relevant for incremental, but the block expects it to exist.
+            indexed_titles = set()
+
+        # Purge stale rows for edits and removals before re-ingestion. This is
+        # what fixes bug #7: without deleting the old doc+chunks, an edited
+        # file (whose content hash changes) would leave orphan chunks in the
+        # RAG and the new content wouldn't replace the old one cleanly.
+        for fid in files_to_purge:
+            await _purge_indexed_doc(sb, fid)
+
+        logger.info(
+            "Sync %s: %d to ingest (%d new, %d edited), %d removed",
+            sync_id, len(new_files), len(new_files) - edited_count, edited_count, removed_count,
         )
 
-        # 2. Check which are already indexed (by drive_file_id OR titulo)
-        all_drive_ids = [f["id"] for f in all_files]
-        indexed_ids: set[str] = set()
-        # 2a. Check by drive_file_id
-        for i in range(0, len(all_drive_ids), 50):
-            batch = all_drive_ids[i:i + 50]
-            result = await (
-                sb.table("knowledge_documents")
-                .select("drive_file_id")
-                .in_("drive_file_id", batch)
-                .execute()
-            )
-            for row in result.data or []:
-                if row.get("drive_file_id"):
-                    indexed_ids.add(row["drive_file_id"])
-
-        # 2b. Fallback: check by titulo (filename) for docs with NULL drive_file_id
-        #     This catches docs ingested before drive_file_id was set
-        all_filenames = [f["name"] for f in all_files]
-        indexed_titles: set[str] = set()
-        for i in range(0, len(all_filenames), 50):
-            batch = all_filenames[i:i + 50]
-            result = await (
-                sb.table("knowledge_documents")
-                .select("titulo, id, drive_file_id")
-                .in_("titulo", batch)
-                .execute()
-            )
-            for row in result.data or []:
-                titulo = row.get("titulo")
-                if titulo:
-                    indexed_titles.add(titulo)
-                    # Backfill drive_file_id if missing
-                    if not row.get("drive_file_id"):
-                        for f in all_files:
-                            if f["name"] == titulo:
-                                try:
-                                    await (
-                                        sb.table("knowledge_documents")
-                                        .update({"drive_file_id": f["id"]})
-                                        .eq("id", row["id"])
-                                        .execute()
-                                    )
-                                    indexed_ids.add(f["id"])
-                                    logger.info("Sync %s: backfilled drive_file_id for %s", sync_id, titulo)
-                                except Exception:
-                                    pass
-                                break
-
-        new_files = [f for f in all_files if f["id"] not in indexed_ids and f["name"] not in indexed_titles]
-
         # 2c. PDF priority: skip .md files when a .pdf version exists
-        #     (in Drive, in indexed titles, or already in knowledge_documents)
+        #     (in this run's candidates, in indexed titles, or already in knowledge_documents)
         _pdf_basenames: set[str] = set()
-        for f in all_files:
+        for f in new_files:
             if f["name"].lower().endswith(".pdf"):
                 _pdf_basenames.add(f["name"][:-4])
         for title in indexed_titles:
@@ -3236,8 +3468,16 @@ async def _run_sync_job(
         if _md_skipped_files:
             logger.info("Sync %s: %d .md skipped (PDF version exists)", sync_id, len(_md_skipped_files))
 
-        skipped = len(all_files) - len(new_files)
-        logger.info("Sync %s: %d new files to ingest, %d already indexed", sync_id, len(new_files), skipped)
+        # "skipped" counts files Drive returned this run that we are NOT going
+        # to (re)ingest. In bootstrap it's "everything that was already in the
+        # index and unchanged". In incremental we don't see unchanged files at
+        # all (changes.list only returns deltas), so the only thing not
+        # ingested is the .md→PDF priority skip from the block above.
+        if do_full_scan:
+            skipped = len(all_files) - len(new_files)
+        else:
+            skipped = len(_md_skipped_files)
+        logger.info("Sync %s: %d new files to ingest, %d already indexed/skipped", sync_id, len(new_files), skipped)
 
         # Update skipped count immediately
         await _update_sync_progress(files_skipped=skipped)
@@ -3333,9 +3573,14 @@ async def _run_sync_job(
                 doc_id = result.supabase_doc_id or result.doc_id
                 if doc_id:
                     try:
+                        _update_fields: dict = {"drive_file_id": file_info["id"]}
+                        if file_info.get("modifiedTime"):
+                            # Persist Drive's modifiedTime so the next sync can
+                            # tell whether this file was edited (fix bug #7).
+                            _update_fields["drive_modified_time"] = file_info["modifiedTime"]
                         await (
                             sb.table("knowledge_documents")
-                            .update({"drive_file_id": file_info["id"]})
+                            .update(_update_fields)
                             .eq("id", doc_id)
                             .execute()
                         )
@@ -3422,6 +3667,17 @@ async def _run_sync_job(
                 async with _sem:
                     await _ingest_one(fi)
             await asyncio.gather(*[_bounded(fi) for fi in batch])
+
+        # Advance the incremental cursor only on a clean run. If the job
+        # crashes mid-flight, the next sync will repeat from the previous
+        # token (or fall back to a full-scan) instead of silently skipping
+        # whatever was changed during the failed run.
+        if next_token:
+            await _save_sync_state(
+                sb, consultant_id,
+                start_page_token=next_token,
+                mark_full_scan=do_full_scan,
+            )
 
         # 4. Final update of sync log
         now_iso = datetime.now(timezone.utc).isoformat()
