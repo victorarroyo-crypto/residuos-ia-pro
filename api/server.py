@@ -4210,6 +4210,42 @@ async def rag_health(request: Request):
     return {"status": "ok", "scopes": result.data or []}
 
 
+# ─── Sync / queue observability (Fase 4) ──────────────────────────
+@app.get("/api/sync/metrics")
+@limiter.limit("60/minute")
+async def sync_metrics(request: Request):
+    """Snapshot consolidado del sync + cola de ingesta (Fase 4): estado de la
+    cola por status, sync activo y frescura de su heartbeat, estado incremental
+    (Fase 1) y tamaño del corpus. Pensado para dashboards y health-checks.
+
+    Incluye un campo `alerts` derivado para señalar atascos de un vistazo:
+    cola que no drena (job pendiente muy viejo) o heartbeat del sync activo
+    expirado (worker probablemente muerto)."""
+    if rag_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    sb = await rag_service._get_supabase()
+    try:
+        res = await sb.rpc("sync_metrics").execute()
+        m = res.data or {}
+    except Exception as e:
+        logger.warning("sync_metrics RPC failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"No se pudieron obtener métricas: {e}")
+
+    alerts: list[str] = []
+    oldest = m.get("oldest_pending_age_seconds")
+    if isinstance(oldest, int) and oldest > 3600:
+        alerts.append(f"queue_stuck: hay jobs pendientes desde hace {oldest // 60} min")
+    active = m.get("active_sync") or {}
+    hb = active.get("heartbeat_age_seconds")
+    if isinstance(hb, int) and hb > SYNC_STALE_AFTER_SECONDS:
+        alerts.append(f"sync_stale: el sync activo no late desde hace {hb}s (será reapeado)")
+    if (m.get("failed_last_hour") or 0) > 0:
+        alerts.append(f"failed_jobs: {m['failed_last_hour']} job(s) fallidos en la última hora")
+
+    return {"status": "ok", "metrics": m, "alerts": alerts}
+
+
 # ─── Re-process documents ─────────────────────────────────────────
 class ReprocessRequest(BaseModel):
     doc_ids: list[str]
