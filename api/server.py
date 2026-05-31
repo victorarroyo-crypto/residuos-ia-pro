@@ -3141,9 +3141,33 @@ async def _load_gdrive_for_consultant(sb, consultant_id: str):
 
 async def _process_ingest_job(sb, job: dict, gd) -> tuple[bool, str | None]:
     """Download + ingest a single queued file. Returns (success, error).
-    Edits/removals were already purged by the producer, so a successful new
-    doc is just created; we (re)stamp drive_file_id + drive_modified_time."""
+
+    Idempotent skip: the stream-enqueue producer queues every file it sees
+    (it doesn't check the DB), so here we decide per job whether the file is
+    already indexed and unchanged (skip), edited (purge old + re-ingest), or
+    new (ingest). This keeps re-enqueueing cheap and fixes bug #7 on the
+    worker side too."""
     fid = job["drive_file_id"]
+    job_mtime = job.get("drive_modified_time")
+
+    # Is it already indexed? Compare Drive modifiedTime to decide.
+    try:
+        existing = await (
+            sb.table("knowledge_documents")
+            .select("drive_modified_time")
+            .eq("drive_file_id", fid)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        existing = None
+    if existing and existing.data:
+        stored_mtime = existing.data[0].get("drive_modified_time")
+        if job_mtime and stored_mtime and str(stored_mtime) == str(job_mtime):
+            return True, None  # already indexed, unchanged → done (skip)
+        # Edited (or unknown): purge the old doc+chunks, then re-ingest below.
+        await _purge_indexed_doc(sb, fid)
+
     try:
         file_bytes, filename, _mime = await asyncio.to_thread(gd.download_file, fid)
     except Exception as e:
@@ -3249,6 +3273,114 @@ async def _ingest_jobs_reaper_loop(sb) -> None:
             raise
         except Exception as e:
             logger.warning("Ingest reaper error: %s", e)
+
+
+async def _stream_enqueue_bootstrap(
+    sync_id: str,
+    consultant_id: str,
+    folder_id: str,
+    gd,
+    sb,
+    *,
+    update_progress,
+    snapshot,
+) -> None:
+    """Fase 2 bootstrap: walk the Drive tree with the generator and enqueue
+    files into ingest_jobs in batches as they are discovered, so the consumer
+    can start ingesting long before the (slow) full scan finishes. The cursor
+    for incremental sync is captured up-front and saved at the end.
+
+    The producer does NOT consult the DB per file — it enqueues everything and
+    lets the consumer skip already-indexed/unchanged files idempotently. Edits
+    are handled there too (purge + re-ingest on modifiedTime change)."""
+    from datetime import datetime, timezone
+
+    # Capture the change cursor before scanning so anything modified mid-scan
+    # surfaces in the next incremental sync.
+    try:
+        next_token = await asyncio.to_thread(gd.get_start_page_token)
+    except Exception as e:
+        logger.warning("Sync %s: could not capture startPageToken: %s", sync_id, e)
+        next_token = None
+
+    enqueued = 0
+    batch: list[dict] = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def _drain(items: list[dict]) -> list[dict]:
+        return [{
+            "consultant_id": consultant_id,
+            "drive_file_id": f["id"],
+            "drive_modified_time": f.get("modifiedTime"),
+            "file_name": f["name"],
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "locked_by": None,
+            "locked_at": None,
+            "updated_at": now_iso,
+        } for f in items]
+
+    # Pull files off the generator in a thread (it does blocking Drive I/O),
+    # buffering into batches we upsert without blocking the event loop.
+    def _gen():
+        return gd.iter_all_files_recursive(folder_id)
+
+    it = await asyncio.to_thread(_gen)
+
+    def _next_chunk(iterator, n: int) -> list[dict]:
+        out: list[dict] = []
+        for _ in range(n):
+            try:
+                out.append(next(iterator))
+            except StopIteration:
+                break
+        return out
+
+    while True:
+        chunk = await asyncio.to_thread(_next_chunk, it, 100)
+        if not chunk:
+            break
+        try:
+            await (
+                sb.table("ingest_jobs")
+                .upsert(_drain(chunk), on_conflict="consultant_id,drive_file_id")
+                .execute()
+            )
+            enqueued += len(chunk)
+        except Exception as e:
+            logger.warning("Sync %s: stream enqueue batch failed: %s", sync_id, e)
+        await update_progress(
+            total_files_found=enqueued,
+            details=snapshot(phase="enqueued", processed_count=enqueued),
+        )
+
+    if next_token:
+        await _save_sync_state(
+            sb, consultant_id, start_page_token=next_token, mark_full_scan=True,
+        )
+
+    await (
+        sb.table("gdrive_sync_log")
+        .update({
+            "status": "completed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "total_files_found": enqueued,
+            "files_ingested": 0,
+            "files_skipped": 0,
+            "files_failed": 0,
+            "details": snapshot(phase="enqueued"),
+        })
+        .eq("id", sync_id)
+        .execute()
+    )
+    await (
+        sb.table("consultant_gdrive")
+        .update({"last_synced_at": datetime.now(timezone.utc).isoformat()})
+        .eq("consultant_id", consultant_id)
+        .execute()
+    )
+    logger.info("Sync %s: stream-enqueued %d job(s); consumer will ingest", sync_id, enqueued)
 
 
 async def _run_sync_job(
@@ -3386,6 +3518,20 @@ async def _run_sync_job(
                     do_full_scan = True
             except (ValueError, TypeError):
                 do_full_scan = True
+
+        # Fase 2 fast-path: queue + full-scan bootstrap → stream-enqueue files as
+        # the BFS discovers them, instead of scanning the whole (huge) tree into
+        # memory and enqueueing at the very end. The consumer dedups/skips by
+        # drive_file_id + modifiedTime, so enqueueing already-indexed files is
+        # cheap and idempotent. This makes a slow/partial scan still useful:
+        # whatever was discovered before an interruption is already queued.
+        if SYNC_USE_QUEUE and do_full_scan:
+            await _stream_enqueue_bootstrap(
+                sync_id, consultant_id, folder_id, gd, sb,
+                update_progress=_update_sync_progress,
+                snapshot=_snapshot_details,
+            )
+            return
 
         # Files to (re)ingest this run, and files whose indexed copy must be
         # purged before re-ingestion (edits) or outright (Drive removals).

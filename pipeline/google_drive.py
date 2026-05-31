@@ -623,9 +623,34 @@ class GoogleDriveService:
         Iteratively (BFS) list ALL files under a folder.
         Returns flat list of {id, name, mimeType, size, modifiedTime, path}.
 
+        Thin wrapper over iter_all_files_recursive (kept for callers that want
+        the whole list at once). For large trees prefer the generator so work
+        can start before the full scan completes.
+        """
+        return list(self.iter_all_files_recursive(
+            folder_id, supported_extensions=supported_extensions,
+            _path=_path, max_folders=max_folders,
+        ))
+
+    def iter_all_files_recursive(
+        self,
+        folder_id: str,
+        supported_extensions: set[str] | None = None,
+        _path: str = "",
+        max_folders: int = 0,
+    ):
+        """
+        Iteratively (BFS) yield each supported file under a folder as it is
+        discovered, instead of returning everything at the end. This lets the
+        caller start processing (e.g. enqueueing ingest jobs) while the scan of
+        a large tree is still in progress — a single stuck/slow scan no longer
+        blocks all downstream work.
+
+        Yields dicts {id, name, mimeType, size, modifiedTime, path}.
+
         Uses a queue instead of deep recursion to avoid stack overflow on
-        large Drive structures.  Pauses 0.3s between folder scans to stay
-        well within Google Drive API rate limits.
+        large Drive structures.  Pauses between folder scans to stay within
+        Google Drive API rate limits.
         """
         from collections import deque
 
@@ -635,11 +660,11 @@ class GoogleDriveService:
                 ".csv", ".txt", ".html", ".htm", ".md",
             }
 
-        all_files: list[dict] = []
         # BFS queue: (folder_id, path_prefix)
         folder_queue: deque[tuple[str, str]] = deque()
         folder_queue.append((folder_id, _path))
         folders_scanned = 0
+        files_found = 0
 
         while folder_queue:
             current_folder_id, current_path = folder_queue.popleft()
@@ -658,7 +683,8 @@ class GoogleDriveService:
                         ext = "." + name_lower.rsplit(".", 1)[-1] if "." in name_lower else ""
                         if ext in supported_extensions:
                             item["path"] = item_path
-                            all_files.append(item)
+                            files_found += 1
+                            yield item
 
                 page_token = listing.get("nextPageToken")
                 if not page_token:
@@ -666,7 +692,7 @@ class GoogleDriveService:
 
             folders_scanned += 1
             if max_folders > 0 and folders_scanned >= max_folders:
-                logger.info("Drive scan: folder limit reached (%d), returning %d files found so far", max_folders, len(all_files))
+                logger.info("Drive scan: folder limit reached (%d), %d files found so far", max_folders, files_found)
                 break
 
             # Throttle: pause between folders to avoid Google API rate limits
@@ -675,10 +701,9 @@ class GoogleDriveService:
 
             # Log progress every 20 folders
             if folders_scanned % 20 == 0:
-                logger.info("Drive scan: %d folders scanned, %d files found so far, %d folders queued", folders_scanned, len(all_files), len(folder_queue))
+                logger.info("Drive scan: %d folders scanned, %d files found so far, %d folders queued", folders_scanned, files_found, len(folder_queue))
 
-        logger.info("Drive scan complete: %d folders scanned, %d files found", folders_scanned, len(all_files))
-        return all_files
+        logger.info("Drive scan complete: %d folders scanned, %d files found", folders_scanned, files_found)
 
     def download_file(self, file_id: str) -> tuple[bytes, str, str]:
         """
