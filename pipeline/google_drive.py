@@ -745,3 +745,118 @@ class GoogleDriveService:
                     raise
 
         raise RuntimeError(f"download_file({file_id}): all retries exhausted")
+
+    # ──────────────────────────────────────────────────
+    # INCREMENTAL SYNC (Drive changes API)
+    # ──────────────────────────────────────────────────
+
+    def get_start_page_token(self) -> str:
+        """Snapshot Drive's current change cursor. Future calls to
+        list_changes() with this token return everything that has changed
+        since this moment. Call once at the end of a full-scan bootstrap."""
+        resp = self.service.changes().getStartPageToken(
+            supportsAllDrives=True,
+        ).execute()
+        return resp["startPageToken"]
+
+    def list_changes(self, page_token: str) -> dict:
+        """List Drive changes since `page_token`, with retry on transient errors.
+
+        Drive's changes API is *account-wide*, not folder-scoped, so the caller
+        is responsible for filtering the returned items down to the consultant's
+        subtree (see is_in_subtree).
+
+        Returns {changes: [...], new_start_page_token: str}. Each change includes
+        `fileId`, `removed`, and (when not removed) the file fields requested
+        below (id, name, mimeType, modifiedTime, md5Checksum, parents, trashed).
+        Pagination is handled internally — the caller gets a flat list.
+        """
+        all_changes: list[dict] = []
+        token = page_token
+        new_start_page_token: str | None = None
+        change_fields = (
+            "nextPageToken, newStartPageToken, "
+            "changes(fileId, removed, "
+            "file(id, name, mimeType, modifiedTime, md5Checksum, parents, trashed))"
+        )
+
+        while True:
+            last_error: Exception | None = None
+            for attempt, delay in enumerate(_RETRY_DELAYS, 1):
+                try:
+                    resp = (
+                        self.service.changes()
+                        .list(
+                            pageToken=token,
+                            fields=change_fields,
+                            pageSize=1000,
+                            supportsAllDrives=True,
+                            includeItemsFromAllDrives=True,
+                            includeRemoved=True,
+                            spaces="drive",
+                        )
+                        .execute()
+                    )
+                    break
+                except HttpError as e:
+                    last_error = e
+                    if e.resp.status in _RETRYABLE_CODES and attempt < len(_RETRY_DELAYS):
+                        logger.warning("list_changes: HTTP %s on attempt %d, retrying in %ds", e.resp.status, attempt, delay)
+                        time.sleep(delay)
+                    else:
+                        raise
+                except Exception as e:
+                    last_error = e
+                    if attempt < len(_RETRY_DELAYS):
+                        logger.warning("list_changes: %s on attempt %d, retrying in %ds", type(e).__name__, attempt, delay)
+                        time.sleep(delay)
+                    else:
+                        raise
+            else:
+                raise last_error  # type: ignore[misc]
+
+            all_changes.extend(resp.get("changes", []))
+            next_token = resp.get("nextPageToken")
+            new_start_page_token = resp.get("newStartPageToken") or new_start_page_token
+            if not next_token:
+                break
+            token = next_token
+            time.sleep(0.1)
+
+        if new_start_page_token is None:
+            # Drive always returns one of {nextPageToken, newStartPageToken} on
+            # the final page; if both are missing the cursor would silently
+            # stop advancing on the next sync.
+            raise RuntimeError("list_changes: Drive did not return newStartPageToken")
+
+        return {"changes": all_changes, "new_start_page_token": new_start_page_token}
+
+    def is_in_subtree(self, file_parents: list[str] | None, root_id: str) -> bool:
+        """Decide whether a file with the given immediate `parents` lives anywhere
+        under `root_id`. Uses the folder cache populated by `_preload_folder_tree`
+        to walk up the parent chain without extra Drive API calls.
+
+        Returns True if `root_id` is reachable from any of `file_parents` via
+        parent links. Returns False if the file has no parents or its parents
+        cannot be resolved to ancestors of `root_id`.
+
+        For accuracy the caller should run `_preload_folder_tree(root_id)` (or
+        otherwise prime `_folder_cache`) beforehand; without it, only direct
+        children of `root_id` will match.
+        """
+        if not file_parents:
+            return False
+        child_to_parent: dict[str, str] = {}
+        for (parent_id, _name), child_id in self._folder_cache.items():
+            if parent_id is not None:
+                child_to_parent[child_id] = parent_id
+
+        for pid in file_parents:
+            cur = pid
+            seen: set[str] = set()
+            while cur and cur not in seen:
+                if cur == root_id:
+                    return True
+                seen.add(cur)
+                cur = child_to_parent.get(cur, "")
+        return False
