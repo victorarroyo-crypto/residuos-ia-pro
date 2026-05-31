@@ -83,6 +83,17 @@ SYNC_REAPER_INTERVAL_SECONDS = 60
 # (changes API can miss things like moves into the subtree).
 SYNC_FULL_SCAN_INTERVAL_DAYS = 7
 
+# ── Ingest queue / worker (Fase 2) ────────────────────────────────
+# When SYNC_USE_QUEUE is enabled, the sync job becomes a *producer*: it only
+# enqueues changed files into ingest_jobs and returns. A background consumer
+# (started in lifespan) drains the queue one job at a time with retries, so a
+# restart costs at most the in-flight job instead of the whole run. Disabled by
+# default → the inline ingestion path (Fase 0/1) is used unchanged.
+SYNC_USE_QUEUE = os.environ.get("SYNC_USE_QUEUE", "").lower() in ("1", "true", "yes", "on")
+INGEST_WORKER_POLL_SECONDS = 5        # idle poll interval when the queue is empty
+INGEST_JOB_STALE_AFTER_SECONDS = 900  # > per-file ingest timeout (300s) → reap hung jobs
+INGEST_REAPER_INTERVAL_SECONDS = 120
+
 
 async def _sync_reaper_loop(sb) -> None:
     """Periodically mark as error any running sync whose heartbeat is stale.
@@ -179,6 +190,8 @@ async def lifespan(app: FastAPI):
     # worker leaves a row whose heartbeat stops, and the reaper (or this check)
     # will mark it as error after SYNC_STALE_AFTER_SECONDS.
     _reaper_task = None
+    _ingest_consumer_task = None
+    _ingest_reaper_task = None
     try:
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         from supabase._async.client import create_client as acreate_client
@@ -203,17 +216,24 @@ async def lifespan(app: FastAPI):
 
         # Launch the background reaper for the lifetime of the process.
         _reaper_task = asyncio.create_task(_sync_reaper_loop(_startup_sb))
+        # Fase 2: when the ingest queue is enabled, start the in-process
+        # consumer and its stale-job reaper alongside the sync reaper.
+        if SYNC_USE_QUEUE:
+            _ingest_consumer_task = asyncio.create_task(_ingest_queue_consumer_loop(_startup_sb))
+            _ingest_reaper_task = asyncio.create_task(_ingest_jobs_reaper_loop(_startup_sb))
+            logger.info("Startup: ingest queue ENABLED (SYNC_USE_QUEUE) — consumer + reaper started")
     except Exception as e:
         logger.warning("Startup: could not clean stale syncs / start reaper: %s", e)
 
     yield
 
-    if _reaper_task is not None:
-        _reaper_task.cancel()
-        try:
-            await _reaper_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for _t in (_reaper_task, _ingest_consumer_task, _ingest_reaper_task):
+        if _t is not None:
+            _t.cancel()
+            try:
+                await _t
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 app = FastAPI(
@@ -3088,6 +3108,149 @@ async def _purge_indexed_doc(sb, drive_file_id: str) -> None:
         logger.warning("Purge: lookup failed for drive_file_id=%s: %s", drive_file_id, e)
 
 
+# ── Fase 2: ingest queue consumer (worker) ────────────────────────
+
+async def _load_gdrive_for_consultant(sb, consultant_id: str):
+    """Build a GoogleDriveService for a consultant from stored tokens, or return
+    None if not connected/configured. Worker-side equivalent of
+    _get_gdrive_service that never raises HTTPException."""
+    if not _gdrive_configured():
+        return None
+    try:
+        res = await (
+            sb.table("consultant_gdrive")
+            .select("access_token, refresh_token")
+            .eq("consultant_id", consultant_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("Worker: could not load gdrive tokens for %s: %s", consultant_id, e)
+        return None
+    if not res.data:
+        return None
+    from pipeline.google_drive import GoogleDriveService
+    d = res.data[0]
+    return GoogleDriveService(
+        access_token=d["access_token"],
+        refresh_token=d["refresh_token"],
+        client_id=_gdrive_client_id,
+        client_secret=_gdrive_client_secret,
+    )
+
+
+async def _process_ingest_job(sb, job: dict, gd) -> tuple[bool, str | None]:
+    """Download + ingest a single queued file. Returns (success, error).
+    Edits/removals were already purged by the producer, so a successful new
+    doc is just created; we (re)stamp drive_file_id + drive_modified_time."""
+    fid = job["drive_file_id"]
+    try:
+        file_bytes, filename, _mime = await asyncio.to_thread(gd.download_file, fid)
+    except Exception as e:
+        return False, f"download failed: {str(e)[:180]}"
+
+    if not file_bytes:
+        return True, None  # empty file → nothing to ingest, treat as done
+    if len(file_bytes) > 100 * 1024 * 1024:
+        return False, "too large (>100MB)"
+
+    try:
+        result = await asyncio.wait_for(
+            service.ingest(file_bytes=file_bytes, filename=filename),
+            timeout=300,
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        return False, "timeout (>5 min)"
+    except Exception as e:
+        return False, str(e)[:200]
+
+    if not result.success:
+        return False, (result.error or "ingestion failed")[:200]
+
+    doc_id = result.supabase_doc_id or result.doc_id
+    if doc_id:
+        try:
+            upd: dict = {"drive_file_id": fid}
+            if job.get("drive_modified_time"):
+                upd["drive_modified_time"] = job["drive_modified_time"]
+            await sb.table("knowledge_documents").update(upd).eq("id", doc_id).execute()
+        except Exception as e:
+            logger.warning("Worker: could not stamp drive_file_id for %s: %s", fid, e)
+    return True, None
+
+
+async def _ingest_queue_consumer_loop(sb) -> None:
+    """Background consumer: claim one pending job at a time (atomic, via the
+    claim_ingest_job RPC) and process it. Sequential (Semaphore(1) territory —
+    raising concurrency is Fase 3). Never raises; logs and keeps going."""
+    worker_id = f"web-{os.getpid()}"
+    gd_cache: dict[str, object] = {}
+    logger.info("Ingest consumer started (worker=%s)", worker_id)
+    while True:
+        try:
+            claimed = await sb.rpc("claim_ingest_job", {"p_worker": worker_id}).execute()
+            job = (claimed.data or [None])[0] if claimed.data else None
+            if not job:
+                await asyncio.sleep(INGEST_WORKER_POLL_SECONDS)
+                continue
+
+            cid = job["consultant_id"]
+            gd = gd_cache.get(cid)
+            if gd is None:
+                gd = await _load_gdrive_for_consultant(sb, cid)
+                if gd is None:
+                    await sb.table("ingest_jobs").update({
+                        "status": "failed",
+                        "error": "Google Drive no conectado para el consultor",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", job["id"]).execute()
+                    continue
+                gd_cache[cid] = gd
+
+            ok, err = await _process_ingest_job(sb, job, gd)
+            if ok:
+                await sb.table("ingest_jobs").update({
+                    "status": "done", "error": None,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", job["id"]).execute()
+            else:
+                # Retry until max_attempts (attempts was incremented at claim).
+                exhausted = job.get("attempts", 0) >= job.get("max_attempts", 3)
+                await sb.table("ingest_jobs").update({
+                    "status": "failed" if exhausted else "pending",
+                    "error": err,
+                    "locked_by": None, "locked_at": None,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", job["id"]).execute()
+                logger.warning("Worker: job %s %s: %s", job["id"], "failed" if exhausted else "will retry", err)
+            gc.collect()
+        except asyncio.CancelledError:
+            logger.info("Ingest consumer stopping")
+            raise
+        except Exception as e:
+            logger.warning("Ingest consumer loop error: %s", e)
+            await asyncio.sleep(INGEST_WORKER_POLL_SECONDS)
+
+
+async def _ingest_jobs_reaper_loop(sb) -> None:
+    """Periodically requeue jobs stuck in 'processing' past the TTL (worker
+    died mid-job). Uses the requeue_stale_ingest_jobs RPC."""
+    while True:
+        try:
+            await asyncio.sleep(INGEST_REAPER_INTERVAL_SECONDS)
+            res = await sb.rpc(
+                "requeue_stale_ingest_jobs",
+                {"p_ttl_seconds": INGEST_JOB_STALE_AFTER_SECONDS},
+            ).execute()
+            n = res.data if isinstance(res.data, int) else (res.data or 0)
+            if n:
+                logger.info("Ingest reaper: requeued/failed %s stale job(s)", n)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Ingest reaper error: %s", e)
+
+
 async def _run_sync_job(
     sync_id: str,
     consultant_id: str,
@@ -3481,6 +3644,72 @@ async def _run_sync_job(
 
         # Update skipped count immediately
         await _update_sync_progress(files_skipped=skipped)
+
+        # Fase 2 (producer): if the queue is enabled, enqueue the changed files
+        # as ingest_jobs and return immediately instead of ingesting inline.
+        # The background consumer (started in lifespan) drains the queue. Edits
+        # and removals were already purged above, so the worker only downloads
+        # + ingests. The incremental cursor is still advanced here on success.
+        if SYNC_USE_QUEUE:
+            enqueued = 0
+            now_iso_q = datetime.now(timezone.utc).isoformat()
+            for i in range(0, len(new_files), 50):
+                batch = new_files[i:i + 50]
+                rows = [{
+                    "consultant_id": consultant_id,
+                    "drive_file_id": f["id"],
+                    "drive_modified_time": f.get("modifiedTime"),
+                    "file_name": f["name"],
+                    "status": "pending",
+                    "attempts": 0,
+                    "error": None,
+                    "locked_by": None,
+                    "locked_at": None,
+                    "updated_at": now_iso_q,
+                } for f in batch]
+                try:
+                    await (
+                        sb.table("ingest_jobs")
+                        .upsert(rows, on_conflict="consultant_id,drive_file_id")
+                        .execute()
+                    )
+                    enqueued += len(rows)
+                except Exception as e:
+                    logger.warning("Sync %s: enqueue batch failed: %s", sync_id, e)
+                await _update_sync_progress(
+                    details=_snapshot_details(phase="enqueued", processed_count=enqueued),
+                )
+
+            # Advance the incremental cursor (same rule as the inline path).
+            if next_token:
+                await _save_sync_state(
+                    sb, consultant_id,
+                    start_page_token=next_token,
+                    mark_full_scan=do_full_scan,
+                )
+
+            await (
+                sb.table("gdrive_sync_log")
+                .update({
+                    "status": "completed",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "total_files_found": total_found,
+                    "files_ingested": 0,
+                    "files_skipped": skipped,
+                    "files_failed": 0,
+                    "details": _snapshot_details(phase="enqueued"),
+                })
+                .eq("id", sync_id)
+                .execute()
+            )
+            await (
+                sb.table("consultant_gdrive")
+                .update({"last_synced_at": datetime.now(timezone.utc).isoformat()})
+                .eq("consultant_id", consultant_id)
+                .execute()
+            )
+            logger.info("Sync %s: enqueued %d job(s), %d purged; consumer will ingest", sync_id, enqueued, removed_count)
+            return
 
         # 3. Ingest new files (concurrent with semaphore)
         ingested = 0
