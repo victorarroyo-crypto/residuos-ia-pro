@@ -3207,6 +3207,7 @@ async def _ingest_queue_consumer_loop(sb) -> None:
     """Background consumer: claim one pending job at a time (atomic, via the
     claim_ingest_job RPC) and process it. Sequential (Semaphore(1) territory —
     raising concurrency is Fase 3). Never raises; logs and keeps going."""
+    from datetime import datetime, timezone
     worker_id = f"web-{os.getpid()}"
     gd_cache: dict[str, object] = {}
     logger.info("Ingest consumer started (worker=%s)", worker_id)
