@@ -170,11 +170,20 @@ interface SyncLog {
   details: SyncDetail[] | RunningSyncDetails | string;
 }
 
+interface IngestQueue {
+  pending: number;
+  processing: number;
+  done: number;
+  failed: number;
+  total: number;
+}
+
 interface SyncStatus {
   last_synced_at: string | null;
   auto_sync_enabled: boolean;
   is_syncing: boolean;
   recent_syncs: SyncLog[];
+  queue?: IngestQueue;
 }
 
 interface DriveIngestProgress {
@@ -1141,9 +1150,12 @@ export default function KnowledgeBasePage() {
           setSyncing(true);
           const running = data.recent_syncs.find((s) => s.status === "running");
           if (running) {
-            const processed =
-              running.files_ingested + running.files_skipped + running.files_failed;
-            const total = running.total_files_found || 0;
+            const q = data.queue;
+            const useQueue = !!q && q.total > 0;
+            const processed = useQueue
+              ? q!.done + q!.failed
+              : running.files_ingested + running.files_skipped + running.files_failed;
+            const total = useQueue ? q!.total : running.total_files_found || 0;
             setSyncResult({
               success: true,
               message: total > 0
@@ -1250,10 +1262,16 @@ export default function KnowledgeBasePage() {
         // Show live progress while syncing
         if (isStillRunning && runningSyncLog) {
           const { total_files_found, files_ingested, files_skipped, files_failed } = runningSyncLog;
-          const processed = files_ingested + files_skipped + files_failed;
-          const total = total_files_found || 0;
+          const q = status.queue;
+          const useQueue = !!q && q.total > 0;
+          const processed = useQueue
+            ? q!.done + q!.failed
+            : files_ingested + files_skipped + files_failed;
+          const total = useQueue ? q!.total : total_files_found || 0;
           const progressMsg = total > 0
-            ? `Procesando... ${processed} de ${total} archivos (${files_ingested} nuevos, ${files_skipped} ya indexados${files_failed ? `, ${files_failed} errores` : ""})`
+            ? useQueue
+              ? `Procesando... ${processed} de ${total} en cola (${q!.done} indexados${q!.processing > 0 ? `, ${q!.processing} procesando` : ""}${q!.failed ? `, ${q!.failed} errores` : ""})`
+              : `Procesando... ${processed} de ${total} archivos (${files_ingested} nuevos, ${files_skipped} ya indexados${files_failed ? `, ${files_failed} errores` : ""})`
             : "Buscando archivos en Google Drive...";
           setSyncResult({
             success: true,
@@ -1478,7 +1496,7 @@ export default function KnowledgeBasePage() {
       {(() => {
         const running = syncStatus?.recent_syncs?.find((s) => s.status === "running");
         if (!running) return null;
-        return <RunningSyncCard sync={running} />;
+        return <RunningSyncCard sync={running} queue={syncStatus?.queue} />;
       })()}
 
       {/* Sync result toast */}
@@ -1502,8 +1520,15 @@ export default function KnowledgeBasePage() {
             {/* Progress bar while syncing */}
             {syncing && syncStatus?.recent_syncs?.find((s) => s.status === "running") && (() => {
               const run = syncStatus.recent_syncs.find((s) => s.status === "running")!;
-              const processed = run.files_ingested + run.files_skipped + run.files_failed;
-              const total = run.total_files_found || 0;
+              // Queue model (Fase 2): the worker ingests in the background, so
+              // files_ingested in the sync-log stays 0. Prefer ingest_jobs counts
+              // when available so the bar reflects real progress.
+              const q = syncStatus.queue;
+              const useQueue = !!q && q.total > 0;
+              const processed = useQueue
+                ? q!.done + q!.failed
+                : run.files_ingested + run.files_skipped + run.files_failed;
+              const total = useQueue ? q!.total : run.total_files_found || 0;
               const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
               return total > 0 ? (
                 <div className="mt-2 ml-6">
@@ -1513,7 +1538,12 @@ export default function KnowledgeBasePage() {
                       style={{ width: `${pct}%` }}
                     />
                   </div>
-                  <p className="text-xs text-green-700 mt-1">{pct}% completado</p>
+                  <p className="text-xs text-green-700 mt-1">
+                    {pct}% completado
+                    {useQueue
+                      ? ` · ${processed} de ${total} en cola${q!.processing > 0 ? ` · ${q!.processing} procesando` : ""}`
+                      : ""}
+                  </p>
                 </div>
               ) : null;
             })()}
@@ -2137,13 +2167,19 @@ function DriveTab({
 }
 
 // ─── Running Sync Card (rich live progress) ────────────────
-function RunningSyncCard({ sync }: { sync: SyncLog }) {
+function RunningSyncCard({ sync, queue }: { sync: SyncLog; queue?: IngestQueue }) {
   const rich = asRunningDetails(sync.details);
   const [recentOpen, setRecentOpen] = useState(true);
   const [errorsOpen, setErrorsOpen] = useState(false);
 
-  const processed = sync.files_ingested + sync.files_skipped + sync.files_failed;
-  const total = sync.total_files_found || 0;
+  // Queue model (Fase 2): the worker ingests in the background, so the
+  // sync-log counters stay 0. When ingest_jobs counts are available, drive the
+  // progress from them so the card shows real worker progress, not "0 de N".
+  const useQueue = !!queue && queue.total > 0;
+  const processed = useQueue
+    ? queue!.done + queue!.failed
+    : sync.files_ingested + sync.files_skipped + sync.files_failed;
+  const total = useQueue ? queue!.total : sync.total_files_found || 0;
   const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
   const elapsedMs = Date.now() - new Date(sync.started_at).getTime();
   const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60000));
@@ -2206,14 +2242,33 @@ function RunningSyncCard({ sync }: { sync: SyncLog }) {
               <span>
                 {processed} de {total} ({pct}%)
               </span>
-              <span className="text-vandarum-green">
-                {sync.files_ingested} nuevos
-              </span>
-              <span>{sync.files_skipped} ya indexados</span>
-              {sync.files_failed > 0 && (
-                <span className="text-destructive">
-                  {sync.files_failed} errores
-                </span>
+              {useQueue ? (
+                <>
+                  <span className="text-vandarum-green">
+                    {queue!.done} indexados
+                  </span>
+                  {queue!.processing > 0 && (
+                    <span>{queue!.processing} procesando</span>
+                  )}
+                  <span>{queue!.pending} en cola</span>
+                  {queue!.failed > 0 && (
+                    <span className="text-destructive">
+                      {queue!.failed} errores
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-vandarum-green">
+                    {sync.files_ingested} nuevos
+                  </span>
+                  <span>{sync.files_skipped} ya indexados</span>
+                  {sync.files_failed > 0 && (
+                    <span className="text-destructive">
+                      {sync.files_failed} errores
+                    </span>
+                  )}
+                </>
               )}
               {ratePerMin > 0 && (
                 <span>{ratePerMin.toFixed(1)} archivos/min</span>

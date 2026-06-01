@@ -36,11 +36,38 @@ export async function GET(request: NextRequest) {
       (log: Record<string, unknown>) => log.status === "running"
     );
 
+    // Queue progress (Fase 2): with the queue model the actual ingestion is
+    // done by a background worker, so the sync-log's files_ingested stays 0.
+    // Expose ingest_jobs counts so the UI can show real progress instead of
+    // "0 de N". Counts are per-consultant (head-only, cheap).
+    const countJobs = async (status: string) => {
+      const { count } = await admin.client
+        .from("ingest_jobs")
+        .select("*", { count: "exact", head: true })
+        .eq("consultant_id", consultantId)
+        .eq("status", status);
+      return count ?? 0;
+    };
+    const [pending, processing, done, failed] = await Promise.all([
+      countJobs("pending"),
+      countJobs("processing"),
+      countJobs("done"),
+      countJobs("failed"),
+    ]);
+    const queueTotal = pending + processing + done + failed;
+
     return NextResponse.json({
       last_synced_at: gdriveConfig?.last_synced_at ?? null,
       auto_sync_enabled: gdriveConfig?.auto_sync_enabled ?? true,
       is_syncing: isRunning,
       recent_syncs: recentSyncs,
+      queue: {
+        pending,
+        processing,
+        done,
+        failed,
+        total: queueTotal,
+      },
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
