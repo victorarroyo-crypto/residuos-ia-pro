@@ -1,52 +1,43 @@
 import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
+
+// Defaults + the shape returned on any failure, so the UI never sees
+// undefined fields.
+const EMPTY = {
+  total_documents: 0,
+  total_chunks: 0,
+  total_pages: 0,
+  by_type: {} as Record<string, number>,
+  // Reconciliation (Fase 5): indexed vs last Drive scan.
+  drive_files_seen: 0,
+  in_drive_not_indexed: 0,
+  md_skipped: 0,
+  real_gaps: 0,
+  orphans: 0,
+  manual_uploads: 0,
+};
 
 export async function GET() {
   const admin = getAdminClient();
   if (!admin.ok) {
-    return NextResponse.json({
-      total_documents: 0,
-      total_chunks: 0,
-      total_pages: 0,
-      by_type: {},
-    });
+    return NextResponse.json(EMPTY);
   }
 
   try {
-    const { data: docs } = await admin.client
-      .from("knowledge_documents")
-      .select("tipo, total_paginas, total_chunks");
-
-    const documents = docs || [];
-    const total_documents = documents.length;
-    const total_chunks = documents.reduce(
-      (sum, d) => sum + (d.total_chunks || 0),
-      0
+    // A single RPC computes every count in the DB (no PostgREST 1000-row cap
+    // that previously froze total_documents at 1000) plus the Drive
+    // reconciliation. See supabase/migrations/fase5_kb_reconciliation.sql
+    const { data, error } = await admin.client.rpc(
+      "knowledge_base_reconciliation"
     );
-    const total_pages = documents.reduce(
-      (sum, d) => sum + (d.total_paginas || 0),
-      0
-    );
-    const by_type: Record<string, number> = {};
-    for (const d of documents) {
-      const t = d.tipo || "desconocido";
-      by_type[t] = (by_type[t] || 0) + 1;
+    if (error || !data) {
+      return NextResponse.json(EMPTY);
     }
-
-    return NextResponse.json({
-      total_documents,
-      total_chunks,
-      total_pages,
-      by_type,
-    });
+    // Merge over EMPTY so any missing field is still present.
+    return NextResponse.json({ ...EMPTY, ...(data as Record<string, unknown>) });
   } catch {
-    return NextResponse.json({
-      total_documents: 0,
-      total_chunks: 0,
-      total_pages: 0,
-      by_type: {},
-    });
+    return NextResponse.json(EMPTY);
   }
 }

@@ -307,6 +307,13 @@ export default function KnowledgeBasePage() {
     total_chunks: 0,
     total_pages: 0,
     by_type: {} as Record<string, number>,
+    // Reconciliacion (Fase 5): indexado vs ultimo escaneo de Drive.
+    drive_files_seen: 0,
+    in_drive_not_indexed: 0,
+    md_skipped: 0,
+    real_gaps: 0,
+    orphans: 0,
+    manual_uploads: 0,
   });
 
   // Upload state
@@ -1707,7 +1714,14 @@ export default function KnowledgeBasePage() {
             <BookOpen className="h-4 w-4 text-vandarum-teal" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total_documents}</div>
+            <div className="text-2xl font-bold">
+              {stats.total_documents.toLocaleString("es-ES")}
+            </div>
+            {stats.manual_uploads > 0 && (
+              <p className="text-xs text-muted-foreground mt-1">
+                {stats.manual_uploads} subidas manuales
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -1719,7 +1733,9 @@ export default function KnowledgeBasePage() {
             <Database className="h-4 w-4 text-vandarum-blue" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total_chunks}</div>
+            <div className="text-2xl font-bold">
+              {stats.total_chunks.toLocaleString("es-ES")}
+            </div>
           </CardContent>
         </Card>
 
@@ -1731,7 +1747,9 @@ export default function KnowledgeBasePage() {
             <FileText className="h-4 w-4 text-vandarum-green" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total_pages}</div>
+            <div className="text-2xl font-bold">
+              {stats.total_pages.toLocaleString("es-ES")}
+            </div>
           </CardContent>
         </Card>
 
@@ -1761,6 +1779,64 @@ export default function KnowledgeBasePage() {
                 })}
               </p>
             )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Reconciliacion con Google Drive (Fase 5): indexado vs ultimo escaneo */}
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Archivos en Drive
+            </CardTitle>
+            <FolderOpen className="h-4 w-4 text-vandarum-blue" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {stats.drive_files_seen.toLocaleString("es-ES")}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Vistos en el ultimo escaneo
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Sin indexar</CardTitle>
+            <AlertTriangle
+              className={`h-4 w-4 ${
+                stats.real_gaps > 0 ? "text-amber-600" : "text-vandarum-green"
+              }`}
+            />
+          </CardHeader>
+          <CardContent>
+            <div
+              className={`text-2xl font-bold ${
+                stats.real_gaps > 0 ? "text-amber-600" : ""
+              }`}
+            >
+              {stats.real_gaps.toLocaleString("es-ES")}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {stats.md_skipped.toLocaleString("es-ES")} .md omitidos (ya tienen PDF)
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Huerfanos</CardTitle>
+            <XCircle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {stats.orphans.toLocaleString("es-ES")}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Indexados que ya no estan en Drive
+            </p>
           </CardContent>
         </Card>
       </div>
