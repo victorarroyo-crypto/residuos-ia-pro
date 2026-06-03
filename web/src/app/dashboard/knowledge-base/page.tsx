@@ -1835,7 +1835,7 @@ export default function KnowledgeBasePage() {
               {stats.orphans.toLocaleString("es-ES")}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Indexados que ya no estan en Drive
+              No vistos en el ultimo escaneo
             </p>
           </CardContent>
         </Card>
