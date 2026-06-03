@@ -93,6 +93,11 @@ SYNC_USE_QUEUE = os.environ.get("SYNC_USE_QUEUE", "").lower() in ("1", "true", "
 INGEST_WORKER_POLL_SECONDS = 5        # idle poll interval when the queue is empty
 INGEST_JOB_STALE_AFTER_SECONDS = 900  # > per-file ingest timeout (300s) → reap hung jobs
 INGEST_REAPER_INTERVAL_SECONDS = 120
+# Fase 3: number of parallel queue consumers. claim_ingest_job is atomic
+# (FOR UPDATE SKIP LOCKED) so N consumers never double-claim a job. Tune down
+# via env if the container runs low on memory (each consumer can hold one file
+# in flight + OCR/embeddings). Default 5.
+INGEST_WORKER_CONCURRENCY = max(1, int(os.environ.get("INGEST_WORKER_CONCURRENCY", "5")))
 
 
 async def _sync_reaper_loop(sb) -> None:
@@ -190,7 +195,7 @@ async def lifespan(app: FastAPI):
     # worker leaves a row whose heartbeat stops, and the reaper (or this check)
     # will mark it as error after SYNC_STALE_AFTER_SECONDS.
     _reaper_task = None
-    _ingest_consumer_task = None
+    _ingest_consumer_tasks: list = []
     _ingest_reaper_task = None
     try:
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -216,18 +221,26 @@ async def lifespan(app: FastAPI):
 
         # Launch the background reaper for the lifetime of the process.
         _reaper_task = asyncio.create_task(_sync_reaper_loop(_startup_sb))
-        # Fase 2: when the ingest queue is enabled, start the in-process
-        # consumer and its stale-job reaper alongside the sync reaper.
+        # Fase 2/3: when the ingest queue is enabled, start N in-process
+        # consumers and the stale-job reaper alongside the sync reaper. The
+        # claim RPC is atomic (FOR UPDATE SKIP LOCKED) so the consumers share
+        # the queue without double-claiming.
         if SYNC_USE_QUEUE:
-            _ingest_consumer_task = asyncio.create_task(_ingest_queue_consumer_loop(_startup_sb))
+            _ingest_consumer_tasks = [
+                asyncio.create_task(_ingest_queue_consumer_loop(_startup_sb, worker_idx=i))
+                for i in range(INGEST_WORKER_CONCURRENCY)
+            ]
             _ingest_reaper_task = asyncio.create_task(_ingest_jobs_reaper_loop(_startup_sb))
-            logger.info("Startup: ingest queue ENABLED (SYNC_USE_QUEUE) — consumer + reaper started")
+            logger.info(
+                "Startup: ingest queue ENABLED (SYNC_USE_QUEUE) — %d consumer(s) + reaper started",
+                INGEST_WORKER_CONCURRENCY,
+            )
     except Exception as e:
         logger.warning("Startup: could not clean stale syncs / start reaper: %s", e)
 
     yield
 
-    for _t in (_reaper_task, _ingest_consumer_task, _ingest_reaper_task):
+    for _t in (_reaper_task, _ingest_reaper_task, *_ingest_consumer_tasks):
         if _t is not None:
             _t.cancel()
             try:
@@ -3203,12 +3216,14 @@ async def _process_ingest_job(sb, job: dict, gd) -> tuple[bool, str | None]:
     return True, None
 
 
-async def _ingest_queue_consumer_loop(sb) -> None:
+async def _ingest_queue_consumer_loop(sb, worker_idx: int = 0) -> None:
     """Background consumer: claim one pending job at a time (atomic, via the
-    claim_ingest_job RPC) and process it. Sequential (Semaphore(1) territory —
-    raising concurrency is Fase 3). Never raises; logs and keeps going."""
+    claim_ingest_job RPC) and process it. Runs as one of
+    INGEST_WORKER_CONCURRENCY parallel consumers (Fase 3); the claim RPC's
+    FOR UPDATE SKIP LOCKED keeps them from double-claiming. Never raises; logs
+    and keeps going."""
     from datetime import datetime, timezone
-    worker_id = f"web-{os.getpid()}"
+    worker_id = f"web-{os.getpid()}-{worker_idx}"
     gd_cache: dict[str, object] = {}
     logger.info("Ingest consumer started (worker=%s)", worker_id)
     while True:
